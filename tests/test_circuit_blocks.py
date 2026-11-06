@@ -14,6 +14,7 @@ class BlocksTest(unittest.TestCase):
             self.assertEqual(len([o for o in ops if o['op']=='add_part']),count)
             names=[o['net'] for o in ops if o['op']=='connect' and o['net']!='SHARED']
             self.assertEqual(len(set(names)),count)
+            self.assertTrue(all(n==n.upper() for n in names))
             self.assertEqual(ops[0]['ref'],'R2')
     def test_ports_ranges_and_collision_are_explicit(self):
         for inst,ports,occupied in [([{'id':'CH','x':0,'y':0,'parameters':{}}],{},set()),

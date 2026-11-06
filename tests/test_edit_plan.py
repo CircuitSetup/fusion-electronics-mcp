@@ -130,6 +130,30 @@ class PlanTest(unittest.TestCase):
             self.assertNotEqual(P.electrical(original),P.electrical(ET.tostring(root,encoding='unicode')))
             target.set(attr,old)
 
+    def test_fusion_uppercases_net_names_without_creating_duplicate_connections(self):
+        op=dict(OPS[0],net='Mixed_case')
+        xml=P.simulate(XML,[op]);state=P.electrical(xml)
+        self.assertIn('MIXED_CASE',state['nets'])
+        self.assertEqual(P.electrical(P.simulate(xml,[op])),state)
+        self.assertEqual(Live.compile_operation(xml,op),'')
+
+    def test_add_from_full_cache_to_exported_library_subset(self):
+        import xml.etree.ElementTree as ET
+        root=ET.fromstring(XML); lib=copy.deepcopy(root.find('.//library'))
+        lib.set('urn', 'export-only-identity')
+        ET.SubElement(lib.find('symbols'), 'symbol', name='UNUSED')
+        op={'op':'add_part','ref':'U2','library_path':'library','library':lib.get('name'),
+            'deviceset':'LDO','device':'','gate':'G$1','sheet':1,'x':100,'y':100,
+            'rotation':0,'evidence_path':'evidence'}
+        sources={'library':{'content':ET.tostring(lib,encoding='unicode')},'evidence':{'content':'fixture'}}
+        result=P.electrical(P.simulate(XML,[op],sources))
+        self.assertEqual(result['definitions']['U1'],result['definitions']['U2'])
+        self.assertEqual(result['parts']['U1'],result['parts']['U2'])
+        lib.find('.//symbol/pin').set('x','99')
+        sources['library']['content']=ET.tostring(lib,encoding='unicode')
+        with self.assertRaisesRegex(ValueError,'Embedded library'):
+            P.simulate(XML,[op],sources)
+
     def test_projected_dnc_and_rail_intent_blocks_plan(self):
         import xml.etree.ElementTree as ET
         import hashlib

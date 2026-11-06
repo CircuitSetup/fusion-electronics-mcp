@@ -389,6 +389,9 @@ rejected. `add_part` requires `ref`, absolute `library_path` and `evidence_path`
 preview never stages temporary parts in a production document. The evidence
 source is resolved relative to its JSON file and must match its SHA256.
 The cached library must include the physical package and MPN attribute.
+Fusion embeds only used library items; a full cache is accepted only when all
+existing parts retain identical electrical definitions and geometry. Net names
+in previews and repeated blocks use Fusion's uppercase spelling.
 
 Multi-unit identity is `(part, gate, pin)`. Pin helpers accept `gate=` and refuse
 ambiguous unqualified names; interactive pin specs also accept `PART.GATE.PIN`.

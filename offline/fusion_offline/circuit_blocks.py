@@ -50,13 +50,13 @@ def expand_block(block,instances,occupied_refs,port_connections,occupied_nets=()
         external={}
         for port,spec in block['ports'].items():
             if spec.get('direction') not in ('in','out','io','power') or not spec.get('domain'): raise ValueError('Typed port direction and domain required')
-            net=name(ports[port]); local=spec['net']
+            net=name(ports[port]).upper(); local=spec['net']
             if local not in block['nets']: raise ValueError('Port references missing net')
             if local in external and external[local]!=net: raise ValueError('Conflicting connections for one port net')
             external[local]=net; domains.setdefault(net.casefold(),set()).add(spec['domain'])
             if len(domains[net.casefold()])>1: raise ValueError('External connection would join isolation domains')
         for local,pins in block['nets'].items():
-            name(local); net=external.get(local,f'{block["id"]}_{iid}_{local}')
+            name(local); net=external.get(local,f'{block["id"]}_{iid}_{local}').upper()
             if local not in external:
                 if net.casefold() in used_nets or net.casefold() in {x.casefold() for c in port_connections.values() for x in c.values()}: raise ValueError('Private net collision')
                 used_nets.add(net.casefold())

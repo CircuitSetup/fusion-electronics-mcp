@@ -88,7 +88,12 @@ def simulate(xml, operations, sources=None):
             lib=copy.deepcopy(libs[0]); lib.set('name',name(op['library']))
             embedded=next((l for l in base.find('libraries') if l.get('name')==op['library']),None)
             if embedded is None: base.find('libraries').append(lib)
-            elif xml_hash(ET.tostring(embedded))!=xml_hash(ET.tostring(lib)): raise ValueError('Embedded library differs from cached library')
+            else:
+                # Fusion exports a used subset; compare all existing parts before expanding it.
+                before=electrical(ET.tostring(root))
+                base.find('libraries').remove(embedded); base.find('libraries').append(lib)
+                if electrical(ET.tostring(root))!=before:
+                    raise ValueError('Embedded library differs from cached library')
             ds=next((d for d in lib.iter('deviceset') if d.get('name')==op['deviceset']),None)
             if ds is None: raise ValueError('Unknown deviceset')
             dev=next((d for d in ds.findall('./devices/device') if d.get('name','')==op['device']),None)
@@ -106,7 +111,7 @@ def simulate(xml, operations, sources=None):
             if not any(g.get('name')==gate for g in ds.findall('./gates/gate')): raise ValueError('Unknown gate')
             _place(sheets,op,ref,gate)
         elif kind=='connect':
-            net=name(op['net'])
+            net=name(op['net']).upper()
             if not isinstance(op['pins'],list) or not op['pins']: raise ValueError('Explicit pins required')
             if len({tuple(sorted(p.items())) for p in op['pins']})!=len(op['pins']): raise ValueError('Duplicate pins')
             for target in op['pins']:
@@ -121,9 +126,9 @@ def simulate(xml, operations, sources=None):
                 ET.SubElement(seg,'wire',x1=str(p.x),y1=str(p.y),x2=str(ex),y2=str(ey),width='0',layer='91')
                 ET.SubElement(seg,'label',x=str(ex),y=str(ey),size='1.27',layer='95')
         elif kind=='label_net':
-            name(op['net']); found=False
+            net=name(op['net']).upper(); found=False
             for n in sheets[sheet-1].findall('./nets/net'):
-                if n.get('name')!=op['net']: continue
+                if n.get('name')!=net: continue
                 for seg in n.findall('segment'):
                     w=seg.find('wire')
                     if w is not None and seg.find('label') is None:

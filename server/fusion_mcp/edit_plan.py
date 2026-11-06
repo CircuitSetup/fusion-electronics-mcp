@@ -55,6 +55,7 @@ def preview(session,operations,expected_document_id,directory=None,evidence=None
 
 
 def compile_operation(xml,op):
+    if op['op'] in ('connect','label_net'): op=dict(op,net=op['net'].upper())
     kind=op['op']; sch=P.D.parse_schematic_design(P.D.read_xml(xml.encode()))
     if kind=='add_sheet': return C.new_sheet(op['sheet'],op['title'],None,None)
     if kind=='add_part': return C.add_part(op['deviceset']+op['device'],op['library'],op['ref'],op['x'],op['y'],op['rotation'],op['sheet'])
