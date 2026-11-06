@@ -764,7 +764,7 @@ def _longest_straight(pts) -> float:
 
 def plan_pair(root: ET.Element, p_net: str, n_net: str, centreline, width: float, gap: float,
               clearance: float | None = None, layer: int = 1, other_layer: int = 16,
-              p_tail=None, n_tail=None, p_head=None, n_head=None, via_drill: float = 0.3, via_diameter: float = 0.6,
+              p_tail=None, n_tail=None, p_head=None, n_head=None, via_drill: float = 0.3, via_diameter: float | None = None,
               max_skew_mm: float = 0.1, tune: bool = True, chamfer_mm: float = 0.5,
               layer_changes=None, net_clearance: dict | None = None, pair_clearance: float | None = None,
               via_clearance: float | None = None, margin: float = 0.0, tune_style: str = "rounded",
@@ -845,6 +845,29 @@ def plan_pair(root: ET.Element, p_net: str, n_net: str, centreline, width: float
         raise ValueError(f"layer {layer} or {other_layer} is not a copper layer of the board's stack")
     barrel = abs(layer_depths[layer] - layer_depths[other_layer])
     obs, rules, outline = board_obstacles(root)
+    changes = list(layer_changes or [])
+    uses_vias = changes or any(isinstance(q, dict) for path in (p_head, n_head, p_tail, n_tail) for q in path or [])
+    if uses_vias:
+        from . import annular
+
+        if not math.isfinite(via_drill) or via_drill <= 0:
+            raise ValueError("via drill must be finite and positive")
+        minimum_drill = _mm(rules.get("msDrill"), 0.0)
+        if via_drill < minimum_drill - 1e-6:
+            raise ValueError(f"via drill must be at least {minimum_drill:g} mm under the board rules")
+        inner = len(layer_depths) > 2
+        required = annular.required_diameter(via_drill)
+        restring = annular.copper(rules, "Via", via_drill, 0, inner)
+        minimum = max(required, *restring.values())
+        if via_diameter is None:
+            via_diameter = max(0.6, minimum)
+        elif not math.isfinite(via_diameter) or via_diameter < minimum - 1e-6:
+            raise ValueError(f"via diameter must be at least {minimum:g} mm for a {via_drill:g} mm drill")
+        actual = annular.copper(rules, "Via", via_drill, via_diameter, inner)
+        if min(actual.values()) < required - 1e-6:
+            raise ValueError(f"via copper is below {required:g} mm on a layer governed by restring rules")
+    else:
+        via_diameter = 0.6 if via_diameter is None else via_diameter
     if clearance is None:
         clearance = max(_mm(rules.get(k), 0.0) for k in ("mdWireWire", "mdWirePad", "mdWireVia"))
     net_clearance = net_clearance or {}
@@ -865,7 +888,6 @@ def plan_pair(root: ET.Element, p_net: str, n_net: str, centreline, width: float
         raise ValueError("the centreline needs at least two points")
     half = (width + gap) / 2
     spacing = max(2 * half, via_diameter + via_clear)
-    changes = list(layer_changes or [])
     if changes:
         c, change_at = _insert_layer_changes(c, changes, half, spacing)
     else:
@@ -1077,6 +1099,7 @@ def plan_pair(root: ET.Element, p_net: str, n_net: str, centreline, width: float
                   "length_mm": round(lp, 3), "via_mm": round(p_via, 3)},
             "n": {"net": n_net, "traces": tr_out(n_tw), "vias": [[round(x, 4), round(y, 4)] for x, y in n_v],
                   "length_mm": round(ln, 3), "via_mm": round(n_via, 3)},
+            "via_diameter_mm": via_diameter if uses_vias else None,
             "via_barrel_mm": round(barrel, 4), "via_depths_from": depths_from,
             "necks": necks,
             "skew_mm": round(lp - ln, 4), "skew_before_tuning_mm": skew_before, "tuning_added_mm": round(added, 4),

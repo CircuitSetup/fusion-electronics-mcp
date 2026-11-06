@@ -29,6 +29,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 SAFE_ORDER = ["Cancel", "No", "Close", "OK", "Ok", "Abort", "Ignore"]
@@ -65,9 +66,14 @@ $o | ConvertTo-Json -Compress -Depth 4
 
 _PS_ACT = _PS_HEAD + r"""
 $done=@()
+if ($Strict) { $ErrorActionPreference = 'Stop' }
 foreach ($step in ($Actions | ConvertFrom-Json)) {
   $x = Named $step.target
-  if (-not $x) { $done += "missing:" + $step.target; continue }
+  if (-not $x) {
+    $done += "missing:" + $step.target
+    if ($Strict) { break }
+    continue
+  }
   switch ($step.do) {
     'select' { $x.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select() }
     'off'    { $p=$x.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern); if ($p.Current.ToggleState -eq 'On') { $p.Toggle() } }
@@ -147,7 +153,7 @@ def _ps(script: str, **params) -> str:
     args = " ".join(f"-{k} {v}" for k, v in params.items())
     proc = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
-         f"& {{ param([long]$Hwnd, [string]$Actions) {script} }} {args}"],
+         f"& {{ param([long]$Hwnd, [string]$Actions, [int]$Strict = 0) {script} }} {args}"],
         capture_output=True, text=True, timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return proc.stdout.strip()
 
@@ -163,10 +169,10 @@ def read(w: Window) -> dict:
     return info
 
 
-def act(w: Window, actions: list[dict]) -> str:
+def act(w: Window, actions: list[dict], *, strict: bool = False) -> str:
     payload = json.dumps(actions).replace("'", "''")
     try:
-        return _ps(_PS_ACT, Hwnd=w.hwnd, Actions=f"'{payload}'")
+        return _ps(_PS_ACT, Hwnd=w.hwnd, Actions=f"'{payload}'", Strict=int(strict))
     except Exception as ex:
         return f"error:{ex}"[:200]
 
@@ -225,30 +231,32 @@ FORM_RENAME_ALL_SEGMENTS = {
 
 
 def handle(w: Window, answers: list[tuple[str, str]] | None = None,
-           forms: list[dict] | None = None) -> Seen:
+           forms: list[dict] | None = None, *, may_act: Callable[[], bool] | None = None) -> Seen:
     """Read one window and answer it per the policy above."""
     info = read(w)
     kind = classify(w, info)
     seen = Seen(kind, info.get("title", w.title), _text(info), info.get("buttons", []), raw=info)
+    def apply(actions: list[dict], answer: str, expected: bool = False) -> None:
+        if may_act is None or may_act():
+            act(w, actions)
+            seen.answer, seen.expected = answer, expected
+
     if kind == "toast" or kind == "unknown":
         return seen
     if kind == "message_box":
         for pat, btn in answers or []:
             if re.search(pat, seen.text, re.I) and btn in seen.buttons:
-                act(w, [{"do": "press", "target": btn}])
-                seen.answer, seen.expected = btn, True
+                apply([{"do": "press", "target": btn}], btn, True)
                 return seen
     if kind == "form":
         names = {r.get("name") for r in info["radios"]} | {c.get("name") for c in info["checks"]}
         for f in forms or []:
             if re.search(f["title"], seen.title) and all(r in names for r in f["requires"]):
-                act(w, f["actions"])
-                seen.answer, seen.expected = f["label"], True
+                apply(f["actions"], f["label"], True)
                 return seen
     for btn in SAFE_ORDER:
         if btn in seen.buttons and btn not in NEVER:
-            act(w, [{"do": "press", "target": btn}])
-            seen.answer = btn
+            apply([{"do": "press", "target": btn}], btn)
             break
     return seen
 

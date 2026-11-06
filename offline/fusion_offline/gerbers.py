@@ -164,44 +164,20 @@ def parse_excellon(path: str) -> DrillFile:
 
 
 def match_drills(golden: DrillFile, made: DrillFile, tol: float = 0.02) -> dict:
-    """Align both hole clouds on their min corner (probing a Y flip) and pair holes
-    of equal diameter within `tol` mm. Returns counts + leftovers."""
-    def norm(holes, flip_y):
-        xs = [x for _, x, _ in holes]
-        ys = [y for _, _, y in holes]
-        x0 = min(xs)
-        if flip_y:
-            y1 = max(ys)
-            return [(d, x - x0, y1 - y) for d, x, y in holes]
-        y0 = min(ys)
-        return [(d, x - x0, y - y0) for d, x, y in holes]
-
-    if not golden.holes or not made.holes:
-        return {"matched": 0, "golden_total": len(golden.holes),
-                "made_total": len(made.holes), "unmatched_golden": golden.holes,
-                "unmatched_made": made.holes, "flipped_y": False}
-
-    best = None
-    for flip in (False, True):
-        g = norm(golden.holes, False)
-        k = norm(made.holes, flip)
-        pool = list(k)
-        matched = 0
-        left_g = []
-        for d, x, y in g:
-            hit = next((i for i, (d2, x2, y2) in enumerate(pool)
-                        if abs(d2 - d) <= 0.01 and abs(x2 - x) <= tol and abs(y2 - y) <= tol),
-                       None)
-            if hit is None:
-                left_g.append((d, x, y))
-            else:
-                pool.pop(hit)
-                matched += 1
-        result = {"matched": matched, "golden_total": len(g), "made_total": len(made.holes),
-                  "unmatched_golden": left_g, "unmatched_made": pool, "flipped_y": flip}
-        if best is None or result["matched"] > best["matched"]:
-            best = result
-    return best
+    """Pair holes of equal diameter within tolerance in the board coordinate system."""
+    pool = list(made.holes)
+    left_g = []
+    for d, x, y in golden.holes:
+        hit = next((i for i, (d2, x2, y2) in enumerate(pool)
+                    if abs(d2 - d) <= 0.01 and abs(x2 - x) <= tol and abs(y2 - y) <= tol),
+                   None)
+        if hit is None:
+            left_g.append((d, x, y))
+        else:
+            pool.pop(hit)
+    return {"matched": len(golden.holes) - len(left_g), "golden_total": len(golden.holes),
+            "made_total": len(made.holes), "unmatched_golden": left_g, "unmatched_made": pool,
+            "flipped_y": False}
 
 
 
@@ -424,7 +400,7 @@ def check(path: str, root: ET.Element, copper_layers: int, tol_mm: float = 0.05)
         if m["unmatched_golden"]:
             problems.append(f"{len(m['unmatched_golden'])} design holes missing or moved in the drill files, e.g. "
                             f"{[(d, round(x, 2), round(y, 2)) for d, x, y in m['unmatched_golden'][:4]]} "
-                            "(relative to the hole pattern's corner)")
+                            "(board coordinates in mm)")
         if m["unmatched_made"]:
             problems.append(f"{len(m['unmatched_made'])} holes in the drill files that the design does not have")
     info["design_counts"] = counts

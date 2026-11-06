@@ -252,6 +252,7 @@ class SchPart:
     package: str | None
     user_value: bool
     attributes: dict[str, str] = field(default_factory=dict)
+    connects: set[tuple[str, str, str]] | None = None  # Includes uninvoked gates in the resolved device.
 
 
 @dataclass
@@ -337,7 +338,10 @@ def parse_schematic_design(root: ET.Element) -> SchematicDesign:
             name=p.get("name", ""), library=p.get("library", ""), deviceset=p.get("deviceset", ""),
             device=p.get("device", ""), technology=tech_name, value=p.get("value") or attrs.get("VALUE", ""),
             package=dev.get("package") if dev is not None else None,
-            user_value=(ds is not None and ds.get("uservalue") == "yes"), attributes=attrs)
+            user_value=(ds is not None and ds.get("uservalue") == "yes"), attributes=attrs,
+            connects={(c.get("gate", ""), c.get("pin", ""), pad)
+                      for c in dev.iterfind("./connects/connect") for pad in c.get("pad", "").split()}
+                     if dev is not None else None)
         if ds is not None and lib is not None:
             symbols = {s.get("name"): s for s in lib.iterfind("./symbols/symbol")}
             for g in ds.iterfind("./gates/gate"):

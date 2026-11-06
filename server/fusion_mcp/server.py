@@ -105,30 +105,39 @@ def list_designs(folder: str | None = None) -> dict:
 
 
 @tool(ADDITIVE)
-def open_design(name: str, folder: str | None = None, allow_unsaved: bool = False) -> dict:
+def open_design(name: str, folder: str | None = None, allow_unsaved: bool = False,
+                data_file_id: str | None = None) -> dict:
     """Make a design (schematic + board) current. If any of its documents is already open,
     Fusion just switches to it (already_open=true). Otherwise it is opened from the active
     project, which is refused while an open design has unsaved changes (that once froze
     Fusion): save first, or pass allow_unsaved=true to open it anyway. Projects are never
     searched recursively: pass folder= ('Boards/Rock'); by name alone the folder it was last
     found or seen open in is tried first, then the project's top folder. Switching designs
-    affects every Claude session using Fusion."""
-    return session.bridge.call("open_design", {"name": name, "folder": folder, "allow_unsaved": allow_unsaved},
-                               timeout=180)
+    affects every client session using Fusion. A known data_file_id opens the exact cloud file
+    without enumerating the project; its name, kind and project are checked."""
+    return session.bridge.call("open_design", {"name": name, "folder": folder, "allow_unsaved": allow_unsaved,
+                                               "data_file_id": data_file_id}, timeout=180)
 
 
 @tool(ADDITIVE)
-def open_library(name: str, folder: str | None = None, allow_unsaved: bool = False) -> dict:
+def open_library(name: str, folder: str | None = None, allow_unsaved: bool = False,
+                 data_file_id: str | None = None) -> dict:
     """Open a Fusion library (.flbr) from the active project in the library editor (or switch to
-    it if open). allow_unsaved as in open_design."""
+    it if open). allow_unsaved and data_file_id as in open_design."""
     return session.bridge.call("open_design", {"name": name, "folder": folder, "kind": "library",
-                                               "allow_unsaved": allow_unsaved}, timeout=180)
+                                               "allow_unsaved": allow_unsaved, "data_file_id": data_file_id}, timeout=180)
 
 
 @tool(ADDITIVE)
 def new_design(name: str | None = None, folder: str | None = None) -> dict:
     """Create a new electronics design with a schematic and a board. With `name`, it is saved right
-    away into the active project (optionally inside `folder`, created if missing)."""
+    away into the active project (optionally inside `folder`, created if missing).
+    Fusion 2706.1.14 requires manual creation/linking because its commands open unlinked tabs."""
+    version = str(session.bridge.call("ping", {}, timeout=15).get("fusion_version") or "")
+    if version == "2706.1.14":
+        raise ValueError(f"Fusion {version}: automatic Electronics creation cannot verify linked children. "
+                         "Please create, link and save the Electronics Design, schematic and PCB in Fusion, "
+                         "then use open_design. No documents were created by this call.")
     return session.bridge.call("new_design", {"name": name, "folder": folder}, timeout=240)
 
 
@@ -152,7 +161,7 @@ def get_board_summary() -> dict:
         "size_mm": fab.size_mm, "outline_bbox_mm": fab.outline,
         "copper_layers": [{"number": n, "name": _layer_name(b, n)} for n in b.copper_layers],
         "parts": len(fab.elements), "nets": len(b.signals),
-        "routed_nets": sum(1 for x in b.signals.values() if x.wires),
+        "routed_nets": sum(1 for x in b.signals.values() if any(w.layer in b.copper_layers for w in x.wires)),
         "vias": sum(len(x.vias) for x in b.signals.values()),
         "net_classes": [{"name": name, **v} for name, v in eff.items()],
         "rules": {k: b.rules.get(k) for k in ("mdWireWire", "msWidth", "msDrill", "rvViaOuter", "layerSetup")},
@@ -1053,8 +1062,10 @@ def _resolve_pin(sch, spec: str):
     if len(fields) == 2: part, pin = fields; gate = None
     elif len(fields) == 3: part, gate, pin = fields
     else: raise ValueError("Use PART.PIN or PART.GATE.PIN")
-    cand = [p for p in sch.pins if p.part == part and (gate is None or p.gate == gate)
-            and (p.pin == pin or pin in (p.pad or "").split())]
+    pins = [p for p in sch.pins if p.part == part and (gate is None or p.gate == gate)]
+    cand = [p for p in pins if p.pin == pin]
+    if not cand:
+        cand = [p for p in pins if pin in (p.pad or "").split()]
     if not cand: raise KeyError(f"no pin {spec!r}")
     if len(cand) != 1: raise ValueError(f"Ambiguous pin {spec!r}; use PART.GATE.PIN")
     return cand[0]
@@ -1670,7 +1681,7 @@ def route_pair(p_net: str, n_net: str, centreline_mm: list[list[float]], width_m
                layer: str = "top", p_tail_mm: list | None = None, n_tail_mm: list | None = None,
                p_head_mm: list | None = None, n_head_mm: list | None = None,
                max_skew_mm: float = 0.1, tune: bool = True, via_drill_mm: float = 0.3,
-               via_diameter_mm: float = 0.6, chamfer_mm: float = 0.5, dry_run: bool = False,
+               via_diameter_mm: float | None = None, chamfer_mm: float = 0.5, dry_run: bool = False,
                layer_changes: list[dict] | None = None, margin_mm: float = 0.01,
                tune_style: str = "rounded", tune_radius_mm: float = 0.25, tune_flat_mm: float = 0.1,
                tune_gap_mm: float = 0.1, tune_max_height_mm: float = 0.6, tune_at: str = "longest",
@@ -1694,6 +1705,7 @@ def route_pair(p_net: str, n_net: str, centreline_mm: list[list[float]], width_m
     margin, or the pair pitch if wider), each trace fanning out to its via at 45 degrees and back,
     so the pair stays coupled at the same width and gap on the new layer. Needs a little straight
     centreline either side of the point.
+    Via diameter defaults to the size required by the board rules and annular-ring policy.
     Every 90-degree corner (typically where a trace leaves a pin) becomes two 45-degree bends,
     chamfer_mm along each leg (0 keeps hard corners).
     The shorter trace gets bumps on a straight run on any layer (tails after vias included)
@@ -1796,7 +1808,7 @@ def route_pair(p_net: str, n_net: str, centreline_mm: list[list[float]], width_m
             cmds.append(C.add_trace(net, wmap[t["layer"]], t.get("width", width_mm), pts))
             checks.append((net, wmap[t["layer"]], pts))
         for vx, vy in plan[side]["vias"]:
-            cmds.append(C.add_via(net, vx, vy, via_drill_mm, via_diameter_mm))
+            cmds.append(C.add_via(net, vx, vy, via_drill_mm, plan["via_diameter_mm"]))
     vias = [(plan[s]["net"], v) for s in ("p", "n") for v in plan[s]["vias"]]
 
     def verify(before, after):
@@ -3265,15 +3277,22 @@ def autoroute(nets: list[str] | None = None, engine: str = "fusion", timeout_s: 
                     f.write(AR.ctl_without_top_router(text))
                 session.bridge.call("run", {"commands": f"AUTO LOAD {C.q(job)};", "editor": "board"}, timeout=60)
                 restore = True
+        unknown = False
         try:
             run = AR.run(session.bridge, cmd, timeout_s,
                          answers=[(AR.PLANE_LAYERS_PROMPT, "Yes")] if route_past_planes else None)
+        except AR.AutorouteStateUnknown as ex:
+            unknown = True
+            return {"ok": False, "status": "state_unknown", "message": str(ex),
+                    "settings_backup": saved if restore else None,
+                    "next": "Inspect Fusion and wait for the job to stop before any further writes."}
         finally:
-            if restore:
+            if restore and not unknown:
                 with contextlib.suppress(BridgeOpError, BridgeUnavailable):
                     session.bridge.call("run", {"commands": f"AUTO LOAD {C.q(saved)};", "editor": "board"}, timeout=60)
             import shutil
-            shutil.rmtree(tmp, ignore_errors=True)
+            if not (unknown and restore):
+                shutil.rmtree(tmp, ignore_errors=True)
         m0 = _routing_state(before)
         after = session.snapshot(schematic=False)
         m1 = _routing_state(after)
@@ -3864,7 +3883,12 @@ def add_library_variant(part_id: str, deviceset: str, variant: str, pin_map: dic
     norm = lambda m: {k: sorted(v.split()) for k, v in m.items()}
     if norm(got["connects"]) != norm(connects):
         raise WriteFailed(f"pin-pad connections are {got['connects']}, expected {connects}")
-    if got["technologies"] != technologies:
+    # Fusion inserts these blank catalog fields; other additions still indicate a mismatch.
+    blank_defaults = {"CATEGORY_L1", "CATEGORY_L2", "DATASHEET", "MANUFACTURER", "MPN", "VENDOR", "VPN"}
+    actual = {t: {k: v for k, v in attrs.items()
+                  if k in technologies.get(t, {}) or k not in blank_defaults or v != ""}
+              for t, attrs in got["technologies"].items()}
+    if actual != technologies:
         raise WriteFailed(f"technologies are {got['technologies']}, expected {technologies}")
     return {"ok": True, "deviceset": info["deviceset"], "variant": variant, "package": got["package"],
             "package_reused": have is not None, "connects": got["connects"], "technologies": got["technologies"],

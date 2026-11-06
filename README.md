@@ -85,7 +85,7 @@ GND stitched, silkscreen and 3D models checked.*
   against the design (every layer, the outline, every drilled hole, paste and
   mask on every SMD pad).
 
-`fusion-electronics-mcp tools` lists all 106 tools.
+`fusion-electronics-mcp tools` lists the available tools.
 
 ## Requirements
 
@@ -417,3 +417,14 @@ Library tools accept an optional `library_directory` for per-call project select
 It does not change another call, another server session, or the configured default.
 Keep separate designs in separate external library directories. No project-specific
 counts, parts, net names, or electrical rules are built into the server.
+
+
+### Integration safeguards
+
+- `open_design` and `open_library` accept an optional `data_file_id` for direct cloud lookup. The add-in validates the file's name, kind, project and requested folder, and remembers known IDs to avoid repeated project enumeration.
+- Document activation and closing use the linked Electronics Design family, including differently named schematic and PCB tabs. Creating a design checks that both children are actually linked before reporting success. Missing compatible toolbar commands are reported as unsupported. On Fusion 2706.1.14, `new_design` refuses before opening tabs because native creation did not establish verifiable links; create, link and save the family in Fusion first.
+- 3D updates require an observed PCB association or an exact saved file reference; unrelated mechanical documents are not used for Pull.
+- Autorouting dispatches under one transaction lock. An uncertain Fusion result returns `state_unknown`; inspect Fusion and let the job stop before retrying. Any retained autorouter settings backup is included in the result.
+- Differential-pair reports measure copper only; unrouted pairs have no passing skew verdict. Via-bearing pair routes derive omitted diameters from the board's restring rules and annular-ring policy, and reject drills below the board minimum before writing.
+- Pin evidence checks include device connections on uninvoked gates and reject extra mappings to reviewed unconnected pads. Connector rules require an existing part and a nonempty pad map.
+- Drill comparisons use board coordinates; shifted or mirrored drill output is not silently realigned. Native CAM export remains a manual operation.

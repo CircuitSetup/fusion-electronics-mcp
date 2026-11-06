@@ -179,6 +179,7 @@ class Doc:
 
     def activate(self):
         self.activated += 1
+        self.isActive = True
 
 
 class OpenDesignFolderTest(unittest.TestCase):

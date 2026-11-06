@@ -74,6 +74,13 @@ def compare_pin_evidence(schematic, parts, evidence, references=None):
         for placed in matches:
             out.append(finding('active_package','pass' if placed.package==e['package'] else 'fail',placed.package,e['package'],[placed.name]))
             out.append(finding('active_mpn','unknown' if not (placed.attributes.get('MPN') or placed.attributes.get('MP')) else 'pass' if (placed.attributes.get('MPN') or placed.attributes.get('MP'))==e['mpn'] else 'fail',(placed.attributes.get('MPN') or placed.attributes.get('MP')),e['mpn'],[placed.name]))
+            expected = {(row['gate'], row['pin'], row['pad']) for row in e['pins'] if row.get('pin') is not None}
+            active = placed.connects if placed.connects is not None else {
+                (p.gate, p.pin, pad) for p in schematic.pins if p.part == placed.name
+                for pad in (p.pad or '').split()}
+            for gate, pin_name, pad in sorted(active - expected):
+                out.append(finding('active_pin_mapping', 'fail', pad, None, [placed.name, gate, pin_name],
+                                   [{'source': e['source']}]))
             for row in e['pins']:
                 if row.get('pin') is None: continue
                 p=schematic.pin(placed.name,row['pin'],row['gate']); refs=[placed.name,row['gate'],row['pin']]

@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 import statistics
+from dataclasses import replace
 
 from .design import BoardDesign, Signal, Wire
 
@@ -65,6 +66,10 @@ def _seg_point_dist(px, py, w: Wire) -> float:
     return math.hypot(px - (w.x1 + t * dx), py - (w.y1 + t * dy))
 
 
+def _copper_signal(signal: Signal) -> Signal:
+    return replace(signal, wires=[w for w in signal.wires if 1 <= w.layer <= 16])
+
+
 def pair_gap(p: Signal, n: Signal, step: float = 0.1) -> float | None:
     """The coupled edge-to-edge gap: P is sampled every `step` mm (arcs
     followed) against the nearest N copper on the same layer, and the gap
@@ -95,7 +100,11 @@ def pair_gap(p: Signal, n: Signal, step: float = 0.1) -> float | None:
 
 def pair_report(board: BoardDesign, p_name: str, n_name: str, max_skew_mm: float | None = None) -> dict:
     p, n = board.signals[p_name], board.signals[n_name]
-    skew = abs(p.length - n.length)
+    has_airwires = any(w.layer == 19 for w in p.wires + n.wires)
+    p, n = _copper_signal(p), _copper_signal(n)
+    length_p, length_n = p.length, n.length
+    routing_complete = length_p > 0 and length_n > 0 and not has_airwires
+    skew = abs(length_p - length_n)
     limit, source = max_skew_mm, "argument"
     if limit is None:
         v = board.rules.get("dpMaxLengthDifference")
@@ -106,10 +115,11 @@ def pair_report(board: BoardDesign, p_name: str, n_name: str, max_skew_mm: float
     widths = sorted({round(w.width, 4) for w in p.wires + n.wires})
     return {
         "p": p_name, "n": n_name,
-        "length_p_mm": round(p.length, 3), "length_n_mm": round(n.length, 3),
+        "length_p_mm": round(length_p, 3), "length_n_mm": round(length_n, 3),
         "skew_mm": round(skew, 3), "skew_limit_mm": limit, "skew_limit_source": source,
-        "longer": (p_name if p.length > n.length else n_name) if skew > 1e-6 else None,
-        "within_limit": None if limit in (None, 0) else skew <= limit,
+        "longer": (p_name if length_p > length_n else n_name) if skew > 1e-6 else None,
+        "routing_complete": routing_complete,
+        "within_limit": skew <= limit if routing_complete and limit not in (None, 0) else None,
         "widths_mm": widths, "gap_mm": pair_gap(p, n),
         "vias": [len(p.vias), len(n.vias)],
         "layers": sorted({w.layer for w in p.wires + n.wires}),
@@ -162,7 +172,7 @@ def estimate_impedance(width_mm: float, dielectric_mm: float, copper_mm: float, 
 
 
 def dominant_layer(sig: Signal) -> int | None:
-    by = sig.length_by_layer()
+    by = _copper_signal(sig).length_by_layer()
     return max(by, key=by.get) if by else None
 
 

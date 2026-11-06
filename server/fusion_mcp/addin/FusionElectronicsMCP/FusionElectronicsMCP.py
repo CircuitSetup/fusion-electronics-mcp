@@ -34,7 +34,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.6"
+ADDIN_VERSION = "0.14.11"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -143,6 +143,132 @@ def _kind_of(doc):
     return "other"
 
 
+_DESIGN_PRODUCTS = {"design": ("EcadDesignDocument", "ecadDesign"),
+                    "board": ("BoardDocument", "board"),
+                    "schematic": ("SchematicDocument", "schematic")}
+
+
+def _document_product(doc, kind):
+    cls_name, attr = _DESIGN_PRODUCTS[kind]
+    product = getattr(doc, attr, None)
+    if product is None:
+        cls = getattr(adsk.electron, cls_name, None)
+        if cls is not None:
+            product = getattr(cls.cast(doc), attr, None)
+    return product
+
+
+def _file_id(doc):
+    return getattr(getattr(doc, "dataFile", None), "id", None)
+
+
+def _same_document(left, right):
+    if (left is None or right is None
+            or not getattr(left, "isValid", True) or not getattr(right, "isValid", True)):
+        return False
+    if left == right:
+        return True
+    return _same_file_version(getattr(left, "dataFile", None), getattr(right, "dataFile", None))
+
+
+def _same_file_version(left_file, right_file):
+    left_id, right_id = getattr(left_file, "versionId", None), getattr(right_file, "versionId", None)
+    if left_id and right_id:
+        return left_id == right_id
+    version = getattr(left_file, "versionNumber", None)
+    return bool(version is not None and version == getattr(right_file, "versionNumber", None)
+                and (file_id := getattr(left_file, "id", None)) and file_id == getattr(right_file, "id", None))
+
+
+def _product_document(product, kind, docs):
+    if product is not None:
+        return next((doc for doc in docs if _kind_of(doc) == kind
+                     and _document_product(doc, kind) == product), None)
+    return None
+
+
+def _family_peer(doc, kind, docs):
+    own = _kind_of(doc)
+    if own not in _DESIGN_PRODUCTS or kind == own:
+        return None
+    product = _document_product(doc, own)
+    prop = kind if own == "design" else {"board": "linkedBoard", "schematic": "linkedSchematic"}.get(kind)
+    return _product_document(getattr(product, prop, None), kind, docs) if prop else None
+
+
+def _family_design(doc):
+    kind = _kind_of(doc)
+    if kind not in _DESIGN_PRODUCTS:
+        return None
+    product = _document_product(doc, kind)
+    return product if kind == "design" else getattr(product, "parentDesign", None)
+
+
+_created_families = []
+
+
+def _reference_files(doc, field, evidence=None):
+    """Read direct reference metadata without opening files or listing projects."""
+    try:
+        owner = doc if field == "documentReferences" else getattr(doc, "dataFile", None)
+        refs = getattr(owner, field, None)
+        count = refs.count if refs is not None else 0
+        if evidence is not None:
+            evidence[field] = {"count": count, "files": []}
+        if count > 32:
+            raise ValueError("reference count exceeds safety limit")
+        for i in range(count):
+            ref = refs.item(i)
+            peer = getattr(ref, "referencedDocument", None) if field == "documentReferences" else None
+            file = (getattr(ref, "dataFile", None) if field == "documentReferences" else ref)
+            if file is None and peer is not None:
+                file = getattr(peer, "dataFile", None)
+            if evidence is not None:
+                evidence[field]["files"].append({"name": getattr(file, "name", None) or getattr(peer, "name", None),
+                                                  "id": getattr(file, "id", None),
+                                                  "version_id": getattr(file, "versionId", None)})
+            yield peer, file
+    except Exception as exc:
+        if evidence is not None:
+            evidence[field] = {**evidence.get(field, {}), "error": str(exc)}
+
+
+def _family_keys(docs):
+    _created_families[:] = [family for family in _created_families if getattr(family[0], "isValid", True)]
+    rows = [(doc, _family_design(doc)) for doc in docs]
+    parents = [(doc, design) for doc, design in rows if _kind_of(doc) == "design"]
+    children = [doc for doc, _ in rows if _kind_of(doc) in ("board", "schematic")]
+    claimed = []
+    def matches_reference(child, refs):
+        return any(_same_document(child, peer)
+                   or _same_file_version(getattr(child, "dataFile", None), file) for peer, file in refs)
+
+    for parent, design in parents:
+        refs = list(_reference_files(parent, "documentReferences")) if children else []
+        observed = [child for root, *members in _created_families if _same_document(root, parent) for child in members]
+        members = [child for child in children if matches_reference(child, refs)
+                   or any(_same_document(child, peer) for peer in observed)]
+        matched_kinds = {_kind_of(child) for child in members}
+        remaining = [child for child in children if _kind_of(child) not in matched_kinds]
+        if remaining:
+            saved = list(_reference_files(parent, "childReferences"))
+            members.extend(child for child in remaining if matches_reference(child, saved))
+        claimed.append(((parent, design), members))
+    for doc, design in rows:
+        matches = [key for key, members in claimed if any(_same_document(doc, member) for member in members)]
+        if len(matches) > 1:
+            raise BridgeError("ambiguous", f"more than one Electronics design references {doc.name!r}")
+        root = _product_document(design, "design", docs)
+        yield doc, matches[0] if matches else (root if root is not None else doc, design)
+
+
+def _same_family(left, right):
+    left_doc, left_design = left
+    right_doc, right_design = right
+    return (_same_document(left_doc, right_doc) or
+            (left_design is not None and right_design is not None and left_design == right_design))
+
+
 def _docs():
     return [_app.documents.item(i) for i in range(_app.documents.count)]
 
@@ -206,15 +332,21 @@ def op_activate(args):
     name = args.get("name")
     cand = [d for d in _docs() if _kind_of(d) == kind and (name is None or d.name == name)]
     if name is None and _app.activeDocument is not None:
-        # prefer the document belonging to the active design, else any of that kind
-        same = [d for d in cand if d.name == _app.activeDocument.name]
-        cand = same or cand
+        active = _app.activeDocument
+        if _kind_of(active) in _DESIGN_PRODUCTS and kind in _DESIGN_PRODUCTS:
+            families = list(_family_keys(_docs()))
+            active_key = next((key for doc, key in families if _same_document(doc, active)), (active, _family_design(active)))
+            peer = _family_peer(active, kind, cand)
+            cand = [doc for doc, key in families if _kind_of(doc) == kind
+                    and (_same_document(doc, peer) or _same_family(key, active_key))]
+            if len(cand) > 1:
+                raise BridgeError("ambiguous", f"more than one {kind} revision matches the active Electronics design")
     if not cand:
         raise BridgeError("not_open", f"no open {kind} document named {name!r}")
     cand[0].activate()
     _settle(20)
-    if _product_kind() != kind:
-        raise BridgeError("activate_failed", f"activated {cand[0].name!r} but the editor is {_product_kind()}")
+    if _product_kind() != kind or not _same_document(_app.activeDocument, cand[0]):
+        raise BridgeError("activate_failed", f"Fusion did not activate {kind} document {cand[0].name!r}")
     return op_context({})
 
 
@@ -247,8 +379,7 @@ def _linked(kind):
     act = _app.activeDocument.name if _app.activeDocument is not None else None
     same = [d for d in cand if d.name == act]
     if same or len(cand) == 1:
-        d = (same or cand)[0]
-        return d.board if kind == "board" else d.schematic
+        return _document_product((same or cand)[0], kind)
     if not cand:
         raise BridgeError("not_open", f"no {kind} is open")
     raise BridgeError("ambiguous", f"the active document is not an Electronics editor and {len(cand)} {kind}s "
@@ -469,6 +600,9 @@ def op_save(args):
     before = None
     with contextlib.suppress(Exception):
         before = doc.dataFile.versionNumber
+    if doc.isSaved and not doc.isModified:
+        return {"ok": True, "document": doc.name, "version_before": before, "version_after": before,
+                "modified": False}
     ok = doc.save(desc)
     after = before
     for _ in range(int(float(args.get("wait_s", 30)) / 0.25)):
@@ -495,32 +629,127 @@ def op_close(args):
     return op_context({})
 
 
+def _workspace_commands():
+    """Definitions behind visible controls in the current Fusion workspace."""
+    def commands(controls):
+        for i in range(controls.count):
+            control = controls.item(i)
+            if not control.isVisible:
+                continue
+            definition = getattr(control, "commandDefinition", None)
+            if definition is not None:
+                yield definition
+            children = getattr(control, "controls", None)
+            if children is not None:
+                yield from commands(children)
+
+    panels = _ui.activeWorkspace.toolbarPanels
+    for i in range(panels.count):
+        panel = panels.item(i)
+        if panel.isVisible:
+            yield from commands(panel.controls)
+
+
+def _workspace_command(label, command_id=None):
+    matches = {}
+    for cd in _workspace_commands():
+        if not cd.controlDefinition.isEnabled:
+            continue
+        if cd.id == command_id:
+            return cd
+        if cd.name == label:
+            matches[cd.id] = cd
+    if len(matches) != 1:
+        raise BridgeError("unsupported", f"no unique enabled {label!r} control in the active Fusion workspace")
+    return next(iter(matches.values()))
+
+
+def op_command_capabilities(args):
+    """Read-only inventory of relevant visible workspace command IDs."""
+    commands = {cd.id: {"id": cd.id, "name": cd.name, "enabled": cd.controlDefinition.isEnabled}
+                for cd in _workspace_commands()
+                if any(term in cd.name.casefold() for term in ("schematic", "pcb", "3d"))}
+    def info(doc):
+        return {"name": doc.name, "data_file_id": _file_id(doc)} if doc is not None else None
+
+    docs = _docs()
+    family = []
+    for doc in docs:
+        kind = _kind_of(doc)
+        if kind not in _DESIGN_PRODUCTS:
+            continue
+        row = {"name": doc.name, "kind": kind, "references": {}}
+        for field in ("documentReferences", "childReferences"):
+            list(_reference_files(doc, field, evidence=row["references"]))
+        try:
+            design = _family_design(doc)
+            parent = _product_document(design, "design", docs)
+            row.update(document=info(doc), parent=info(parent) if parent is not None else
+                       {"name": design.name, "data_file_id": None} if design is not None else None,
+                       board=info(_family_peer(doc, "board", docs)),
+                       schematic=info(_family_peer(doc, "schematic", docs)))
+        except Exception as exc:
+            row["error"] = str(exc)
+        family.append(row)
+    pull = _ui.commandDefinitions.itemById("PullPCB3DCmd")
+    pull_capability = {"id": "PullPCB3DCmd", "present": pull is not None}
+    if pull is not None:
+        pull_capability.update(name=pull.name, enabled=pull.controlDefinition.isEnabled)
+    return {"editor": _product_kind(), "commands": sorted(commands.values(), key=lambda cd: cd["id"]),
+            "electronics_documents": family, "pull_command": pull_capability}
+
+
 def op_new_design(args):
-    """New electronics design with a schematic and a board, via Fusion's own
-    commands (the API can only create mechanical documents). Verified on
-    2705.1.15: no dialogs; the design opens as 'Untitled'. Optionally saved
-    straight away under `name` in the active project's `folder`."""
-    for cid in ("NewElectronDesignDocumentCommand", "NewElectronSchDocumentCommand",
-                "NewElectronPcbDocumentCommand"):
-        cd = _ui.commandDefinitions.itemById(cid)
-        if cd is None:
-            raise BridgeError("unsupported", f"Fusion command {cid} not found in this build")
-        cd.execute()
-        _settle(40)
-    name = args.get("name")
-    if name:
-        design = next((d for d in _docs() if _kind_of(d) == "design" and d.isActive is not None
-                       and d.name.startswith("Untitled")), None)
-        folder = _app.data.activeProject.rootFolder
-        for part in [p for p in (args.get("folder") or "").split("/") if p]:
-            sub = None
-            for i in range(folder.dataFolders.count):
-                if folder.dataFolders.item(i).name == part:
-                    sub = folder.dataFolders.item(i)
-            folder = sub or folder.dataFolders.add(part)
-        if design is not None:
-            design.saveAs(name, folder, "created by fusion-electronics-mcp", "")
+    """Create the schematic and PCB from the new Electronics design's own toolbar."""
+    command = _ui.commandDefinitions.itemById("NewElectronDesignDocumentCommand")
+    if command is None:
+        raise BridgeError("unsupported", "this Fusion build has no New Electronics Design command")
+    before = _docs()
+    command.execute()
+    _settle(40)
+    doc = _app.activeDocument
+    if doc is None or doc in before or _kind_of(doc) != "design":
+        raise BridgeError("unsupported", "Fusion did not activate a new Electronics design")
+    family = [doc]
+    _created_families.append(family)
+    design = _document_product(doc, "design")
+    if design is None:
+        raise BridgeError("unsupported", "Fusion did not expose the new Electronics design; it is still open and unsaved")
+
+    def new_children(kind, existing):
+        return [child for child in _docs() if _kind_of(child) == kind
+                and not any(_same_document(child, old) for old in existing)]
+
+    observed = []
+    for kind, label in (("schematic", "New Schematic"), ("board", "New PCB")):
+        children = new_children(kind, before)
+        if not children:
+            if not _same_document(_app.activeDocument, doc):
+                doc.activate()
+                _settle(20)
+            if not _same_document(_app.activeDocument, doc):
+                raise BridgeError("unsupported", "cannot activate the new Electronics design")
+            try:
+                child_command = _workspace_command(label)
+            except BridgeError as ex:
+                raise BridgeError(ex.code, f"{ex}. The new Electronics design is still open and unsaved.") from None
+            existing = _docs()
+            child_command.execute()
             _settle(40)
+            children = new_children(kind, existing)
+        if len(children) != 1:
+            raise BridgeError("unsupported", f"Fusion did not open exactly one new {kind}; the new design is still open and unsaved")
+        observed.append(children[0])
+    sch, board = design.schematic, design.board
+    if (sch is None or board is None or sch.parentDesign is None or board.parentDesign is None
+            or sch.linkedBoard is None or board.linkedSchematic is None):
+        raise BridgeError("unsupported", "Fusion did not verify a linked schematic and PCB; the new design is still open and unsaved")
+    family.extend(observed)
+    if args.get("name"):
+        if not doc.saveAs(args["name"], _data_folder(args.get("folder")),
+                          "created by fusion-electronics-mcp", ""):
+            raise BridgeError("save_failed", "Fusion did not save the new Electronics design")
+        _settle(40)
     return op_context({})
 
 
@@ -585,15 +814,19 @@ def _folders():
         return {}
 
 
-def _remember_folder(project, name, ext, folder):
+def _remember_folder(project, name, ext, folder, file_id=None, project_id=None):
     """Note the folder a design was found in (best effort: never fails the call)."""
     if folder is None or not project or not name:
         return
     data = _folders()
-    key = f"{project}|{ext}|{name}"
-    if data.get(key) == folder:
+    key = f"{project_id or project}|{ext}|{name}"
+    previous = data.get(key)
+    if not file_id and isinstance(previous, dict) and previous.get("folder") == folder:
         return
-    data[key] = folder
+    value = {"folder": folder, "file_id": file_id, "project": project} if file_id or project_id else folder
+    if previous == value:
+        return
+    data[key] = value
     with contextlib.suppress(OSError):
         os.makedirs(INFO_DIR, exist_ok=True)
         tmp = FOLDERS_PATH + f".{os.getpid()}.tmp"
@@ -602,22 +835,34 @@ def _remember_folder(project, name, ext, folder):
         os.replace(tmp, FOLDERS_PATH)
 
 
+def _record_folder(value):
+    return value.get("folder") if isinstance(value, dict) else value
+
+
 def _known_folders(project):
-    return sorted({v for k, v in _folders().items() if k.startswith(f"{project}|")})
+    return sorted({folder for k, v in _folders().items() if k.startswith(f"{project}|")
+                   and isinstance(folder := _record_folder(v), str)})
 
 
-def _doc_project(d):
+def _find_project_file(file_id, project, folder, name, ext):
+    if file_id and project:
+        with contextlib.suppress(Exception):
+            f = _app.data.findFileById(file_id)
+            if _file_matches(f, project, folder, name, ext):
+                return _file_folder(f), f
+    return None
+
+
+def _file_matches(f, project, folder, name, ext):
+    return (f and project and f.name == name and f.fileExtension == ext
+            and f.parentProject.id == project.id
+            and _file_folder(f) is not None
+            and (folder is None or _norm_folder(folder) == _file_folder(f)))
+
+
+def _file_folder(data_file):
     try:
-        return d.dataFile.parentProject.name
-    except Exception:
-        return None
-
-
-def _doc_folder(d):
-    """A document's folder in its project as 'A/B' ('' for the top folder), or None when Fusion
-    does not say (an unsaved document, or one without a data file)."""
-    try:
-        node = d.dataFile.parentFolder
+        node = data_file.parentFolder
         parts = []
         while node is not None and not getattr(node, "isRoot", False):
             parts.append(node.name)
@@ -639,30 +884,48 @@ def op_open_design(args):
     folder = args.get("folder")
     ext = "flbr" if args.get("kind") == "library" else "fprj"
     kinds = ("library",) if ext == "flbr" else ("design", "board", "schematic")
-    mine = sorted((d for d in _docs() if d.name == name and _kind_of(d) in kinds),
+    active_project = getattr(getattr(_app, "data", None), "activeProject", None)
+    project = active_project.name if active_project else None
+    project_id = getattr(active_project, "id", None)
+    if args.get("project") and args["project"] != project:
+        raise BridgeError("unsupported", "make the requested project active in Fusion before opening its files")
+    file_id = args.get("data_file_id")
+    docs = [doc for doc in _docs() if _kind_of(doc) in kinds]
+    families = list(_family_keys(docs))
+    roots = []
+    unknown_folder = False
+    for doc, key in families:
+        root, design = key
+        if (any(_same_family(key, r) for r in roots)
+                or name not in (doc.name, root.name, getattr(design, "name", None))):
+            continue
+        f = getattr(root, "dataFile", None)
+        if file_id:
+            if getattr(f, "id", None) != file_id or not _file_matches(f, active_project, folder, name, ext):
+                continue
+        elif f and project_id and f.parentProject.id != project_id:
+            continue
+        where = _file_folder(f)
+        if folder is not None and where != _norm_folder(folder):
+            unknown_folder |= where is None
+            continue
+        roots.append(key)
+    if len(roots) > 1 or (not roots and unknown_folder):
+        raise BridgeError("ambiguous", f"cannot identify one open Electronics document named {name!r}; "
+                          "pass folder= or data_file_id=, or switch to it in Fusion")
+    if roots:
+        root = roots[0][0]
+        f = getattr(root, "dataFile", None)
+        owner = getattr(f, "parentProject", None)
+        _remember_folder(getattr(owner, "name", project), root.name, ext, _file_folder(f),
+                         getattr(f, "id", None), getattr(owner, "id", project_id))
+        doc = min((d for d, key in families if _same_family(key, roots[0])),
                   key=lambda d: kinds.index(_kind_of(d)))
-    if mine:
-        # a same-named design can be open from another folder: match the folder when one is given,
-        # and refuse to guess when the name alone is ambiguous
-        where = {id(d): _doc_folder(d) for d in mine}
-        known = sorted({f for f in where.values() if f is not None})
-        if folder is not None:
-            want = _norm_folder(folder)
-            hits = [d for d in mine if where[id(d)] == want]
-            if not hits and any(f is None for f in where.values()):
-                raise BridgeError("ambiguous", f"{name!r} is open but Fusion does not say which folder it is in, so "
-                                  f"it cannot be matched to folder {folder!r}. Switch to it in Fusion by hand, or "
-                                  "close it first.")
-            mine = hits
-        elif len(known) > 1:
-            raise BridgeError("ambiguous", f"{name!r} is open from more than one folder ("
-                              + ", ".join(repr(f or "top folder") for f in known)
-                              + "); pass folder= to say which one")
-    if mine:                                   # already open: bring it forward, never open it again
-        _remember_folder(_doc_project(mine[0]), name, ext, _doc_folder(mine[0]))
-        if not mine[0].isActive:
-            mine[0].activate()
+        if not doc.isActive:
+            doc.activate()
             _settle(20)
+            if not doc.isActive and getattr(_app, "activeDocument", None) != doc:
+                raise BridgeError("activate_failed", f"Fusion did not activate {doc.name!r}")
         res = op_context({})
         res["already_open"] = True
         return res
@@ -671,18 +934,28 @@ def op_open_design(args):
         raise BridgeError("unsaved", f"{', '.join(repr(u) for u in unsaved)} has unsaved changes. Opening another "
                           "design from the project while one has unsaved changes froze Fusion once; save it "
                           "first (save_design), open the design in Fusion by hand, or pass allow_unsaved=true.")
-    try:
-        project = _app.data.activeProject.name
-    except Exception:
-        project = None
-    cand = []
-    if folder is None:                         # name only: try the folder it was found in last time
-        elsewhere = sorted({k.split("|", 1)[0] for k in _folders() if k.endswith(f"|{ext}|{name}")} - {project})
-        if elsewhere and f"{project}|{ext}|{name}" not in _folders():
-            raise BridgeError("not_found", f"{name!r} was last seen in project {', '.join(map(repr, elsewhere))}, not the "
-                              f"active project {project!r}. Make that project active in Fusion's Data Panel (other "
-                              "projects are never listed: that froze Fusion), or open the design by hand.")
-        last = _folders().get(f"{project}|{ext}|{name}")
+    folders = _folders()
+    record = folders.get(f"{project_id}|{ext}|{name}", folders.get(f"{project}|{ext}|{name}"))
+    direct = None
+    if file_id:
+        direct = _find_project_file(file_id, active_project, folder, name, ext)
+        if direct is None:
+            raise BridgeError("not_found", f"no file with the supplied ID matches {name!r} in the active project and folder")
+    elif isinstance(record, dict):
+        last = record.get("folder")
+        if isinstance(last, str) and (folder is None or _norm_folder(folder) == last):
+            direct = _find_project_file(record.get("file_id"), active_project, last, name, ext)
+    cand = [direct] if direct else []
+    if not cand and folder is None:                         # name only: try the folder it was found in last time
+        if record is None:
+            elsewhere = sorted({
+                value.get("project") or key.split("|", 1)[0] if isinstance(value, dict) else key.split("|", 1)[0]
+                for key, value in folders.items() if key.endswith(f"|{ext}|{name}")
+            } - {project})
+            if elsewhere:
+                raise BridgeError("not_found", f"{name!r} was last seen in project {', '.join(map(repr, elsewhere))}, "
+                                  f"not the active project {project!r}. Make that project active in Fusion first.")
+        last = _record_folder(record)
         if last is not None:
             with contextlib.suppress(BridgeError):
                 _, found = _project_designs(folder=last, project=args.get("project"))
@@ -691,38 +964,73 @@ def op_open_design(args):
         try:
             proj, found = _project_designs(folder=folder, project=args.get("project"))
         except BridgeError as ex:
-            known = _known_folders(project)
+            known = sorted(set(_known_folders(project_id) + _known_folders(project)))
             if folder is None and known and ex.code in ("timeout", "not_found"):
                 raise BridgeError(ex.code, f"{ex}. Pass folder=; designs have been found in "
                                   + ", ".join(repr(k or "top folder") for k in known)) from None
             raise
         cand = [(p, f) for p, f in found if f.name == name and f.fileExtension == ext]
     if not cand:
-        known = [k for k in _known_folders(project) if k != _norm_folder(folder)]
+        known = sorted(set(_known_folders(project_id) + _known_folders(project)) - {_norm_folder(folder)})
         raise BridgeError("not_found", f"no {'library' if ext == 'flbr' else 'design'} {name!r} in "
                           f"{folder or 'the top folder'} of the active project {project!r}; pass folder= "
                           "(it is not searched recursively), or open it in Fusion by hand"
                           + (f". Designs have been found in {', '.join(repr(k or 'top folder') for k in known)}"
                              if known else ""))
-    _remember_folder(project, name, ext, cand[0][0])
-    _app.documents.open(cand[0][1])
+    path, file = cand[0]
+    _remember_folder(project, name, ext, path, getattr(file, "id", None), project_id)
+    _app.documents.open(file)
     _settle(40)
     return op_context({})
 
 
 def op_close_design(args):
-    """Close a design's board, schematic and design documents. Closing only
-    the design document does NOT discard edits to its board/schematic
-    (seen on 2705.1.15), so all three are closed explicitly."""
+    """Close the actual linked Electronics document family."""
     name = args.get("name")
-    docs = [d for d in _docs() if d.name == name and _kind_of(d) in ("board", "schematic", "design")]
-    if not docs:
+    open_docs = [d for d in _docs() if _kind_of(d) in _DESIGN_PRODUCTS]
+    families = list(_family_keys(open_docs))
+    roots = []
+    for doc, key in families:
+        root, design = key
+        if name in (doc.name, root.name, getattr(design, "name", None)) and not any(_same_family(key, r) for r in roots):
+            roots.append(key)
+    if not roots:
         raise BridgeError("not_open", f"design {name!r} is not open")
+    if len(roots) != 1:
+        raise BridgeError("ambiguous", f"more than one open Electronics design matches {name!r}")
+    docs = [doc for doc, key in families if _same_family(key, roots[0])]
+    design = roots[0][1]
+    kinds = {_kind_of(doc) for doc in docs}
+    if len(kinds) != len(docs):
+        raise BridgeError("ambiguous", f"more than one revision belongs to {name!r}; no documents were closed")
+    if design is not None:
+        created = next((members for parent, *members in _created_families
+                        if _same_document(parent, roots[0][0])), None)
+        for kind in ("board", "schematic"):
+            if kind in kinds:
+                continue
+            try:
+                linked = getattr(design, kind, None)
+            except RuntimeError as exc:
+                # A missing child link can throw even on an otherwise valid empty design.
+                missing_link = str(exc) in (f"InternalValidationError: {kind}Link",
+                                            "InternalValidationError: pcbLink" if kind == "board" else "")
+                if created is not None and missing_link and not any(_kind_of(child) == kind for child in created):
+                    continue
+                raise
+            if linked is not None:
+                raise BridgeError("unsupported", f"cannot verify every linked child of {name!r}; no documents were closed")
     if any(d.isModified for d in docs) and not args.get("discard_changes"):
         raise BridgeError("unsaved", f"{name!r} has unsaved changes; save first or pass discard_changes")
-    for kind in ("board", "schematic", "design"):
-        for d in [x for x in docs if _kind_of(x) == kind]:
-            d.close(False)
+    order = ("board", "schematic", "design")
+    for doc in sorted(docs, key=lambda d: order.index(_kind_of(d))):
+        current = next((d for d in _docs() if _same_document(d, doc)), None)
+        if current is not None:
+            if current.isModified and not args.get("discard_changes"):
+                raise BridgeError("unsaved", f"{current.name!r} has unsaved changes. The family close stopped "
+                                  "and earlier tabs may already be closed.")
+            if not current.close(False):
+                raise BridgeError("close_failed", f"Fusion could not close {doc.name!r}")
             _settle(5)
     return op_context({})
 
@@ -883,28 +1191,56 @@ def op_lib_device3d(args):
     return {"devices": out}
 
 
-def _pcb3d_design():
+_pcb3d_links = {}
+
+
+def _pcb3d_product(doc):
     import adsk.fusion  # type: ignore
-    for i in range(_app.documents.count):
-        doc = _app.documents.item(i)
-        with contextlib.suppress(Exception):
-            for k in range(doc.products.count):
-                des = adsk.fusion.Design.cast(doc.products.item(k))
-                if des and des.rootComponent.allOccurrences.count:
-                    return doc, des
-    return None, None
+    for i in range(doc.products.count):
+        design = adsk.fusion.Design.cast(doc.products.item(i))
+        if design and design.rootComponent.allOccurrences.count:
+            return design
+    return None
+
+
+def _pcb3d_link():
+    active = _app.activeDocument
+    parent = _family_design(active)
+    docs = _docs()
+    for board, pcb in _pcb3d_links.values():
+        if board not in docs or pcb not in docs:
+            continue
+        if (_same_document(active, board) or _same_document(active, pcb)
+                or (parent is not None and parent == _family_design(board))):
+            return board, pcb
+    mechanical = [doc for doc in docs if _kind_of(doc) == "other" and getattr(doc, "dataFile", None) is not None]
+    matches = []
+    if mechanical:
+        for board in (doc for doc in docs if _kind_of(doc) == "board"):
+            board_active = _same_document(active, board) or (parent is not None and parent == _family_design(board))
+            candidates = mechanical if board_active else [doc for doc in mechanical if _same_document(active, doc)]
+            if not candidates:
+                continue
+            refs = list(_reference_files(board, "childReferences"))
+            matches.extend((board, doc) for doc in candidates
+                           if any(_same_file_version(doc.dataFile, file) for _, file in refs)
+                           and _pcb3d_product(doc) is not None)
+    if len(matches) > 1:
+        raise BridgeError("ambiguous", "more than one saved 3D PCB association matches the active document")
+    return matches[0] if matches else (None, None)
 
 
 def op_pcb3d_bodies(args):
     """Read-only: in the open 3D PCB, each board part's height range (mm, z) next to the board's,
     so a model hanging on the wrong side shows up. Parts are found by reference designator at
     any depth (Fusion nests them under 'Packages' in a new 3D PCB, at the top in older ones)."""
-    doc, des = _pcb3d_design()
+    board_doc, doc = _pcb3d_link()
+    des = _pcb3d_product(doc) if doc is not None else None
     if des is None:
-        raise BridgeError("not_found", "no 3D PCB document is open")
+        raise BridgeError("not_found", "no verified 3D PCB is open for the active design")
     refs = set()
     with contextlib.suppress(Exception):
-        els = _linked("board").elements
+        els = _document_product(board_doc, "board").elements
         refs = {els.item(i).name for i in range(els.count)}
     root = des.rootComponent
     board = None
@@ -938,36 +1274,42 @@ def op_pcb3d_bodies(args):
 
 
 def op_push_3d(args):
-    """Bring the 2D board's changes into its open 3D PCB without the preferences dialog: activate
-    the 3D PCB document and run 'Pull from 2D PCB' (PullPCB3DCmd)."""
-    doc, des = _pcb3d_design()
+    """Push a board to 3D or pull changes into its verified 3D PCB."""
+    board, doc = _pcb3d_link()
     if doc is None:
-        # no 3D PCB yet: Fusion's own Push to 3D PCB creates it (from the board editor)
         if _product_kind() != "board":
-            with contextlib.suppress(Exception):
-                _linked("board")
-        cd = _app.userInterface.commandDefinitions.itemById("Electron::Pcb3DViewAdvanced")
-        if cd is None:
-            raise BridgeError("unsupported", "this Fusion build has no Push to 3D PCB command")
-        cd.execute()
-        # Fusion builds the new 3D PCB after the dialog closes: wait for it (up to ~3 minutes)
+            if _product_kind() not in ("schematic", "design"):
+                raise BridgeError("wrong_editor", "activate the linked 2D PCB before pushing to 3D")
+            op_activate({"kind": "board"})
+        board = _app.activeDocument
+        before = _docs()
+        _workspace_command("Push to 3D PCB", "Switch3dPcbDocCmd").execute()
         deadline = time.time() + float(args.get("wait_s", 180))
         while time.time() < deadline:
-            _settle(20)                                  # about a second of event processing
-            doc, des = _pcb3d_design()
-            if doc is not None:
-                break
+            _settle(20)
+            active = _app.activeDocument
+            if active is not None and active not in before and _kind_of(active) == "other":
+                if _pcb3d_product(active) is not None:
+                    doc = active
+                    break
         if doc is None:
-            raise BridgeError("not_found", "Push to 3D PCB did not create a 3D PCB in time (a dialog may be waiting in Fusion)")
+            raise BridgeError("not_found", "Push did not activate a new 3D PCB and no open 3D PCB matched "
+                              "the board's saved references")
+        _pcb3d_links[_document_id(board)] = (board, doc)
         _settle(200)
         return op_pcb3d_bodies({})
     doc.activate()
     _settle(10)
-    cd = _app.userInterface.commandDefinitions.itemById(args.get("command") or "PullPCB3DCmd")
+    if _app.activeDocument != doc:
+        raise BridgeError("activate_failed", "cannot activate the verified 3D PCB")
+    cd = next((command for command in _workspace_commands() if command.id == "PullPCB3DCmd"
+               and command.controlDefinition.isEnabled), None)
     if cd is None:
-        raise BridgeError("unsupported", "this Fusion build has no PullPCB3DCmd")
+        cd = _ui.commandDefinitions.itemById("PullPCB3DCmd")
+    if cd is None or not cd.controlDefinition.isEnabled:
+        raise BridgeError("unsupported", "no enabled PullPCB3DCmd in the verified 3D PCB workspace")
     cd.execute()
-    _settle(int(args.get("settle", 400)))             # ~20 s for the 3D PCB to rebuild
+    _settle(int(args.get("settle", 400)))
     return op_pcb3d_bodies({})
 
 
@@ -1001,7 +1343,7 @@ OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export"
        "pours": op_pours, "create_package3d": op_create_package3d,
        "layers": op_layers, "violation_mode": op_violation_mode, "update_libraries": op_update_libraries,
        "elements3d": op_elements3d, "lib_device3d": op_lib_device3d, "pcb3d_bodies": op_pcb3d_bodies,
-       "push_3d": op_push_3d}
+       "push_3d": op_push_3d, "command_capabilities": op_command_capabilities}
 
 
 # ---------------------------------------------------------------------------

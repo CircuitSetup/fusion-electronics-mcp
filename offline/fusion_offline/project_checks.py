@@ -29,7 +29,8 @@ def check_project(schematic, board, rules):
                 observed={}; expected=r['pads'] if kind=='connector' else r['net']; missing=False
                 if kind=='connector':
                     refs=[r['ref']]
-                    for pad,want in r['pads'].items():
+                    missing = r['ref'] not in schematic.parts or not r['pads']
+                    for pad in r['pads']:
                         pins=[p for p in schematic.pins if p.part==r['ref'] and str(pad) in (p.pad or '').split()]
                         nets={net_of(schematic,p) for p in pins}
                         observed[pad]=sorted(nets,key=str); missing|=not pins

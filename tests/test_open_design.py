@@ -13,6 +13,7 @@ class Doc:
 
     def activate(self):
         self.activated += 1
+        self.isActive = True
 
 
 class OpenDesignTest(unittest.TestCase):
@@ -43,8 +44,12 @@ class OpenDesignTest(unittest.TestCase):
 
     def test_open_board_tab_counts_as_open(self):
         # only the board and schematic tabs are open, no design overview: switch, never re-open
-        board = Doc("PoE", "board")
-        self.addin._docs = lambda: [Doc("SoM", "board", modified=True, active=True), board, Doc("PoE", "schematic")]
+        parent = types.SimpleNamespace(name="PoE")
+        board = Doc("PoE Layout", "board")
+        board.board = types.SimpleNamespace(parentDesign=parent)
+        schematic = Doc("PoE Logic", "schematic")
+        schematic.schematic = types.SimpleNamespace(parentDesign=parent)
+        self.addin._docs = lambda: [Doc("SoM", "board", modified=True, active=True), board, schematic]
         res = self.addin.op_open_design({"name": "PoE"})
         self.assertTrue(res["already_open"])
         self.assertEqual(board.activated, 1)
@@ -52,9 +57,20 @@ class OpenDesignTest(unittest.TestCase):
 
     def test_design_overview_preferred_and_active_left_alone(self):
         design = Doc("PoE", "design", active=True)
-        self.addin._docs = lambda: [Doc("PoE", "board"), design]
+        board = Doc("PoE Layout", "board")
+        design.ecadDesign = types.SimpleNamespace(name=design.name)
+        board.board = types.SimpleNamespace(parentDesign=design.ecadDesign)
+        self.addin._docs = lambda: [board, design]
         self.addin.op_open_design({"name": "PoE"})
         self.assertEqual(design.activated, 0)                      # already the active one
+
+    def test_failed_activation_does_not_report_already_open(self):
+        doc = Doc("PoE", "design")
+        doc.activate = lambda: None
+        self.addin._docs = lambda: [doc]
+        with self.assertRaises(self.addin.BridgeError) as cm:
+            self.addin.op_open_design({"name": "PoE"})
+        self.assertEqual(cm.exception.code, "activate_failed")
 
     def test_unsaved_design_blocks_opening_from_the_project(self):
         self.addin._docs = lambda: [Doc("SoM", "board", modified=True, active=True), Doc("SoM", "design")]
@@ -98,6 +114,32 @@ class AddinVersionTest(unittest.TestCase):
         with open(os.path.join(BUNDLED_ADDIN, "FusionElectronicsMCP.py"), encoding="utf-8") as f:
             code = re.search(r'^ADDIN_VERSION = "([^"]+)"', f.read(), re.M).group(1)
         self.assertEqual(manifest_version(BUNDLED_ADDIN), code)
+
+
+class NewDesignBuildGuardTest(unittest.TestCase):
+    def test_unlinked_creation_build_refuses_before_mutation(self):
+        from unittest.mock import patch
+        from fusion_mcp import server
+        with patch.object(server.session.bridge, "call", return_value={"fusion_version": "2706.1.14"}) as call:
+            with self.assertRaisesRegex(server.ToolError, "create, link and save.*Fusion"):
+                server.new_design("Disposable", "Tests")
+        call.assert_called_once_with("ping", {}, timeout=15)
+
+    def test_other_build_preserves_arguments(self):
+        from unittest.mock import patch, call
+        from fusion_mcp import server
+        with patch.object(server.session.bridge, "call", side_effect=[{"fusion_version": "2706.1.15"}, {"ok": True}]) as bridge:
+            self.assertEqual(server.new_design("Disposable", "Tests"), {"ok": True})
+        self.assertEqual(bridge.call_args_list, [call("ping", {}, timeout=15),
+                         call("new_design", {"name": "Disposable", "folder": "Tests"}, timeout=240)])
+
+    def test_failed_version_check_does_not_create_documents(self):
+        from unittest.mock import patch
+        from fusion_mcp import server
+        with patch.object(server.session.bridge, "call", side_effect=RuntimeError("offline")) as call:
+            with self.assertRaisesRegex(RuntimeError, "offline"):
+                server.new_design()
+        call.assert_called_once_with("ping", {}, timeout=15)
 
 
 if __name__ == "__main__":

@@ -37,4 +37,42 @@ class EvidenceTest(unittest.TestCase):
         findings=E.validate_pin_evidence(p,evidence(),actual_sha256='a'*64)
         self.assertTrue(all(f['status']=='pass' for f in findings))
 
+
+    def test_active_mapping_preserves_reviewed_unmapped_pad(self):
+        from fusion_offline.design import SchematicDesign, SchPart, SchPin
+        e = evidence()
+        e['pins'].append(dict(e['pins'][0], pad='4', gate=None, pin=None, direction=None, intent='dnc'))
+        e['reviews'][-1]['content_sha256'] = E.content_hash(e)
+        placed = SchPart('U1', 'LIB', 'TEST', '', '', 'TEST', 'QFN', False, {'MPN': 'PART-1'})
+        for pads, extra, want in [('3 2', None, 'pass'), ('2 3 4', None, 'fail'), ('3 2', '4', 'fail')]:
+            with self.subTest(pads=pads, extra=extra):
+                pins = [SchPin('U1', 'A', 'IN', '1', 'in', 0, 0, 1),
+                        SchPin('U1', 'B', 'IN', pads, 'in', 0, 0, 1),
+                        SchPin('U1', 'B', 'EXTRA', extra, 'out', 0, 0, 1)]
+                schematic = SchematicDesign({'U1': placed}, {}, pins, 1, {})
+                findings = E.compare_pin_evidence(schematic, {'test': PART}, {'test': e})
+                self.assertEqual(E.report(findings)['status'], want)
+
+class UninvokedGateTest(unittest.TestCase):
+    def test_dnc_pad_mapped_by_uninvoked_gate_fails(self):
+        from pathlib import Path
+        import xml.etree.ElementTree as ET
+        from fusion_offline.design import parse_schematic_design
+        root = ET.parse(Path(__file__).parent / 'fixtures' / 'mini.sch').getroot()
+        ds = root.find(".//deviceset[@name='LDO']")
+        connects = ds.find('./devices/device/connects')
+        connects.remove(connects.find("connect[@pin='NC']"))
+        ET.SubElement(ds.find('gates'), 'gate', name='UNUSED', symbol='REG')
+        placed = root.find(".//parts/part[@name='U1']")
+        ET.SubElement(placed, 'attribute', name='MPN', value='PART-1')
+        pins = [{'pad': c.get('pad'), 'gate': c.get('gate'), 'pin': c.get('pin'),
+                 'direction': {'VIN': 'pwr', 'VOUT': 'out', 'EN': 'in'}[c.get('pin')],
+                 'intent': 'signal', 'pages': [1]} for c in connects]
+        pins.append({'pad': '4', 'gate': None, 'pin': None, 'intent': 'dnc'})
+        part = {'deviceset': 'LDO', 'device': ''}
+        e = {'package': 'SOT23', 'mpn': 'PART-1', 'pins': pins, 'source': 'synthetic'}
+        self.assertEqual(E.report(E.compare_pin_evidence(parse_schematic_design(root), {'x': part}, {'x': e}))['status'], 'pass')
+        ET.SubElement(connects, 'connect', gate='UNUSED', pin='VIN', pad='4')
+        self.assertEqual(E.report(E.compare_pin_evidence(parse_schematic_design(root), {'x': part}, {'x': e}))['status'], 'fail')
+
 if __name__=='__main__': unittest.main()

@@ -10,6 +10,11 @@ class ChecksTest(unittest.TestCase):
     def test_connector_reversal(self):
         for net,status in [('VOUT','pass'),('GND','fail')]:
             self.assertEqual(self.check({'type':'connector','ref':'R1','pads':{'2':net}})[0]['status'],status)
+    def test_connector_requires_existing_reference_and_pad_expectations(self):
+        for ref, pads in [('R1', {}), ('J_DOES_NOT_EXIST', {}), ('J_DOES_NOT_EXIST', {'2': 'VOUT'})]:
+            with self.subTest(ref=ref, pads=pads):
+                rule = {'type': 'connector', 'ref': ref, 'pads': pads}
+                self.assertEqual(self.check(rule)[0]['status'], 'unknown')
     def test_duplicate_channel_aliases(self):
         r=self.check({'type':'channels','assignments':[{'alias':'A','physical':1,'adc':'U1','adc_channel':0,'connector':'J1','position':1},{'alias':'A','physical':2,'adc':'U1','adc_channel':0,'connector':'J1','position':2}]})
         self.assertEqual(r[0]['status'],'fail')
