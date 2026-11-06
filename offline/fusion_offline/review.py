@@ -28,9 +28,9 @@ def _is_physical(part) -> bool:
 def _has_supply(s: SchematicDesign, seg) -> bool:
     """Supply symbols (GND, +3V3...) are package-less parts with a 'sup' pin;
     they name the net visibly, like a label."""
-    for part_name, pin_name in seg.pins:
+    for part_name, gate, pin_name in seg.qualified_pins:
         part = s.parts.get(part_name)
-        pin = s.pin(part_name, pin_name)
+        pin = s.pin(part_name, pin_name, gate)
         if part and not part.package and pin and pin.direction == "sup":
             return True
     return False
@@ -62,8 +62,8 @@ def _visible_groups(segments):
     through it; group those, so only truly separate pieces are counted."""
     groups: list[list] = []
     for seg in segments:
-        keys = {(seg.sheet,) + p for p in seg.pins}
-        hit = [g for g in groups if keys & {(x.sheet,) + p for x in g for p in x.pins}]
+        keys = {(seg.sheet,) + p for p in (seg.qualified_pins or seg.pins)}
+        hit = [g for g in groups if keys & {(x.sheet,) + p for x in g for p in (x.qualified_pins or x.pins)}]
         merged = [seg] + [x for g in hit for x in g]
         groups = [g for g in groups if g not in hit] + [merged]
     return groups
@@ -92,7 +92,7 @@ def review(s: SchematicDesign, jlc_attr: str = "JLCPCB") -> list[dict]:
     out: list[dict] = []
     add = lambda sev, rule, msg, refs: out.append({"severity": sev, "rule": rule, "message": msg, "refs": refs})
 
-    connected = {(r.part, r.pin) for n in s.nets.values() for r in n.pins}
+    connected = {(r.part, r.gate, r.pin) for n in s.nets.values() for r in n.pins}
     loose: dict[str, list] = {}
     for p in s.pins:
         part = s.parts.get(p.part)
@@ -100,7 +100,7 @@ def review(s: SchematicDesign, jlc_attr: str = "JLCPCB") -> list[dict]:
             continue
         if p.pin.upper().split("@")[0] in ("NC", "N/C", "DNC") or p.pin.upper().startswith("NC_"):
             continue
-        if (p.part, p.pin) not in connected:
+        if (p.part, p.gate, p.pin) not in connected:
             loose.setdefault(p.part, []).append(p)
     for ref, ps in sorted(loose.items()):
         power = [p for p in ps if p.direction in ("pwr", "sup")]
@@ -120,7 +120,7 @@ def review(s: SchematicDesign, jlc_attr: str = "JLCPCB") -> list[dict]:
                 [n.pins[0].part])
         dirs = {}
         for r in phys:
-            pin = s.pin(r.part, r.pin)
+            pin = s.pin(r.part, r.pin, r.gate)
             if pin:
                 dirs.setdefault(pin.direction, []).append(f"{r.part}.{r.pin}")
         if len(dirs.get("out", [])) > 1:
@@ -160,7 +160,7 @@ def review(s: SchematicDesign, jlc_attr: str = "JLCPCB") -> list[dict]:
         sup = []
         for r in n.pins:
             part = s.parts.get(r.part)
-            pin = s.pin(r.part, r.pin)
+            pin = s.pin(r.part, r.pin, r.gate)
             if part and not part.package and pin and pin.direction == "sup":
                 sup.append((r.part, r.pin, part.value or ""))
         for ref, pin_name, value in sup:

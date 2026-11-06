@@ -130,3 +130,7 @@ def set_value(sch: SchematicDesign, ref: str, value: str) -> str:
             f"{ref} ({part.deviceset}) has no user-definable value; Fusion would block on a dialog. "
             "Change the value by switching to another device variant (set_part_variant).")
     return f"VALUE {q(ref)} {q(value)};"
+
+
+def invoke_unit(ref: str, gate: str, x: float, y: float, angle: float = 0, sheet: int = 1) -> str:
+    return f"{GRID} {sheet_prefix(sheet)} INVOKE {q(ref)} {q(gate)} R{n(angle % 360)} {pt(x, y)};"

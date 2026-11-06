@@ -1,0 +1,618 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "part_count"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              },
+              "selector": {
+                "type": "object",
+                "properties": {
+                  "prefix": {
+                    "type": "string"
+                  },
+                  "deviceset": {
+                    "type": "string"
+                  },
+                  "mpn": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "expected": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence",
+              "selector",
+              "expected"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "channels"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              },
+              "assignments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "alias": {
+                      "type": "string"
+                    },
+                    "physical": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "adc": {
+                      "type": "string"
+                    },
+                    "adc_channel": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "connector": {
+                      "type": "string"
+                    },
+                    "position": {
+                      "type": "integer",
+                      "minimum": 1
+                    }
+                  },
+                  "required": [
+                    "alias",
+                    "physical",
+                    "adc",
+                    "adc_channel",
+                    "connector",
+                    "position"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence",
+              "assignments"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "connector"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              },
+              "ref": {
+                "type": "string"
+              },
+              "pads": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence",
+              "ref",
+              "pads"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "rail_membership"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              },
+              "net": {
+                "type": "string"
+              },
+              "pins": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "part": {
+                      "type": "string"
+                    },
+                    "gate": {
+                      "type": "string"
+                    },
+                    "pin": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "part",
+                    "gate",
+                    "pin"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence",
+              "net",
+              "pins"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "voltage"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              },
+              "net": {
+                "type": "string"
+              },
+              "range": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "ratings": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "range": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2
+                    },
+                    "evidence": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "range",
+                    "evidence"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence",
+              "net",
+              "range",
+              "ratings"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "isolation"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              },
+              "domains": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "part": {
+                        "type": "string"
+                      },
+                      "gate": {
+                        "type": "string"
+                      },
+                      "pin": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "part",
+                      "gate",
+                      "pin"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 1
+                }
+              },
+              "conductive_groups": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "part": {
+                        "type": "string"
+                      },
+                      "gate": {
+                        "type": "string"
+                      },
+                      "pin": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "part",
+                      "gate",
+                      "pin"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "minItems": 2
+                },
+                "minItems": 0
+              },
+              "allowed_crossings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "part": {
+                      "type": "string"
+                    },
+                    "pin_domains": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "evidence": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "minItems": 1
+                    }
+                  },
+                  "required": [
+                    "part",
+                    "pin_domains",
+                    "evidence"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence",
+              "domains",
+              "conductive_groups",
+              "allowed_crossings"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "physical_clearance"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "creepage"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "insulation"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "regulatory"
+              },
+              "review_status": {
+                "enum": [
+                  "proposed",
+                  "approved",
+                  "rejected",
+                  "unresolved"
+                ]
+              },
+              "evidence": {
+                "type": "array",
+                "items": {
+                  "type": [
+                    "string",
+                    "object"
+                  ]
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "id",
+              "type",
+              "review_status",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "version",
+    "rules"
+  ],
+  "additionalProperties": false
+}

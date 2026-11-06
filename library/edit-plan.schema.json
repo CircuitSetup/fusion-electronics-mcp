@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "before": {
+      "type": "object"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "const": "add_sheet"
+              },
+              "sheet": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "sheet",
+              "title"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "net": {
+                "type": "string"
+              },
+              "op": {
+                "const": "connect"
+              },
+              "pins": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "part": {
+                      "type": "string"
+                    },
+                    "gate": {
+                      "type": "string"
+                    },
+                    "pin": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "part",
+                    "gate",
+                    "pin"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "net",
+              "op",
+              "pins"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "net": {
+                "type": "string"
+              },
+              "op": {
+                "const": "label_net"
+              },
+              "sheet": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": [
+              "net",
+              "op",
+              "sheet"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "gate": {
+                "type": "string"
+              },
+              "op": {
+                "const": "place_unit"
+              },
+              "part": {
+                "type": "string"
+              },
+              "rotation": {
+                "type": "number"
+              },
+              "sheet": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "gate",
+              "op",
+              "part",
+              "rotation",
+              "sheet",
+              "x",
+              "y"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string"
+              },
+              "deviceset": {
+                "type": "string"
+              },
+              "evidence_path": {
+                "type": "string"
+              },
+              "gate": {
+                "type": "string"
+              },
+              "library": {
+                "type": "string"
+              },
+              "library_path": {
+                "type": "string"
+              },
+              "op": {
+                "const": "add_part"
+              },
+              "ref": {
+                "type": "string"
+              },
+              "rotation": {
+                "type": "number"
+              },
+              "sheet": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "device",
+              "deviceset",
+              "evidence_path",
+              "gate",
+              "library",
+              "library_path",
+              "op",
+              "ref",
+              "rotation",
+              "sheet",
+              "x",
+              "y"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "minItems": 1
+    },
+    "evidence": {
+      "type": "object"
+    },
+    "expected": {
+      "type": "object"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "version",
+    "sha256",
+    "before",
+    "operations",
+    "evidence",
+    "expected",
+    "findings"
+  ],
+  "additionalProperties": false
+}

@@ -109,9 +109,12 @@ def configure_part(part: dict, pin_groups=None, pin_units=None, pin_sides=None, 
         raise ValueError("part_id must contain lowercase letters, digits and hyphens")
     pins = part["symbol"]["pins"]
     names = {p["name"] for p in pins}
-    if len({name.upper() for name in names}) != len(pins):
-        raise ValueError("symbol pin names must be unique, ignoring case")
+    if len({(p.get("unit", "G$1").upper(), p["name"].upper()) for p in pins}) != len(pins):
+        raise ValueError("symbol pin names must be unique within each gate, ignoring case")
+    if len(names) != len(pins) and any(x is not None for x in (pin_groups,pin_units,pin_sides)):
+        raise ValueError("Duplicate pin names require explicit unit/group/side fields, not name-based maps")
     for pin in pins:
+        if not re.fullmatch(r"[A-Za-z0-9_$-]+", pin.get("unit", "G$1")): raise ValueError("Invalid unit name")
         q(pin["name"])
         if pin.get("direction", "pas") not in {"nc", "in", "out", "io", "oc", "pwr", "pas", "hiz", "sup"}:
             raise ValueError(f"invalid pin direction for {pin['name']}")

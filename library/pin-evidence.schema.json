@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "part_id": {
+      "type": "string"
+    },
+    "mpn": {
+      "type": "string"
+    },
+    "package": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "string"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "minItems": 1
+    },
+    "pins": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "pad": {
+            "type": "string"
+          },
+          "gate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "datasheet_name": {
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "in",
+              "out",
+              "io",
+              "pas",
+              "pwr",
+              "sup",
+              "nc",
+              "oc",
+              "hiz"
+            ]
+          },
+          "intent": {
+            "enum": [
+              "signal",
+              "supply",
+              "nc",
+              "dnc",
+              "reserved",
+              "exposed_pad",
+              "alternate"
+            ]
+          },
+          "net": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "domain": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "alternate_function": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "minItems": 1
+          },
+          "uncertain": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pad",
+          "gate",
+          "pin",
+          "datasheet_name",
+          "direction",
+          "intent",
+          "net",
+          "domain",
+          "alternate_function",
+          "pages",
+          "uncertain"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 1
+    },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "reviewer": {
+            "type": "string"
+          },
+          "reviewed_at": {
+            "type": "string"
+          },
+          "content_sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reviewer",
+          "reviewed_at",
+          "content_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "version",
+    "part_id",
+    "mpn",
+    "package",
+    "source",
+    "revision",
+    "sha256",
+    "pages",
+    "pins",
+    "reviews"
+  ],
+  "additionalProperties": false
+}

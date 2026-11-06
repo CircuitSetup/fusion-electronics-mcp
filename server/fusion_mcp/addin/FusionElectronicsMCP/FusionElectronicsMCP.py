@@ -34,7 +34,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.5"
+ADDIN_VERSION = "0.14.6"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -147,12 +147,26 @@ def _docs():
     return [_app.documents.item(i) for i in range(_app.documents.count)]
 
 
+_document_ids = []
+
+
+def _document_id(d):
+    # Retain the API wrapper so an unsaved document cannot acquire a reused object ID.
+    for doc, token in _document_ids:
+        if doc == d: return token
+    token = "session:" + uuid.uuid4().hex
+    _document_ids.append((d, token))
+    return token
+
+
 def _doc_info(d):
     info = {"name": d.name, "kind": _kind_of(d), "modified": d.isModified, "saved": d.isSaved,
-            "active": d.isActive}
+            "active": d.isActive, "document_id": _document_id(d), "project_id": None, "data_file_id": None}
     with contextlib.suppress(Exception):
         if d.dataFile:
             info["version"] = d.dataFile.versionNumber
+            info["data_file_id"] = d.dataFile.id
+            info["project_id"] = d.dataFile.parentProject.id
     return info
 
 
@@ -301,6 +315,10 @@ def _groupable(cmds):
 
 
 def op_run(args):
+    if args.get("expected_document_id"):
+        active = _app.activeDocument
+        if active is None or _document_id(active) != args["expected_document_id"]:
+            raise BridgeError("wrong_document", "The reviewed target is no longer active; nothing was written")
     cmds = validate(args.get("commands") or "")
     expect = args.get("editor")
     if expect and _product_kind() != expect:

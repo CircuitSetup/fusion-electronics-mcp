@@ -209,3 +209,31 @@ def solve(geo: Geo, pin: str, at: tuple[float, float], facing: tuple[int, int],
             px, py = transform(p.x, p.y, 0, 0, rot, mir)
             return round(at[0] - px, 4), round(at[1] - py, 4), rot, mir
     raise ValueError(f"{geo.key}.{pin} cannot face {facing}")
+
+
+def unit_geometry(root: ET.Element) -> dict[tuple[str, str], Geo]:
+    """Geometry keyed by device and gate; one library at a time avoids name collisions."""
+    out = {}
+    libs = [root] if root.tag == "library" else list(root.iter("library"))
+    for lib in libs:
+        symbols = {s.get("name"): s for s in lib.iter("symbol")}
+        for ds in lib.iter("deviceset"):
+            gates = ds.findall("./gates/gate")
+            for dv in ds.findall("./devices/device"):
+                device = ds.get("name", "") + dv.get("name", "")
+                for gate in gates:
+                    sym = symbols.get(gate.get("symbol"))
+                    if sym is None: raise ValueError("Missing gate geometry")
+                    pins = symbol_pins(sym)
+                    pads = {}
+                    for c in dv.findall("./connects/connect"):
+                        if c.get("gate") != gate.get("name"): continue
+                        pn = c.get("pin")
+                        if pn not in pins: raise ValueError("Mapping refers to missing symbol pin")
+                        pins[pn].pads = c.get("pad", "").split()
+                        for pad in pins[pn].pads: pads[pad] = pn
+                    key = (device, gate.get("name"))
+                    if key in out: raise ValueError("Ambiguous device/gate across libraries; select one library")
+                    out[key] = Geo(device, pins, pads, symbol_prims(sym), 1,
+                                   not dv.get("package") and all(p.get("direction") == "sup" for p in sym.findall("pin")))
+    return out

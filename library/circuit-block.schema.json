@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string"
+    },
+    "parts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string"
+          },
+          "library_path": {
+            "type": "string"
+          },
+          "evidence_path": {
+            "type": "string"
+          },
+          "library": {
+            "type": "string"
+          },
+          "deviceset": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "units": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "gate": {
+                  "type": "string"
+                },
+                "x": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                },
+                "y": {
+                  "type": [
+                    "string",
+                    "number"
+                  ]
+                },
+                "rotation": {
+                  "type": "number"
+                },
+                "sheet": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "gate",
+                "x",
+                "y",
+                "rotation",
+                "sheet"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1
+          }
+        },
+        "required": [
+          "prefix",
+          "library_path",
+          "evidence_path",
+          "library",
+          "deviceset",
+          "device",
+          "units"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "nets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "part": {
+              "type": "string"
+            },
+            "gate": {
+              "type": "string"
+            },
+            "pin": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "part",
+            "gate",
+            "pin"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1
+      }
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "net": {
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "in",
+              "out",
+              "io",
+              "power"
+            ]
+          },
+          "domain": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "net",
+          "direction",
+          "domain"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "min": {
+            "type": "number"
+          },
+          "max": {
+            "type": "number"
+          },
+          "default": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "min",
+          "max",
+          "default"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "enum": [
+              "approved",
+              "rejected"
+            ]
+          },
+          "reviewer": {
+            "type": "string"
+          },
+          "reviewed_at": {
+            "type": "string"
+          },
+          "content_sha256": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reviewer",
+          "reviewed_at",
+          "content_sha256"
+        ],
+        "additionalProperties": false
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "parts",
+    "nets",
+    "ports",
+    "parameters",
+    "reviews"
+  ],
+  "additionalProperties": false
+}

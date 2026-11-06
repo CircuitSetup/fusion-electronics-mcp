@@ -262,6 +262,7 @@ class SchSegment:
     wires: int
     closed: bool = False              # the wires form a closed loop (a drawn box)
     first_wire: tuple[float, float, float, float] | None = None
+    qualified_pins: list[tuple[str, str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -287,12 +288,16 @@ class SchematicDesign:
     def instance(self, part: str, gate: str | None = None) -> SchInstance | None:
         return next((i for i in self.instances if i.part == part and (gate is None or i.gate == gate)), None)
 
-    def pin(self, part: str, pin: str) -> SchPin | None:
-        return next((p for p in self.pins if p.part == part and p.pin == pin), None)
+    def pin(self, part: str, pin: str, gate: str | None = None) -> SchPin | None:
+        matches = [p for p in self.pins if p.part == part and p.pin == pin and (gate is None or p.gate == gate)]
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous pin {part}.{pin}; specify its gate")
+        return matches[0] if matches else None
 
-    def net_of(self, part: str, pin: str) -> str | None:
+    def net_of(self, part: str, pin: str, gate: str | None = None) -> str | None:
+        self.pin(part, pin, gate)
         for n in self.nets.values():
-            if any(r.part == part and r.pin == pin for r in n.pins):
+            if any(r.part == part and r.pin == pin and (gate is None or r.gate == gate) for r in n.pins):
                 return n.name
         return None
 
@@ -380,7 +385,7 @@ def parse_schematic_design(root: ET.Element) -> SchematicDesign:
                 closed = len(ws) >= 3 and all(c == 2 for c in ends.values())
                 n.segments.append(SchSegment(si, [(r.get("part", ""), r.get("pin", "")) for r in seg.iter("pinref")],
                                              len(seg.findall("label")), len(ws), closed,
-                                             (_f(ws[0], "x1"), _f(ws[0], "y1"), _f(ws[0], "x2"), _f(ws[0], "y2")) if ws else None))
+                                             (_f(ws[0], "x1"), _f(ws[0], "y1"), _f(ws[0], "x2"), _f(ws[0], "y2")) if ws else None, [(r.get("part", ""), r.get("gate", ""), r.get("pin", "")) for r in seg.iter("pinref")]))
             for pr in net.iter("pinref"):
                 n.pins.append(PinRef(pr.get("part", ""), pr.get("gate", ""), pr.get("pin", "")))
             for w in net.iter("wire"):

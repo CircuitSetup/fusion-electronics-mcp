@@ -237,7 +237,7 @@ class BlockSchematic:
             if pin is None:
                 missing.append(f"{r} pad {pad}: not in the schematic")
                 continue
-            got = sch.net_of(r, pin.pin)
+            got = sch.net_of(r, pin.pin, pin.gate)
             if got != want:
                 wrong.append(f"{r}.{pin.pin}: {got or 'unconnected'} (want {want})")
         return {"ok": not wrong and not missing, "wrong": wrong[:40], "missing": missing[:40],

@@ -352,3 +352,59 @@ production? [Get in touch](https://groundplanestudio.com/contact).
 ## License
 
 MIT. See `LICENSE`.
+
+### Reviewed schematic plans and project checks
+
+The local KPS workflow adds six tools:
+
+- `preview_schematic_edits(operations, expected_document_id)` exports the active schematic and linked board, generates a local HTML/SVG preview and immutable JSON plan, and writes nothing to CAD. Obtain `document_id` from `get_context` (updated add-in required).
+- `apply_schematic_plan(plan_path, expected_sha256)` applies only the exact preview/hash explicitly reviewed and authorized by the user. It rejects changed documents, source files, connectivity or placement. Every operation has read-back verification; nothing is saved. A timeout, dialog or mismatch returns `state_unknown` with completed operation indices. Stop and inspect; no automatic retry or blind undo is attempted.
+- `check_datasheet_pins(part_ids=None)` compares private pin-evidence JSON, exact local PDF hashes, library definitions, and the active schematic. Missing/unreviewed/changed evidence returns incomplete, never pass.
+- `record_pin_evidence_review(evidence_path, expected_content_sha256, status, reviewer)` appends an explicit human approval/rejection and preserves a backup. The hash is `fusion_offline.pin_evidence.content_hash(evidence)`; editing reviewed content invalidates approval.
+- `check_project_requirements(rules_path)` checks reviewed counts, channel assignments, connector pad tables, rails, voltage ranges and isolation topology. Physical clearance, creepage, insulation and regulatory acceptance remain unknown; topology does not certify hardware.
+- `preview_circuit_block(block_path, instances, port_connections, expected_document_id, rules_path)` expands 1..64 instances through the same plan path. All ports are explicit; private nets are namespaced; references are allocated deterministically. Unknown/failed template or project reviews block apply.
+
+Contracts live in `library/edit-plan.schema.json`, `pin-evidence.schema.json`,
+`project-rules.schema.json`, and `circuit-block.schema.json`. Private files belong
+beside the configured `parts` directory, not in the public source repository.
+There is no OCR or automatic evidence approval. Use exact package/MPN-specific,
+reviewed pin rows, including NC/DNC, reserved and exposed-pad rows. Existing `MP`
+and `MPN` attributes are both understood.
+
+Typed operations use these exact fields (coordinates are mm):
+
+```json
+[
+  {"op":"add_sheet","sheet":2,"title":"Analog front end"},
+  {"op":"place_unit","part":"U1","gate":"P","sheet":2,"x":20,"y":30,"rotation":0},
+  {"op":"connect","net":"VCC","pins":[{"part":"U1","gate":"P","pin":"VDD"}]},
+  {"op":"label_net","net":"VCC","sheet":2}
+]
+```
+
+Use only operations needed by the design: labeling an already labeled net is
+rejected. `add_part` requires `ref`, absolute `library_path` and `evidence_path`,
+`library`, `deviceset`, `device` (empty string is valid), first `gate`, `sheet`,
+`x`, `y`, and `rotation`. Cache the exact installed Fusion library XML first;
+preview never stages temporary parts in a production document. The evidence
+source is resolved relative to its JSON file and must match its SHA256.
+The cached library must include the physical package and MPN attribute.
+
+Multi-unit identity is `(part, gate, pin)`. Pin helpers accept `gate=` and refuse
+ambiguous unqualified names; interactive pin specs also accept `PART.GATE.PIN`.
+New units may be invoked on any existing sheet; duplicate invocation is refused.
+Moving an already placed unit between sheets still requires Fusion's Move UI;
+this first typed operation set deliberately has no delete/cut operations.
+Explicit block unit positions use all gates; the older automatic block-layout
+helper still refuses multi-unit parts rather than silently dropping gates.
+
+A plan's HTML includes the proposed sheets, gate-qualified pad mappings, and a
+structured before/after diff. `expected_sha256` is an integrity check, not a
+credential: the agent must still obtain the user's explicit apply authorization.
+Only the new batch/block tools use this guarded path; legacy tools retain their
+existing interfaces. Changes made outside the MCP can invalidate a plan.
+
+Development verification: `PYTHONPATH=server:offline:tests python -m unittest discover -s tests`.
+On Windows use semicolons in `PYTHONPATH`. Offline success is distinct from
+acceptance on a disposable Fusion design. Never exercise write tests on a user's
+production schematic, and never claim bench or regulatory acceptance from these tests.

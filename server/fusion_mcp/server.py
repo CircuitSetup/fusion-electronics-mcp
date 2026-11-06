@@ -191,7 +191,7 @@ def get_part(ref: str) -> dict:
             out["schematic"] = {"deviceset": p.deviceset, "device": p.device, "library": p.library,
                                 "value": p.value, "user_value": p.user_value, "attributes": p.attributes,
                                 "pins": [{"pin": x.pin, "pad": x.pad, "direction": x.direction,
-                                          "net": sch.net_of(x.part, x.pin), "sheet": x.sheet,
+                                          "net": sch.net_of(x.part, x.pin, x.gate), "sheet": x.sheet,
                                           "x_mm": x.x, "y_mm": x.y} for x in sch.pins if x.part == ref]}
     if len(out) == 1:
         raise KeyError(f"no part {ref!r} on the board or schematic")
@@ -241,7 +241,7 @@ def get_net(name: str) -> dict:
         n = sch.nets[name]
         out["schematic"] = {"class": n.net_class, "sheets": sorted(set(n.sheets)),
                             "pins": [{"part": r.part, "pin": r.pin,
-                                      "direction": (sch.pin(r.part, r.pin).direction if sch.pin(r.part, r.pin) else None)}
+                                      "direction": (sch.pin(r.part, r.pin, r.gate).direction if sch.pin(r.part, r.pin, r.gate) else None)}
                                      for r in n.pins]}
     if name in b.signals:
         g = b.signals[name]
@@ -1045,16 +1045,18 @@ MERGE_PROMPT = r"^(Merge net segment .+ into given net .+|Connect \S+ and \S+)\?
 
 
 def _pin_map(sch) -> dict[tuple[str, str], str | None]:
-    return {(p.part, p.pin): sch.net_of(p.part, p.pin) for p in sch.pins}
+    return {(p.part, p.gate, p.pin): sch.net_of(p.part, p.pin, p.gate) for p in sch.pins}
 
 
 def _resolve_pin(sch, spec: str):
-    part, _, pin = spec.partition(".")
-    cand = [p for p in sch.pins if p.part == part and (p.pin == pin or p.pad == pin)]
-    if not cand:
-        raise KeyError(f"no pin {spec!r} (use PART.PIN or PART.PAD)")
-    if len(cand) > 1:
-        cand = [p for p in cand if p.pin == pin] or cand
+    fields = spec.split(".")
+    if len(fields) == 2: part, pin = fields; gate = None
+    elif len(fields) == 3: part, gate, pin = fields
+    else: raise ValueError("Use PART.PIN or PART.GATE.PIN")
+    cand = [p for p in sch.pins if p.part == part and (gate is None or p.gate == gate)
+            and (p.pin == pin or pin in (p.pad or "").split())]
+    if not cand: raise KeyError(f"no pin {spec!r}")
+    if len(cand) != 1: raise ValueError(f"Ambiguous pin {spec!r}; use PART.GATE.PIN")
     return cand[0]
 
 
@@ -1093,19 +1095,19 @@ def connect_pins(net: str, pins: list[str], allow_merge: bool = False, labels: b
     sch = snap.schematic()
     targets = [_resolve_pin(sch, p) for p in pins]
     for t in targets:
-        cur = sch.net_of(t.part, t.pin)
+        cur = sch.net_of(t.part, t.pin, t.gate)
         if cur and cur != net and not allow_merge:
             raise ValueError(f"{t.part}.{t.pin} is already on net {cur!r}; pass allow_merge=true to join it to {net!r}")
     cmd = " ".join(C.net_stub(net, t.x, t.y, t.outward, sheet=t.sheet, label=labels)
-                   for t in targets if sch.net_of(t.part, t.pin) != net)
+                   for t in targets if sch.net_of(t.part, t.pin, t.gate) != net)
     if not cmd:
         return {"ok": True, "detail": "already connected", "net": net}
     before_map = _pin_map(sch)
-    wanted = {(t.part, t.pin) for t in targets}
+    wanted = {(t.part, t.gate, t.pin) for t in targets}
 
     def verify(before, after):
         m = _pin_map(after.schematic())
-        missing = [f"{a}.{b}" for a, b in wanted if m.get((a, b)) != net]
+        missing = [".".join(k) for k in wanted if m.get(k) != net]
         changed = [f"{k[0]}.{k[1]}: {before_map.get(k)} -> {v}" for k, v in m.items()
                    if k not in wanted and before_map.get(k) != v and not (allow_merge and v == net)]
         if missing:
@@ -1135,19 +1137,20 @@ def rename_net(old_name: str, new_name: str, allow_merge: bool = False,
         raise ValueError(f"net {new_name!r} already exists; renaming would merge it with {old_name!r}. "
                          "Pass allow_merge=true if that is intended")
     if only_segment_with_pin:
-        ref, _, pin = only_segment_with_pin.partition(".")
-        seg = next((sg for sg in n.segments if (ref, pin) in sg.pins), None)
+        target = _resolve_pin(sch, only_segment_with_pin)
+        ref, gate, pin = target.part, target.gate, target.pin
+        seg = next((sg for sg in n.segments if (ref, gate, pin) in sg.qualified_pins), None)
         if seg is None or seg.first_wire is None:
             raise ValueError(f"{only_segment_with_pin} is not on a wired segment of {old_name!r}")
         x1, y1, x2, y2 = seg.first_wire
         cmd = [C.rename_net_at(new_name, (x1 + x2) / 2, (y1 + y2) / 2, seg.sheet)]
-        others = [p for sg in n.segments if sg is not seg for p in sg.pins]
+        others = [p for sg in n.segments if sg is not seg for p in sg.qualified_pins]
 
         def verify(before, after):
             nets = after.schematic().nets
-            moved = new_name in nets and any((p.part, p.pin) == (ref, pin) for p in nets[new_name].pins)
+            moved = new_name in nets and any((p.part, p.gate, p.pin) == (ref, gate, pin) for p in nets[new_name].pins)
             kept = not others or (old_name in nets and all(
-                any((q.part, q.pin) == p for q in nets[old_name].pins) for p in others))
+                any((q.part, q.gate, q.pin) == p for q in nets[old_name].pins) for p in others))
             return moved and kept, (f"{only_segment_with_pin} moved {old_name} -> {new_name}" if moved and kept
                                     else f"{only_segment_with_pin} on {new_name}: {moved}; rest of {old_name} kept: {kept}")
         form = dialogs.FORM_RENAME_THIS_SEGMENT
@@ -4015,6 +4018,81 @@ def request_design_review(notes: str = "") -> dict:
 def get_assembly_quote(quantity: int = 5) -> dict:
     """Get a PCB assembly quote (not connected yet: makes no network calls)."""
     return {"status": "not_connected", "message": _NOT_CONNECTED}
+
+
+@tool(READ)
+def preview_schematic_edits(operations: list[dict], expected_document_id: str) -> dict:
+    """Preview typed add_part/place_unit/connect/label_net/add_sheet edits without CAD writes.
+    Requires a stable ID from get_context. Returns an immutable plan and HTML preview.
+    Review the exact preview and hash with the user before apply_schematic_plan.
+    """
+    from .edit_plan import preview
+    return preview(session, operations, expected_document_id)
+
+
+@tool(ADDITIVE)
+def apply_schematic_plan(plan_path: str, expected_sha256: str) -> dict:
+    """Apply ONLY the exact plan/hash the user explicitly reviewed and authorized.
+    Rejects stale state. Never saves or retries uncertain writes; state_unknown needs inspection.
+    """
+    from .edit_plan import apply
+    return apply(session, plan_path, expected_sha256)
+
+
+@tool(READ)
+def check_datasheet_pins(part_ids: list[str] | None = None) -> dict:
+    """Compare local reviewed pin evidence, exact PDF hashes and active schematic mappings. Never edits CAD."""
+    from .pin_evidence import check
+    return check(session, Library(library.directory), part_ids)
+
+
+@tool(CHANGE)
+def record_pin_evidence_review(evidence_path: str, expected_content_sha256: str, status: str, reviewer: str) -> dict:
+    """Record an explicit human approval/rejection of exact evidence content. Never infer approval.
+    Preserves prior records and a backup; changed content/PDF invalidates prior approval.
+    """
+    from .pin_evidence import record_review
+    return record_review(evidence_path, expected_content_sha256, status, reviewer)
+
+
+@tool(READ)
+def check_project_requirements(rules_path: str) -> dict:
+    """Read-only counts, channel, connector, rail, voltage and isolation-topology checks.
+    Requires explicit reviewed rules and evidence. Unknown physical/rating evidence never passes.
+    """
+    import json
+    from pathlib import Path
+    from .edit_plan import snapshot
+    from fusion_offline.project_checks import check_project
+    from fusion_offline.pin_evidence import report
+    with session.bridge.lock.hold("read-only project checks"):
+        before = snapshot(session, [])
+        rules = json.loads(Path(rules_path).read_text(encoding="utf-8-sig"))
+        sch = D.parse_schematic_design(D.read_xml(before["sch_xml"].encode()))
+        board = D.parse_board_design(D.read_xml(before["board_xml"].encode())) if before["board_xml"] else None
+        result = report(check_project(sch, board, rules))
+        if snapshot(session, []) != before: raise ValueError("Design changed during read-only project checks")
+        return result
+
+
+@tool(READ)
+def preview_circuit_block(block_path: str, instances: list[dict], port_connections: dict,
+                          expected_document_id: str, rules_path: str) -> dict:
+    """Preview 1..64 explicit instances of a local reviewed circuit block, with mandatory ports.
+    Private nets are namespaced. All units/evidence/rules must pass before apply_schematic_plan.
+    """
+    import json
+    from pathlib import Path
+    from .edit_plan import preview, snapshot
+    from fusion_offline.circuit_blocks import expand_block
+    with session.bridge.lock.hold("preview circuit block"):
+        block_path=str(Path(block_path).resolve()); rules_path=str(Path(rules_path).resolve())
+        block=json.loads(Path(block_path).read_text(encoding="utf-8-sig"))
+        snap=snapshot(session,[])
+        sch=D.parse_schematic_design(D.read_xml(snap['sch_xml'].encode()))
+        operations=expand_block(block,instances,sch.parts,port_connections,sch.nets)
+        evidence=dict(block_path=block_path,rules_path=rules_path,instances=instances,port_connections=port_connections)
+        return preview(session,operations,expected_document_id,evidence=evidence)
 
 
 def main() -> None:
