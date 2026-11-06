@@ -3689,9 +3689,9 @@ def save_design(description: str = "saved by fusion-electronics-mcp") -> dict:
 
 
 @tool(READ)
-def search_library(query: str) -> list[dict]:
+def search_library(query: str, library_directory: str | None = None) -> list[dict]:
     """Search this server's component library (library/parts)."""
-    return library.search(query)
+    return (Library(library_directory) if library_directory else library).search(query)
 
 
 @tool(ADDITIVE)
@@ -3701,7 +3701,8 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
                         jlc_native: bool = False, manufacturer: str = "", mpn: str = "",
                         overwrite: bool = False, pin_groups: dict[str, list[str]] | None = None,
                         pin_units: dict[str, list[str]] | None = None,
-                        pin_sides: dict[str, str] | None = None, datasheet: dict | None = None) -> dict:
+                        pin_sides: dict[str, str] | None = None, datasheet: dict | None = None,
+                        library_directory: str | None = None) -> dict:
     """Create a part in this server's component library from a KiCad footprint (.kicad_mod): from
     KiCad's own libraries, or JLCPCB's footprint for a part exported with `easyeda2kicad --full
     --lcsc_id=C...` (set jlc_native=true for those: no rotation correction needed at JLC). The
@@ -3741,7 +3742,7 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
     if unknown_directions:
         raise ValueError(f"directions name unknown pins: {sorted(unknown_directions)}")
     configure_part(part, pin_groups, pin_units, pin_sides, datasheet)
-    path = library.add(part, overwrite=overwrite)
+    path = (Library(library_directory) if library_directory else library).add(part, overwrite=overwrite)
     from . import std_symbols as SS
     pk = part["package"]
     return {"ok": True, "part_id": part_id, "file": path, "package": pk["name"],
@@ -3754,13 +3755,13 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
 
 
 @tool(READ)
-def get_library_part(part_id: str) -> dict:
+def get_library_part(part_id: str, library_directory: str | None = None) -> dict:
     """Full definition of one library part, including metadata (source, maintainer, link)."""
-    return library.get(part_id).data
+    return (Library(library_directory) if library_directory else library).get(part_id).data
 
 
 @tool(ADDITIVE)
-def insert_library_part(part_id: str) -> dict:
+def insert_library_part(part_id: str, library_directory: str | None = None) -> dict:
     """Build a library part into the Fusion library open in the library editor. Afterwards call
     save_design, then close_library, before placing it with add_part (placing from a library that
     is still open can crash Fusion).
@@ -3770,7 +3771,7 @@ def insert_library_part(part_id: str) -> dict:
     EasyEDA or KiCad, so every schematic reads the same; set "style": false in the part to keep
     its own symbol, or name a style ("res", "cap", "cap_pol", "inductor", "ferrite", "fuse",
     "crystal", "diode", "schottky", "zener", "led", "tvs", "tvs_bidir")."""
-    part = library.get(part_id)
+    part = (Library(library_directory) if library_directory else library).get(part_id)
     session.activate("library")
     from fusion_offline import design as D0
     existing = D0.read_xml(session.export("library"))
@@ -3827,7 +3828,8 @@ def get_library_deviceset(name: str) -> dict:
 
 @tool(ADDITIVE)
 def add_library_variant(part_id: str, deviceset: str, variant: str, pin_map: dict[str, str] | None = None,
-                        technologies: dict[str, dict[str, str]] | None = None, dnp_technology: bool = False) -> dict:
+                        technologies: dict[str, dict[str, str]] | None = None, dnp_technology: bool = False,
+                        library_directory: str | None = None) -> dict:
     """Add a library part's footprint to an EXISTING device set in the open Fusion library as a
     new package variant (e.g. a second USB-C connector under CONN_USBC_24P), using the device
     set's own symbol: no symbol or device set is created. The package is drawn unless the
@@ -3841,7 +3843,7 @@ def add_library_variant(part_id: str, deviceset: str, variant: str, pin_map: dic
     the same attributes and VALUE 'NC/<value>'. Verified by re-reading the library; nothing is
     saved (call save_design when it looks right)."""
     from .library import deviceset_info, variant_script
-    part = library.get(part_id)
+    part = (Library(library_directory) if library_directory else library).get(part_id)
     session.activate("library")
     root = D.read_xml(session.export("library"))
     info = deviceset_info(root, deviceset)
@@ -4040,10 +4042,10 @@ def apply_schematic_plan(plan_path: str, expected_sha256: str) -> dict:
 
 
 @tool(READ)
-def check_datasheet_pins(part_ids: list[str] | None = None) -> dict:
+def check_datasheet_pins(part_ids: list[str] | None = None, library_directory: str | None = None) -> dict:
     """Compare local reviewed pin evidence, exact PDF hashes and active schematic mappings. Never edits CAD."""
     from .pin_evidence import check
-    return check(session, Library(library.directory), part_ids)
+    return check(session, Library(library_directory or library.directory), part_ids)
 
 
 @tool(CHANGE)

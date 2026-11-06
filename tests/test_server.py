@@ -329,6 +329,12 @@ class ToolListTest(unittest.TestCase):
         import asyncio
         from fusion_mcp.server import mcp
         names = {t.name for t in asyncio.run(mcp.list_tools())}
+        new_tools = {"preview_schematic_edits", "apply_schematic_plan", "check_datasheet_pins", "record_pin_evidence_review", "check_project_requirements", "preview_circuit_block"}
+        self.assertTrue(new_tools <= names)
+        for t in asyncio.run(mcp.list_tools()):
+            if t.name in new_tools - {"apply_schematic_plan", "record_pin_evidence_review"}:
+                self.assertTrue(t.annotations.read_only_hint)
+
         self.assertEqual(sorted(EXPECTED_TOOLS - names), [])
 
 

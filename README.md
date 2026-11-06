@@ -355,7 +355,7 @@ MIT. See `LICENSE`.
 
 ### Reviewed schematic plans and project checks
 
-The local KPS workflow adds six tools:
+The design-independent workflow adds six tools:
 
 - `preview_schematic_edits(operations, expected_document_id)` exports the active schematic and linked board, generates a local HTML/SVG preview and immutable JSON plan, and writes nothing to CAD. Obtain `document_id` from `get_context` (updated add-in required).
 - `apply_schematic_plan(plan_path, expected_sha256)` applies only the exact preview/hash explicitly reviewed and authorized by the user. It rejects changed documents, source files, connectivity or placement. Every operation has read-back verification; nothing is saved. A timeout, dialog or mismatch returns `state_unknown` with completed operation indices. Stop and inspect; no automatic retry or blind undo is attempted.
@@ -408,3 +408,9 @@ Development verification: `PYTHONPATH=server:offline:tests python -m unittest di
 On Windows use semicolons in `PYTHONPATH`. Offline success is distinct from
 acceptance on a disposable Fusion design. Never exercise write tests on a user's
 production schematic, and never claim bench or regulatory acceptance from these tests.
+
+
+Library tools accept an optional `library_directory` for per-call project selection.
+It does not change another call, another server session, or the configured default.
+Keep separate designs in separate external library directories. No project-specific
+counts, parts, net names, or electrical rules are built into the server.

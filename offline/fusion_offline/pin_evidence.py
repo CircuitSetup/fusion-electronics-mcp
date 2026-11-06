@@ -63,13 +63,13 @@ def validate_pin_evidence(part, evidence, actual_sha256=None):
     return out
 
 
-def compare_pin_evidence(schematic, parts, evidence):
+def compare_pin_evidence(schematic, parts, evidence, references=None):
     out=[]
     for part_id,part in parts.items():
         e=evidence.get(part_id)
         if not e:
             out.append(finding('missing_evidence','unknown',refs=[part_id])); continue
-        matches=[p for p in schematic.parts.values() if p.deviceset==part['deviceset'] and p.device==part.get('device','')]
+        matches=[p for p in schematic.parts.values() if p.deviceset==part['deviceset'] and p.device==part.get('device','') and (references is None or p.name in references.get(part_id,[]))]
         if not matches: out.append(finding('part_not_placed','unknown',refs=[part_id]))
         for placed in matches:
             out.append(finding('active_package','pass' if placed.package==e['package'] else 'fail',placed.package,e['package'],[placed.name]))

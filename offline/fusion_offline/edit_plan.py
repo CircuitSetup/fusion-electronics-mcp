@@ -140,8 +140,9 @@ def _place(sheets,op,ref,gate):
 
 def electrical(xml):
     """Order-independent read-back contract; ignores exporter-generated IDs and text placement."""
-    sch=D.parse_schematic_design(D.read_xml(xml.encode() if isinstance(xml,str) else xml))
-    return {'parts':{r:[p.library,p.deviceset,p.device,p.package,p.value,p.attributes] for r,p in sch.parts.items()},
+    root=D.read_xml(xml.encode() if isinstance(xml,str) else xml)
+    sch=D.parse_schematic_design(root)
+    return {'definitions':library_definitions(root), 'parts':{r:[p.library,p.deviceset,p.device,p.package,p.value,p.attributes] for r,p in sch.parts.items()},
             'units': sorted((i.part,i.gate,i.sheet,i.x,i.y,i.angle,i.mirror) for i in sch.instances),
             'pins': sorted((p.part,p.gate,p.pin,p.pad,p.direction) for p in sch.pins),
             'nets':{n:sorted((p.part,p.gate,p.pin) for p in net.pins) for n,net in sch.nets.items()},
@@ -151,7 +152,8 @@ def electrical(xml):
 
 def build_plan(snapshot, operations, evidence):
     if not isinstance(operations,list) or not 1<=len(operations)<=4096: raise ValueError('Expected 1..4096 typed operations')
-    from .pin_evidence import library_part, validate_pin_evidence
+    from .pin_evidence import library_part, validate_pin_evidence, compare_pin_evidence
+    bindings=[]
     for op in operations:
         if op.get('op') != 'add_part': continue
         sources=snapshot.get('sources',{})
@@ -161,9 +163,13 @@ def build_plan(snapshot, operations, evidence):
             part=library_part(library_root,op['deviceset'],op['device'],evidence_json['part_id'])
             findings=validate_pin_evidence(part,evidence_json,sources.get('datasheet:'+op['evidence_path'],{}).get('sha256'))
         except (KeyError,TypeError) as ex: raise ValueError('Complete cached library and reviewed pin evidence required') from ex
+        bindings.append((op['ref'],part,evidence_json))
         if any(f['status'] != 'pass' for f in findings): raise ValueError('Part evidence is incomplete, stale or mismatched: '+json.dumps(findings))
     after=simulate(snapshot['sch_xml'],operations,snapshot.get('sources'))
+    projected=D.parse_schematic_design(D.read_xml(after.encode()))
     findings=[]
+    for ref,part,e in bindings:
+        findings+=compare_pin_evidence(projected,{part['id']:part},{part['id']:e},references={part['id']:[ref]})
     if evidence:
         from .circuit_blocks import validate_block, expand_block
         from .project_checks import check_project
@@ -221,3 +227,29 @@ def preview_html(snapshot,plan):
         pages.append(render_svg(d,geo,values,{},title=f'Proposed sheet {sheet}'))
     diff={'operations':plan['operations'],'before':electrical(snapshot['sch_xml']),'after':plan['expected'],'findings':plan['findings']}
     return '<!doctype html><meta charset="utf-8"><title>Schematic edit preview</title><h1>Schematic edit preview</h1><p>Plan SHA256: '+plan['sha256']+'</p>'+''.join(pages)+'<pre>'+html.escape(json.dumps(diff,indent=2))+'</pre>'
+
+
+def geometry_hash(element):
+    """Only export identity metadata is ignored; pad and symbol geometry remain exact."""
+    if element is None: return None
+    numeric={'x','y','x1','y1','x2','y2','dx','dy','width','radius','drill','diameter','size','curve','roundness','spacing'}
+    def node(e):
+        attrs={k:(float(v) if k in numeric else v) for k,v in e.attrib.items() if not k.endswith('urn') and k not in ('locally_modified','library_version')}
+        return [e.tag,attrs,(e.text or '').strip(),sorted([node(c) for c in e if c.tag!='description'],key=lambda x:json.dumps(x,sort_keys=True))]
+    return digest(node(element))
+
+
+def library_definitions(root):
+    definitions={}
+    sch=D.parse_schematic_design(root)
+    for ref,part in sch.parts.items():
+        lib=next((l for l in root.iter('library') if l.get('name')==part.library),None)
+        if lib is None: raise ValueError('Missing embedded library')
+        ds=next((d for d in lib.iter('deviceset') if d.get('name')==part.deviceset),None)
+        if ds is None: raise ValueError('Missing embedded deviceset')
+        dev=next((d for d in ds.findall('./devices/device') if d.get('name','')==part.device),None)
+        pkg=next((p for p in lib.iter('package') if p.get('name')==part.package),None)
+        gates=ds.find('gates')
+        symbols={g.get('name'):geometry_hash(next((s for s in lib.iter('symbol') if s.get('name')==g.get('symbol')),None)) for g in gates}
+        definitions[ref]={'device':geometry_hash(dev),'gates':geometry_hash(gates),'symbols':symbols,'package':geometry_hash(pkg)}
+    return definitions

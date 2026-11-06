@@ -60,12 +60,13 @@ def check_project(schematic, board, rules):
 
 
 def isolation(sch,rule):
-    parent={n:n for n in sch.nets}; domains={}; missing=False
+    parent={n:n for n in sch.nets}; domains={}; missing=any(not targets for targets in rule['domains'].values()); covered=set()
     def find(n):
         while parent[n]!=n: n=parent[n]
         return n
     for group in rule.get('conductive_groups',[]):
         nets=[]
+        covered.update((p['part'],p['gate'],p['pin']) for p in group)
         for target in group:
             try: n=net_of(sch,pin(sch,target))
             except ValueError: n=None
@@ -82,6 +83,14 @@ def isolation(sch,rule):
     if conflicts: return 'fail',conflicts
     crossings={x['part']:x for x in rule.get('allowed_crossings',[]) if x.get('evidence') and x.get('pin_domains')}
     unexplained=[]
+    # Require classification for every connected component pin, including intermediate nets.
+    for part in sch.parts:
+        connected=[p for p in sch.pins if p.part==part and net_of(sch,p) is not None]
+        if len(connected)<2: continue
+        declaration=crossings.get(part)
+        classified=all((p.part,p.gate,p.pin) in covered for p in connected)
+        insulated=declaration and all(f'{p.gate}.{p.pin}' in declaration['pin_domains'] for p in connected)
+        if not classified and not insulated: unexplained.append(part)
     for part in sch.parts:
         touched={}
         for p in sch.pins:

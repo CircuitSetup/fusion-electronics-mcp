@@ -21,4 +21,17 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(self.check({'type':'physical_clearance'})[0]['status'],'unknown')
         r=C.check_project(self.sch,None,{'version':1,'rules':[{'id':'x','type':'part_count','expected':48,'selector':{},'review_status':'proposed','evidence':['draft']} ]})
         self.assertEqual(r[0]['status'],'unknown')
+
+    def test_unknown_conduction_and_empty_domain_cannot_pass(self):
+        from fusion_offline.design import SchNet,PinRef
+        self.sch.nets['PRIMARY']=SchNet('PRIMARY','0',pins=[PinRef('R1','G$1','P$1')])
+        self.sch.nets['SECONDARY']=SchNet('SECONDARY','0',pins=[PinRef('R2','G$1','P$2')])
+        p=lambda r,p:{'part':r,'gate':'G$1','pin':p}
+        rule={'type':'isolation','domains':{'primary':[p('R1','P$1')],'secondary':[p('R2','P$2')]},'conductive_groups':[],'allowed_crossings':[]}
+        self.assertEqual(self.check(rule)[0]['status'],'unknown')
+        rule['conductive_groups']=[[p('R1','P$1'),p('R1','P$2')],[p('R2','P$1'),p('R2','P$2')]]
+        self.assertEqual(self.check(rule)[0]['status'],'fail')
+        rule['domains']['secondary']=[]
+        self.assertEqual(self.check(rule)[0]['status'],'unknown')
+
 if __name__=='__main__': unittest.main()

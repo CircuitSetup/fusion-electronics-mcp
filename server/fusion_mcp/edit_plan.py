@@ -122,6 +122,12 @@ def verify_board(before,after,expected_sch):
                 raise ValueError('An existing board element, outline or rule changed')
     sch=P.D.parse_schematic_design(P.D.read_xml(expected_sch.encode()))
     board=P.D.parse_board_design(new)
+    expected_defs=P.library_definitions(P.D.read_xml(expected_sch.encode()))
+    for el in new.findall('./drawing/board/elements/element'):
+        lib=next((l for l in new.findall('./drawing/board/libraries/library') if l.get('name')==el.get('library')),None)
+        pkg=next((p for p in lib.iter('package') if p.get('name')==el.get('package')),None) if lib is not None else None
+        if el.get('name') not in expected_defs or P.geometry_hash(pkg)!=expected_defs[el.get('name')]['package']:
+            raise ValueError('Board footprint geometry does not match the reviewed schematic library')
     physical={r for r,p in sch.parts.items() if p.package}
     if set(board.element_names)!=physical: raise ValueError('Physical package count does not match schematic')
     for n in sch.nets.values():
