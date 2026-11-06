@@ -201,6 +201,35 @@ on that build unless `accept_crash_risk=true`: save the library first.
 Part definitions live in `%LOCALAPPDATA%\fusion-electronics-mcp\library\parts`
 on Windows (`FUSION_MCP_LIBRARY` to change), so you can keep them in git.
 
+### Datasheet-backed custom parts
+
+`create_library_part` also accepts these optional fields:
+- `pin_groups`: group name to an ordered list of symbol pin names. Include every
+  pin exactly once. Groups are separated by a blank row on each side.
+- `pin_units`: unit/gate name to a list of pin names, again covering every pin
+  exactly once. This creates separate symbols in one device and verifies
+  gate-qualified pin-to-pad connections when inserting the library part.
+- `pin_sides`: pin name to `left` or `right`; unspecified pins keep their default.
+- `datasheet`: `source` (HTTP(S) URL or local file), `revision`, `pages` (1-based
+  PDF page numbers), and optional `sha256`. Local files are hashed; a supplied
+  hash must match. URLs are recorded without downloading anything. Provenance
+  is stored in the part JSON and exported as `DATASHEET_*` Fusion attributes.
+
+For example, with pins named IN, OUT, VDD and GND:
+```json
+{
+  "pin_groups": {"Signal": ["IN", "OUT"], "Power": ["VDD", "GND"]},
+  "pin_units": {"A": ["IN", "OUT"], "P": ["VDD", "GND"]},
+  "pin_sides": {"IN": "left", "OUT": "right"},
+  "datasheet": {"source": "C:/project/datasheets/part.pdf", "revision": "Rev B", "pages": [3, 7]}
+}
+```
+Existing part definitions remain compatible. This records evidence and generates
+library symbols; it does not mark a pin mapping or footprint as reviewed. KiCad
+footprints are still required. Multi-unit automatic block placement is not yet
+supported; use Fusion's unit placement controls. Keep pin names unique across
+units so existing schematic tools can address them unambiguously.
+
 ## Using it
 
 Open a design in Fusion, then ask your agent things like:

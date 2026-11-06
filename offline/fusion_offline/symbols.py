@@ -130,10 +130,32 @@ def from_library_xml(root: ET.Element, library: str | None = None) -> dict[str, 
     return out
 
 
+def box_pins(sym: dict) -> tuple[float, list]:
+    """Box pin positions shared by Fusion generation and offline previews."""
+    sides = [[p for p in sym["pins"] if p.get("side", "left") == side] for side in ("left", "right")]
+    rows = []
+    for pins in sides:
+        placed, row, previous = [], 0, None
+        for p in pins:
+            group = p.get("group")
+            if placed and group != previous:
+                row += 1
+            placed.append((p, row))
+            row += 1
+            previous = group
+        rows.append(placed)
+    height = max([row + 1 for pins in rows for _, row in pins] or [1]) * 2.54 / 2 + 1.27
+    result = [(p, x, round(height - 2.54 * (row + 1), 4), rot)
+              for pins, x, rot in zip(rows, (-7.62, 7.62), (0, 180)) for p, row in pins]
+    return height, result
+
+
 def from_part_json(d: dict) -> Geo:
     """The symbol fusion_mcp.library.build_script draws for a part JSON (a box,
     pins left and right, 2.54 mm pitch). Keep in step with build_script."""
     sym = d["symbol"]
+    if len({p.get("unit", "G$1") for p in sym["pins"]}) > 1:
+        raise ValueError("multi-unit symbols need per-unit placement; single-symbol layout is unsupported")
     if sym.get("style"):
         from fusion_mcp import std_symbols as SS      # the artwork lives with the library builder
         lp, rp = SS.pin_order(sym["style"], sym["pins"])
@@ -145,22 +167,17 @@ def from_part_json(d: dict) -> Geo:
             for pad in pins[p["name"]].pads:
                 pad_pin[pad] = p["name"]
         return Geo(d["deviceset"] + d.get("device", ""), pins, pad_pin, symbol_prims(el))
-    left = [p for p in sym["pins"] if p.get("side", "left") == "left"]
-    right = [p for p in sym["pins"] if p.get("side") == "right"]
-    rows = max(len(left), len(right), 1)
-    hh = rows * 2.54 / 2 + 1.27
+    hh, placed = box_pins(sym)
     prims: list[tuple] = [("wire", -5.08, -hh, 5.08, -hh, 0.254, 0), ("wire", 5.08, -hh, 5.08, hh, 0.254, 0),
                           ("wire", 5.08, hh, -5.08, hh, 0.254, 0), ("wire", -5.08, hh, -5.08, -hh, 0.254, 0),
                           ("text", -5.08, hh + 0.5, 1.778, ">NAME", 0, "bottom-left"),
                           ("text", -5.08, -hh - 2.3, 1.778, ">VALUE", 0, "bottom-left")]
     pins, pad_pin = {}, {}
-    for side, plist, x, ox in (("left", left, -7.62, -1.0), ("right", right, 7.62, 1.0)):
-        for i, p in enumerate(plist):
-            y = round(hh - 2.54 * (i + 1), 4)
-            pads = str(p["pad"]).split()
-            pins[p["name"]] = Pin(p["name"], x, y, ox, 0.0, 2.54, pads)
-            for pad in pads:
-                pad_pin[pad] = p["name"]
+    for p, x, y, rot in placed:
+        pads = str(p["pad"]).split()
+        pins[p["name"]] = Pin(p["name"], x, y, -1.0 if rot == 0 else 1.0, 0.0, 2.54, pads)
+        for pad in pads:
+            pad_pin[pad] = p["name"]
     key = d["deviceset"] + d.get("device", "")
     return Geo(key, pins, pad_pin, prims)
 

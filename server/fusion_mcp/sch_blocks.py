@@ -124,6 +124,9 @@ class BlockSchematic:
 
     # -- step 2 ------------------------------------------------------------
     def layout(self, geo: dict, supply_geo: dict, area: L.SheetArea | None = None):
+        multi = [ref for ref, symbol in geo.items() if symbol.gates > 1]
+        if multi:
+            raise ValueError(f"multi-unit block placement is unsupported: {sorted(multi)}; place units in Fusion")
         pad_net, problems = self.pad_nets(geo)
         if problems:
             raise ValueError("; ".join(problems[:12]))

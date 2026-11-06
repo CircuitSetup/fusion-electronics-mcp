@@ -3696,7 +3696,9 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
                         jlc_code: str | None = None, pin_names: dict[str, str] | None = None,
                         directions: dict[str, str] | None = None, description: str = "",
                         jlc_native: bool = False, manufacturer: str = "", mpn: str = "",
-                        overwrite: bool = False) -> dict:
+                        overwrite: bool = False, pin_groups: dict[str, list[str]] | None = None,
+                        pin_units: dict[str, list[str]] | None = None,
+                        pin_sides: dict[str, str] | None = None, datasheet: dict | None = None) -> dict:
     """Create a part in this server's component library from a KiCad footprint (.kicad_mod): from
     KiCad's own libraries, or JLCPCB's footprint for a part exported with `easyeda2kicad --full
     --lcsc_id=C...` (set jlc_native=true for those: no rotation correction needed at JLC). The
@@ -3704,7 +3706,12 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
     LED, ...), anything else a box with its pins (pin_names maps pad -> pin name, pads sharing a
     name join one pin; directions maps pin name -> in/out/io/pwr/pas/oc). jlc_code (C-number)
     fills JLCPCB, and MF/MP from cached EasyEDA data when not given. Then open your Fusion library
-    and run insert_library_part, save_design, attach_3d_model (with the part's STEP file)."""
+    and run insert_library_part, save_design, attach_3d_model (with the part's STEP file).
+    pin_groups and pin_units map labels to pin-name lists, each covering every pin exactly once.
+    Groups separate pins visually; units create separate symbols/gates in one device. pin_sides
+    optionally maps pin names to left/right. datasheet requires source (URL or local file), revision,
+    pages (1-based PDF pages), and optional sha256; local files are hashed, not uploaded. Evidence
+    does not mark a part verified. Multi-unit automatic block placement is not supported."""
     from fusion_offline.kicad_import import footprint_to_part
     from . import easyeda
     with open(footprint_path, encoding="utf-8") as f:
@@ -3726,12 +3733,19 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
                                       jlc_native=jlc_native, description=description,
                                       source=("easyeda " + attrs["JLCPCB"]) if jlc_native and jlc_code
                                       else f"kicad footprint {os.path.basename(footprint_path)}")
+    from .library import configure_part, symbol_units
+    unknown_directions = set(directions or {}) - {p["name"] for p in part["symbol"]["pins"]}
+    if unknown_directions:
+        raise ValueError(f"directions name unknown pins: {sorted(unknown_directions)}")
+    configure_part(part, pin_groups, pin_units, pin_sides, datasheet)
     path = library.add(part, overwrite=overwrite)
     from . import std_symbols as SS
     pk = part["package"]
     return {"ok": True, "part_id": part_id, "file": path, "package": pk["name"],
             "pads": len(pk.get("smds", [])) + len(pk.get("pads", [])), "holes": len(pk.get("holes", [])),
-            "pins": len(part["symbol"]["pins"]), "symbol_style": part["symbol"].get("style") or SS.infer_style(part),
+            "pins": len(part["symbol"]["pins"]), "symbol_style": part["symbol"].get("style", SS.infer_style(part)),
+            "units": [gate for gate, _ in symbol_units(part)],
+            "datasheet": part["metadata"].get("datasheet"),
             "merged_pads": renames, "attributes": attrs,
             "next": "open your Fusion library, then insert_library_part, save_design, attach_3d_model"}
 
@@ -3784,8 +3798,11 @@ def insert_library_part(part_id: str) -> dict:
     if (got_smd, got_pad, got_hole) != exp:
         raise WriteFailed(f"package has smd/pad/hole {got_smd}/{got_pad}/{got_hole}, expected {exp[0]}/{exp[1]}/{exp[2]}")
     pads = pk.findall("smd") + pk.findall("pad")
-    want_conn = {p["name"]: sorted(str(p["pad"]).split()) for p in part.data["symbol"]["pins"]}
-    got_conn = {c.get("pin"): sorted((c.get("pad") or "").split()) for c in ds.iter("connect")}
+    from .library import symbol_units
+    want_conn = {(gate.upper(), p["name"].upper()): sorted(str(p["pad"]).upper().split())
+                 for gate, sym in symbol_units(part.data) for p in sym["pins"]}
+    got_conn = {(c.get("gate"), c.get("pin")): sorted((c.get("pad") or "").split())
+                for c in ds.iter("connect")}
     if want_conn != got_conn:
         raise WriteFailed(f"pin-pad connections are {got_conn}, expected {want_conn}")
     return {"ok": True, "device": part.device_name, "pads": len(pads), "holes": got_hole,

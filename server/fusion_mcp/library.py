@@ -11,6 +11,10 @@ in Fusion and is never emitted.
 from __future__ import annotations
 
 import json
+import hashlib
+import re
+from pathlib import Path
+from urllib.parse import urlparse
 import os
 from dataclasses import dataclass
 
@@ -99,6 +103,79 @@ def same_package(el, pkg: dict, tol: float = 0.02) -> bool:
     return got == want
 
 
+def configure_part(part: dict, pin_groups=None, pin_units=None, pin_sides=None, datasheet=None) -> None:
+    """Apply explicit datasheet layout choices; never infer electrical pin functions."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", part["id"]):
+        raise ValueError("part_id must contain lowercase letters, digits and hyphens")
+    pins = part["symbol"]["pins"]
+    names = {p["name"] for p in pins}
+    if len({name.upper() for name in names}) != len(pins):
+        raise ValueError("symbol pin names must be unique, ignoring case")
+    for pin in pins:
+        q(pin["name"])
+        if pin.get("direction", "pas") not in {"nc", "in", "out", "io", "oc", "pwr", "pas", "hiz", "sup"}:
+            raise ValueError(f"invalid pin direction for {pin['name']}")
+    for field, mapping in (("group", pin_groups), ("unit", pin_units)):
+        if mapping is None:
+            continue
+        if len({label.upper() for label in mapping}) != len(mapping):
+            raise ValueError(f"{field} names must be unique, ignoring case")
+        assigned = []
+        for label, members in mapping.items():
+            if not isinstance(label, str) or not re.fullmatch(r"[A-Za-z0-9_$-]+", label) or not members:
+                raise ValueError(f"{field} names must be identifiers and each must contain pins")
+            assigned.extend(members)
+        if len(assigned) != len(set(assigned)) or set(assigned) != names:
+            raise ValueError(f"{field} must assign every pin exactly once: {sorted(names)}")
+        order = {name: i for i, name in enumerate(assigned)}
+        if field == "group":
+            pins.sort(key=lambda p: order[p["name"]])
+        for label, members in mapping.items():
+            for pin in pins:
+                if pin["name"] in members:
+                    pin[field] = label
+        part["symbol"]["style"] = False
+    for name, side in (pin_sides or {}).items():
+        if name not in names or side not in {"left", "right"}:
+            raise ValueError("pin_sides must map existing pin names to left or right")
+        next(p for p in pins if p["name"] == name)["side"] = side
+    if datasheet is not None:
+        if set(datasheet) - {"source", "revision", "pages", "sha256"}:
+            raise ValueError("datasheet supports source, revision, pages and optional sha256")
+        source, revision, pages = (datasheet.get(k) for k in ("source", "revision", "pages"))
+        if not isinstance(source, str) or not source.strip() or not isinstance(revision, str) or not revision.strip():
+            raise ValueError("datasheet needs a source URL or file path and revision")
+        if not isinstance(pages, list) or not pages or any(type(v) is not int or v < 1 for v in pages):
+            raise ValueError("datasheet pages must be positive PDF page numbers (1-based)")
+        evidence = {"source": source, "revision": revision, "pages": sorted(set(pages))}
+        digest = datasheet.get("sha256")
+        if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)):
+            raise ValueError("datasheet sha256 must be 64 hexadecimal characters")
+        if urlparse(source).scheme not in {"https", "http"}:
+            path = Path(source).expanduser().resolve()
+            if not path.is_file():
+                raise ValueError(f"datasheet file not found: {path}")
+            with path.open("rb") as f:
+                actual = hashlib.file_digest(f, "sha256").hexdigest()
+            if digest and digest.lower() != actual:
+                raise ValueError("datasheet sha256 does not match the local file")
+            digest = actual
+            evidence["source"] = str(path)
+        if digest:
+            evidence["sha256"] = digest.lower()
+        part["metadata"]["datasheet"] = evidence
+
+
+def symbol_units(part: dict) -> list[tuple[str, dict]]:
+    """Keep the legacy flat pin list, with optional unit names on each pin."""
+    sym = part["symbol"]
+    units = list(dict.fromkeys(p.get("unit", "G$1") for p in sym["pins"]))
+    if units == ["G$1"]:
+        return [("G$1", sym)]
+    return [(unit, {**sym, "name": sym["name"] + "_" + unit, "style": False,
+                    "pins": [p for p in sym["pins"] if p.get("unit", "G$1") == unit]}) for unit in units]
+
+
 def build_script(part: Part, reuse_package: bool = False) -> str:
     """reuse_package: the library already has this package (same pads), so only the symbol and
     device are drawn and the device uses the existing package."""
@@ -107,7 +184,10 @@ def build_script(part: Part, reuse_package: bool = False) -> str:
     L = ["GRID MM;"]
     if not reuse_package:
         L += _package_commands(pkg)
-    return _symbol_and_device(L, d, sym, pkg)
+    units = symbol_units(d)
+    for gate, unit in units:
+        _symbol_commands(L, d, unit)
+    return _device_part(L, d, units, pkg, q)
 
 
 def _package_commands(pkg: dict) -> list:
@@ -241,7 +321,7 @@ def deviceset_info(root, name: str) -> dict | None:
     return {"deviceset": ds.get("name"), "prefix": ds.get("prefix"), "gates": gates, "variants": variants}
 
 
-def _symbol_and_device(L: list, d: dict, sym: dict, pkg: dict) -> str:
+def _symbol_commands(L: list, d: dict, sym: dict) -> None:
     from . import std_symbols as SS
     # two-pin passives always get the library's standard symbol (std_symbols), whatever the
     # source drew; "style": false in the part keeps the part's own symbol
@@ -257,31 +337,27 @@ def _symbol_and_device(L: list, d: dict, sym: dict, pkg: dict) -> str:
               f"PIN {q(lp['name'])} {lp.get('direction', 'pas')} {plen} R0 (0 0);",
               f"PIN {q(rp['name'])} {rp.get('direction', 'pas')} {plen} R180 (7.62 0);",
               "CHANGE VISIBLE OFF (0 0);", "CHANGE VISIBLE OFF (7.62 0);"] + SS.art_commands(sym["style"])
-        return _device_part(L, d, sym, pkg, q)
-    left = [p for p in sym["pins"] if p.get("side", "left") == "left"]
-    right = [p for p in sym["pins"] if p.get("side") == "right"]
-    rows = max(len(left), len(right), 1)
-    hh = rows * 2.54 / 2 + 1.27
+        return
+    from fusion_offline.symbols import box_pins
+    hh, placed = box_pins(sym)
     L += [f"EDIT {q(sym['name'] + '.sym')};", "LAYER 94;",
           f"WIRE 0.254 (-5.08 {n(-hh)}) (5.08 {n(-hh)}) (5.08 {n(hh)}) (-5.08 {n(hh)}) (-5.08 {n(-hh)});"]
-    for side, pins, x, rot in (("left", left, -7.62, "R0"), ("right", right, 7.62, "R180")):
-        for i, p in enumerate(pins):
-            y = hh - 2.54 * (i + 1)
-            L.append(f"PIN {q(p['name'])} {p.get('direction', 'pas')} short {rot} ({n(x)} {n(y)});")
+    for p, x, y, rot in placed:
+        L.append(f"PIN {q(p['name'])} {p.get('direction', 'pas')} short R{rot} ({n(x)} {n(y)});")
     L += ["CHANGE SIZE 1.778;", "LAYER 95;", f"TEXT '>NAME' R0 (-5.08 {n(hh + 0.5)});",
           "LAYER 96;", f"TEXT '>VALUE' R0 (-5.08 {n(-hh - 2.3)});"]
-    return _device_part(L, d, sym, pkg, q)
 
 
-def _device_part(L: list, d: dict, sym: dict, pkg: dict, q) -> str:
+def _device_part(L: list, d: dict, units: list, pkg: dict, q) -> str:
     L += [f"EDIT {q(d['deviceset'] + '.dev')};", f"PREFIX {q(d['prefix'])};",
-          f"VALUE {'ON' if d.get('user_value') else 'OFF'};",
-          f"ADD {q(sym['name'])} 'G$1' NEXT 0 (0 0);",
-          f"PACKAGE {q(pkg['name'])} '{d.get('device', '')}';"]
+          f"VALUE {'ON' if d.get('user_value') else 'OFF'};"]
+    L += [f"ADD {q(sym['name'])} {q(gate)} NEXT 0 ({i * 25.4:g} 0);" for i, (gate, sym) in enumerate(units)]
+    L.append(f"PACKAGE {q(pkg['name'])} '{d.get('device', '')}';")
     # ONE CONNECT per pin, all its pads in one space-separated string. Verified
     # on 2705.1.15: a second CONNECT for the same pin REPLACES the first, so
     # per-pad lines silently leave only the last pad connected.
-    L += [f"CONNECT {q('G$1.' + p['name'])} {q(' '.join(str(p['pad']).split()))};" for p in sym["pins"]]
+    L += [f"CONNECT {q(gate + '.' + p['name'])} {q(' '.join(str(p['pad']).split()))};"
+          for gate, sym in units for p in sym["pins"]]
     L.append("TECHNOLOGY '';")
     clean = lambda v: str(v).replace("'", "").replace(";", ",")
     for k, v in d.get("attributes", {}).items():
@@ -290,4 +366,7 @@ def _device_part(L: list, d: dict, sym: dict, pkg: dict, q) -> str:
     for k in ("source", "maintainer", "link"):
         if meta.get(k):
             L.append(f"ATTRIBUTE LIB_{k.upper()} {q(clean(meta[k]))};")
+    for key, value in meta.get("datasheet", {}).items():
+        text = ",".join(map(str, value)) if isinstance(value, list) else str(value)
+        L.append(f"ATTRIBUTE DATASHEET_{key.upper()} {q(clean(text))};")
     return "\n".join(L) + "\n"
