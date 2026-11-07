@@ -148,6 +148,41 @@ fusion-electronics-mcp doctor
 
 ## Libraries
 
+### Find parts in Fusion libraries
+
+`search_fusion_libraries(query="USB C")` searches Fusion's local Library Manager
+index across local, public and hub libraries, including inactive libraries.
+Search by part number or words such as `ESP32` or `10k 0603`: names, descriptions,
+packages, technologies and attributes are searched. Exact device names and
+complete-word matches rank first. Each result includes `device` and
+`library_name` for `add_part`, the package and attributes, and the library's
+path/URN, version, activation and download status. Duplicate library names are
+flagged: resolve the intended library in Library Manager before placement.
+
+Use `limit` (1..100, default 25) and the returned `next_offset` to page results;
+`library_name` optionally filters by an exact, case-insensitive library name.
+The search reads the index without opening documents or changing libraries.
+It needs no new environment variables or add-in changes. After updating the
+server, restart your MCP connection to expose the new tool.
+
+**Coverage:** this searches locally indexed metadata, not every component in
+the cloud. Libraries without indexed devices are counted in `coverage`; matching
+library names/descriptions appear separately in `unindexed_libraries`, with
+`unindexed_total` and `unindexed_next_offset` for pagination. Refresh/download
+libraries in Fusion's Library Manager to populate missing records, and activate
+the desired library before placing a part. Cached status does not prove that a
+library is available in the active design or current hub.
+
+The index is discovered under Fusion's standard `Electron` directory on Windows
+and macOS. If more than one account index exists, pass `database_path` to the
+intended account's `libraries.db`; it is never selected silently. This also
+supports nonstandard installations. The index schema is internal to Fusion;
+unsupported schema changes produce an error rather than an empty search.
+Autodesk documents the cache locations in its
+[library troubleshooting guidance](https://forums.autodesk.com/t5/fusion-electronics-forum/attention-how-to-resolve-missing-3d-models-or-errors-when/m-p/12808621).
+
+`search_library` remains a separate search of this MCP's JSON component catalog.
+
 ### Groundplane's libraries (optional)
 
 [groundplane-studio/fusion-libraries](https://github.com/groundplane-studio/fusion-libraries)

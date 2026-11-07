@@ -3709,8 +3709,30 @@ def save_design(description: str = "saved by fusion-electronics-mcp") -> dict:
 
 @tool(READ)
 def search_library(query: str, library_directory: str | None = None) -> list[dict]:
-    """Search this server's component library (library/parts)."""
+    """Search this server's JSON component library (library/parts).
+    For parts in Fusion's Library Manager, use search_fusion_libraries instead."""
     return (Library(library_directory) if library_directory else library).search(query)
+
+
+@tool(READ)
+def search_fusion_libraries(query: str, limit: int = 25, offset: int = 0,
+                            library_name: str | None = None, database_path: str | None = None) -> dict:
+    """Find parts in Fusion's local Library Manager index, including inactive libraries.
+    Matches all case-insensitive words across names, descriptions, footprints and attributes
+    (e.g. 'USB C', 'ESP32', '10k 0603', or a manufacturer part number). Returns exact device
+    and library_name values for add_part, technologies, packages, attributes and library status.
+    Activate/download libraries in Fusion before placement; resolve duplicate library names
+    using the returned paths/URNs. Search is read-only and does not open or change any design.
+
+    This is cached local/public/hub metadata, not a live search of every cloud library.
+    Coverage and warnings report libraries without indexed devices; matching library metadata
+    is returned separately in unindexed_libraries. Refresh Library Manager for newer data.
+    limit is 1..100; use next_offset (or unindexed_next_offset) for more results. library_name
+    is an optional exact, case-insensitive filter. database_path selects libraries.db when
+    autodiscovery on Windows/macOS finds none or multiple accounts; no new environment variable
+    is needed. The existing search_library searches only the MCP's JSON component catalog."""
+    from .fusion_libraries import search
+    return search(query, limit, offset, library_name, database_path)
 
 
 @tool(ADDITIVE)

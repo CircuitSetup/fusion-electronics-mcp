@@ -26,6 +26,12 @@ GT-USB-7052 / GT-USB-9818A) added to a shared library.
   counted, not flagged.
 
 ### Library
+- `search_fusion_libraries`: read-only search of Fusion's Library Manager index
+  by names, descriptions, footprints and attributes. Returns exact device and
+  library names, technology variants, activation/download status and pagination.
+  Includes inactive libraries, flags duplicate names and reports unindexed
+  libraries instead of implying complete cloud coverage. No add-in update or
+  new environment variable is required.
 - `add_library_variant`: add a part's footprint to an EXISTING device set as
   a new package variant on its own symbol (no symbol or device set made).
   Pins map to the symbol by name or an explicit `pin_map`; every symbol pin

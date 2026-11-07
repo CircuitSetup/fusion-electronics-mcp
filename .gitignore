@@ -9,3 +9,5 @@ build/
 tests/fixtures/_tmp_*
 server/fusion_mcp/addin/FusionElectronicsMCP/.vscode/
 spike/
+docs/superpowers/
+.superpowers/
