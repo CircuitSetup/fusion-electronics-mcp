@@ -8,10 +8,11 @@ add-in only touches Fusion, always on the main thread.
         --app.fireCustomEvent(job id)--> main-thread handler --> Fusion
         <--threading.Event-- result JSON
 
-There is no arbitrary code execution. EAGLE commands pass an allowlist of
+EAGLE commands pass an allowlist of
 verbs that edit the open design only: no RUN (ULPs), SCRIPT, WRITE, EXPORT,
 CAM, OPEN or other file/system commands.
 The separate run_bundled_ulp operation runs only packaged, reviewed read-only ULPs.
+run_registered_ulp runs explicitly registered, hash-pinned sources, including legacy ULPs.
 
 Connection info (port + per-session token) is written to
 %APPDATA%/fusion-electronics-mcp/bridge.json and removed on stop.
@@ -20,6 +21,7 @@ Stdlib only; runs on Fusion's embedded Python.
 
 import contextlib
 import hmac
+import importlib.util
 import json
 import os
 import re
@@ -35,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.12"
+ADDIN_VERSION = "0.14.13"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -531,6 +533,53 @@ def op_run_bundled_ulp(args):
             raise BridgeError("ulp_failed", f"no valid result from the bundled ULP: {ex}") from None
     return {"name": name, "document": doc.name, "editor": editor, "data": data,
             "ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+
+def op_run_registered_ulp(args):
+    """Only registry-pinned source; never accept executable source or paths over the bridge."""
+    spec = importlib.util.spec_from_file_location('femcp_ulp_support', os.path.join(os.path.dirname(__file__), 'ulp_support.py'))
+    support = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(support)
+    try:
+        if set(args) - {'name', 'arguments', 'registration_sha256', 'expected_document_id', 'legacy_source_sha256'}:
+            raise ValueError('Unknown ULP arguments')
+        entry, source = support.load(support.registry_dir(), args.get('name'))
+        if support.digest(entry) != args.get('registration_sha256'): raise ValueError('Registration changed')
+        values = support.arguments(entry, args.get('arguments'))
+        legacy = entry['mode'] == 'legacy'
+        if legacy and args.get('legacy_source_sha256') != entry['sha256']:
+            raise ValueError('Legacy execution requires an explicitly reviewed source hash')
+        if not legacy and 'legacy_source_sha256' in args: raise ValueError('Wrong ULP workflow')
+        doc, editor = _app.activeDocument, _product_kind()
+        if doc is None or _document_id(doc) != args.get('expected_document_id'):
+            raise ValueError('The requested document is not active')
+        if editor not in entry['editors']: raise ValueError('Wrong editor for this ULP')
+        before = doc.isModified
+        os.makedirs(WORK_DIR, exist_ok=True)
+        # Retain legacy-generated files; their paths may be based on argv[0].
+        folder = tempfile.mkdtemp(prefix='legacy-ulp-' if legacy else 'registered-ulp-', dir=WORK_DIR)
+        try:
+            path = os.path.join(folder, os.path.basename(entry['source_path']))
+            output = os.path.join(folder, 'result.json')
+            with open(path, 'wb') as f:
+                f.write(source if legacy else support.render_source(source, output).encode('utf-8'))
+            path = path.replace('\\', '/')
+            if any(c in path for c in "'\";\r\n"): raise ValueError('Unsupported source path characters')
+            command = 'Electron.run RUN ' + ' '.join("'" + value + "'" for value in [path] + values) + ';'
+            raw = _app.executeTextCommand(command)
+            if legacy: return {'legacy': True, 'raw': raw, 'artifact_directory': folder}
+            if _app.activeDocument != doc or _product_kind() != editor or doc.isModified != before:
+                raise ValueError('Document or modified state changed during read/preview; inspect Fusion')
+            data = support.read_json(output)
+            fields = {'schema', 'mode', 'editor', 'complete'} | ({'data'} if entry['mode'] == 'read' else {'commands', 'changes'})
+            if (not isinstance(data, dict) or set(data) != fields or data.get('schema') != 1
+                    or data.get('mode') != entry['mode'] or data.get('editor') != editor or data.get('complete') is not True):
+                raise ValueError('Incomplete or mismatched ULP output')
+            return {'name': entry['name'], 'sha256': entry['sha256'], 'data': data}
+        finally:
+            if not legacy: shutil.rmtree(folder)
+    except (OSError, ValueError, TypeError) as ex:
+        raise BridgeError('ulp_failed', str(ex)) from None
 
 
 def op_design_rules(args):
@@ -1382,6 +1431,7 @@ def op_update_libraries(args):
 
 OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export": op_export,
        "run": op_run, "run_script": op_run_script, "run_bundled_ulp": op_run_bundled_ulp,
+       "run_registered_ulp": op_run_registered_ulp,
        "errors": op_errors, "save": op_save,
        "close_library": op_close, "list_designs": op_list_designs, "open_design": op_open_design,
        "find_documents": op_find_documents,

@@ -165,6 +165,22 @@ Requires server `0.3.0+workflow.9` and add-in `0.14.12` (reinstall/restart the
 add-in), or the updated server's built-in transport. Restart the MCP connection
 to discover the new tool. See [live findings and limitations](docs/ulp-probe.md).
 
+### Registered custom and existing Fusion ULPs
+
+Server `0.3.0+workflow.10` / add-in `0.14.13` adds `discover_fusion_ulps`,
+`register_ulp`, `list_registered_ulps` and `unregister_ulp`. Existing downloaded
+Fusion ULP Manager programs can be registered by their reviewed source hash.
+
+- `run_registered_ulp`: structured read results, with unchanged-design checks.
+- `preview_ulp_edit` → `apply_ulp_edit`: review exact commands and expected attribute
+  changes, then apply the approved hash once and verify the exported result.
+- `run_legacy_ulp`: explicitly requested runs of registered unchanged ULPs, including
+  programs that edit directly or show dialogs. Retains before/after snapshots and an
+  observed diff; no guaranteed preview, completion or rollback.
+
+Sources must be reviewed and self-contained. Registration is not a security sandbox.
+See [registration, output contracts and limitations](docs/registered-ulps.md).
+
 ## Libraries
 
 ### Find parts in Fusion libraries

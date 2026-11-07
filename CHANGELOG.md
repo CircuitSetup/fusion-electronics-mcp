@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Registered ULPs (workflow.10 / add-in 0.14.13)
+- Discover locally cached Fusion ULPs and register reviewed, hash-pinned sources.
+- Run structured read ULPs or preview edit commands, then apply an authorized plan
+  once with stale-state checks and whole-export read-back verification.
+- Explicitly requested legacy ULP runs retain before/after snapshots and observed
+  diffs without promising a preview or rollback; interactive dialogs remain open.
+- Self-contained source requirement, example ULPs and usage contracts are documented
+  in [registered ULPs](docs/registered-ulps.md).
+
 From the WarpKVM boards in October 2026: board checks for annular ring, pour
 clearance and solder mask, and USB-C board-to-board connectors (G-Switch
 GT-USB-7052 / GT-USB-9818A) added to a shared library.

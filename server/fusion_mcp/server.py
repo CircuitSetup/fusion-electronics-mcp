@@ -2,9 +2,9 @@
 
 Reads come from Fusion's EAGLE XML export (parsed here); writes are EAGLE
 commands sent through the add-in and verified by re-exporting. No network
-access except 127.0.0.1 to the add-in, and easyeda.com only when
-check_jlc_orientation is called with fetch=true (see easyeda.py); the
-service tools are stubs.
+access except 127.0.0.1 to the add-in, and easyeda.com when check_jlc_orientation
+uses fetch=true (see easyeda.py). Explicitly requested legacy ULPs may have arbitrary
+external effects through Fusion. The service tools are stubs.
 """
 
 from __future__ import annotations
@@ -42,8 +42,10 @@ mcp = MCPServer(
         "Tools for Autodesk Fusion Electronics designs open in Fusion (needs Fusion running with its "
         "MCP server turned on, Preferences > General > API, or the FusionElectronicsMCP add-in). "
         "Coordinates are millimetres. Reads reflect the design as "
-        "exported at call time. Every write is verified by reading the design back and is undone "
-        "if the result does not match. Nothing is saved until save_design is called."),
+        "exported at call time. Normal edits are verified by reading the design back. "
+        "ULP edit plans do not automatically undo uncertain results. Registered legacy ULPs require an explicit "
+        "user request for each run, may save or affect external files, and provide snapshots/diffs without "
+        "guaranteed preview, completion or rollback. Other tools do not save until save_design is called."),
 )
 session = Session()
 library = Library()
@@ -106,6 +108,92 @@ def run_bundled_ulp(name: str = "probe", design: str | None = None) -> dict:
     or the built-in transport with current server files.
     """
     return session.bridge.call("run_bundled_ulp", {"name": name, "design": design}, timeout=60)
+
+
+@tool(READ)
+def discover_fusion_ulps(query: str = '', limit: int = 25, offset: int = 0) -> dict:
+    """Find existing locally cached Fusion ULP Manager programs, including source paths and hashes.
+    Does not register or execute anything. Download uncached cloud ULPs in Fusion first.
+    Review the source before registering it; discovery is not approval.
+    """
+    from .custom_ulp import discover
+    return discover(query, limit, offset)
+
+
+@tool(READ)
+def list_registered_ulps() -> list[dict]:
+    """List registered ULPs with mode, permitted editors, argument count and pinned source hash."""
+    from .custom_ulp import registered
+    return registered()
+
+
+@tool(CHANGE)
+def register_ulp(name: str, source_path: str, mode: str, editors: list[str], argument_count: int,
+                 reviewed_sha256: str) -> dict:
+    """Register/update an explicitly approved, reviewed local ULP source, pinned to its exact SHA-256.
+    Includes existing Fusion ULP Manager sources found by discover_fusion_ulps. Never infer approval
+    from discovery. Modes: read (structured JSON), edit (JSON command proposal), legacy (unchanged
+    direct/interactive ULP, arbitrary side effects). Sources must be self-contained, without includes.
+    Read/edit require output(MCP_OUTPUT, \"wt\") and restricted source; this is not a security sandbox.
+    Editors: board/schematic, plus library for legacy. Arguments are positional strings (0..16).
+    Registration alone does not authorize legacy runs or applying an edit proposal.
+    """
+    from .addin.FusionElectronicsMCP import ulp_support as U
+    with session.bridge.lock.hold('register ULP'):
+        return U.register(U.registry_dir(), name, source_path, mode, editors, argument_count, reviewed_sha256)
+
+
+@tool(CHANGE)
+def unregister_ulp(name: str) -> dict:
+    """Revoke a registered ULP name. Existing previews then cannot be applied."""
+    from .addin.FusionElectronicsMCP import ulp_support as U
+    with session.bridge.lock.hold('unregister ULP'):
+        (U.registry_dir() / (U.valid_name(name) + '.json')).unlink()
+    return {'unregistered': name}
+
+
+@tool(READ)
+def run_registered_ulp(name: str, arguments: list[str], expected_document_id: str) -> dict:
+    """Run a registered read-mode ULP against the exact active document ID from get_context.
+    Verifies exported design state stays unchanged. Needs add-in 0.14.13+. No arbitrary source/path.
+    """
+    from .custom_ulp import read
+    return read(session, name, arguments, expected_document_id)
+
+
+@tool(READ)
+def preview_ulp_edit(name: str, arguments: list[str], expected_document_id: str) -> dict:
+    """Run a registered edit-mode proposal generator without applying its commands.
+    Returns exact command preview, explicit XML attribute changes, plan path and SHA-256.
+    Review the commands and expected changes with the user before apply_ulp_edit.
+    Supports existing board/schematic object attributes; needs add-in 0.14.13+.
+    """
+    from .custom_ulp import preview
+    return preview(session, name, arguments, expected_document_id)
+
+
+@tool(ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
+def apply_ulp_edit(plan_path: str, expected_sha256: str) -> dict:
+    """Apply only the exact ULP plan/hash explicitly reviewed and authorized by the user.
+    Rejects stale document/source/plan; sends frozen validated commands once and verifies the entire
+    exported design against declared changes. An uncertain outcome consumes the attempt: inspect Fusion,
+    never blindly retry or undo. Does not save. Needs add-in 0.14.13+.
+    """
+    from .custom_ulp import apply
+    return apply(session, plan_path, expected_sha256)
+
+
+@tool(ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
+def run_legacy_ulp(name: str, arguments: list[str], expected_document_id: str, expected_source_sha256: str) -> dict:
+    """Run an unchanged registered legacy ULP ONLY when the user explicitly requests this particular run.
+    Require its reviewed source hash and exact active document ID. May directly edit/save designs,
+    show interactive dialogs, access files/network or launch processes. Dialogs remain for the user.
+    Retains before/after XML snapshots and reports observed differences, with NO guaranteed preview,
+    completion or rollback. External effects are not captured. Runs a pinned copy in a retained artifact
+    directory, so source-relative paths differ. Needs add-in 0.14.13+. Do not retry state_unknown.
+    """
+    from .custom_ulp import legacy
+    return legacy(session, name, arguments, expected_document_id, expected_source_sha256)
 
 
 @tool(READ)

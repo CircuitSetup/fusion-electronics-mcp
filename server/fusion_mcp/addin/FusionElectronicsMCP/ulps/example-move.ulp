@@ -1,0 +1,16 @@
+#usage "MCP edit-mode example. Propose moving a named board element 1 mm to the right. One reference argument."
+if (!board || argc != 2) exit(1);
+// Restrict the example reference to characters safe in both command and XPath literals.
+for (int i = 0; i < strlen(argv[1]); i++) {
+  int c = argv[1][i];
+  if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95)) exit(1);
+}
+output(MCP_OUTPUT, "wt") {
+  board(B) B.elements(E) if (E.name == argv[1]) {
+    real x = u2mm(E.x) + 1.0, y = u2mm(E.y);
+    printf("{\"schema\":1,\"mode\":\"edit\",\"editor\":\"board\",\"commands\":\"MOVE '%s' (%.4f %.4f);\",", E.name, x, y);
+    printf("\"changes\":[{\"document\":\"board\",\"xpath\":\"./drawing/board/elements/element[@name='%s']\",", E.name);
+    printf("\"attributes\":{\"x\":\"%.4f\",\"y\":\"%.4f\"}}],\"complete\":true}", x, y);
+  }
+}
+exit(0);

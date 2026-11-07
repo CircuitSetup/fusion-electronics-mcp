@@ -47,7 +47,7 @@ class BridgeOpError(Exception):
 
 _BUILTIN = BuiltinClient()
 # operations the built-in server cannot do properly (see the module docstring)
-NEEDS_ADDIN = {"save", "push_3d"}
+NEEDS_ADDIN = {"save", "push_3d", "run_registered_ulp"}
 
 
 def addin_running(info_path: str | None = None) -> bool:
@@ -126,6 +126,8 @@ class Bridge:
         Fusion notification toasts (its only error channel) are returned under
         "messages"."""
         mode = self.transport()
+        if mode == 'builtin' and op == 'run_registered_ulp':
+            raise BridgeOpError('needs_addin', 'Registered ULPs require add-in 0.14.13+ for stable document identity')
         if mode == "builtin" and op in NEEDS_ADDIN:
             raise BridgeOpError("needs_addin",
                                 f"'{op}' needs the FusionElectronicsMCP add-in: Fusion's built-in MCP server "
@@ -138,9 +140,10 @@ class Bridge:
                                     "update the add-in")
         self.last_dialogs = []
         pid = int(info.get("pid") or 0)
-        watch = self.watch_dialogs and dialogs.supported() and pid
+        interactive_ulp = op == 'run_registered_ulp' and bool((args or {}).get('legacy_source_sha256'))
+        watch = self.watch_dialogs and not interactive_ulp and dialogs.supported() and pid
         deadline = time.monotonic() + timeout + 20
-        prev_fg = dialogs.foreground() if (self.keep_focus and pid) else 0
+        prev_fg = dialogs.foreground() if (self.keep_focus and pid and not interactive_ulp) else 0
         if prev_fg and dialogs.window_pid(prev_fg) == pid:
             prev_fg = 0                      # the person is in Fusion already: leave focus alone
         guard = {"on": bool(prev_fg), "returned": False, "dialogs": 0}

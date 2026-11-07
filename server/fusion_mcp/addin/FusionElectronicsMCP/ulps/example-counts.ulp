@@ -1,0 +1,14 @@
+#usage "MCP read-mode example. Register for board/schematic with zero arguments."
+if (argc != 1 || (!board && !schematic)) exit(1);
+output(MCP_OUTPUT, "wt") {
+  int count = 0;
+  if (board) board(B) {
+    B.elements(E) count++;
+    printf("{\"schema\":1,\"mode\":\"read\",\"editor\":\"board\",\"data\":{\"elements\":%d},\"complete\":true}", count);
+  }
+  else schematic(S) {
+    S.parts(P) count++;
+    printf("{\"schema\":1,\"mode\":\"read\",\"editor\":\"schematic\",\"data\":{\"parts\":%d},\"complete\":true}", count);
+  }
+}
+exit(0);
