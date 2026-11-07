@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.13"
+ADDIN_VERSION = "0.14.14"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -69,6 +69,8 @@ _token = ""
 _stop = threading.Event()
 _jobs = {}
 _jobs_lock = threading.Lock()
+_management_module = None
+_events = None
 
 
 class BridgeError(Exception):
@@ -580,6 +582,41 @@ def op_run_registered_ulp(args):
             if not legacy: shutil.rmtree(folder)
     except (OSError, ValueError, TypeError) as ex:
         raise BridgeError('ulp_failed', str(ex)) from None
+
+
+def _management():
+    global _management_module
+    if _management_module is None:
+        spec = importlib.util.spec_from_file_location('femcp_management', os.path.join(os.path.dirname(__file__), 'management.py'))
+        _management_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_management_module)
+    return _management_module
+
+
+def op_list_scripts(args):
+    return _management().list_scripts(_app, args.get('query', ''), args.get('limit', 25), args.get('offset', 0))
+
+
+def op_inspect_script(args):
+    return _management().inspect_script(_app, args.get('folder'))
+
+
+def op_control_script(args):
+    result = _management().control_script(_app, os.path.dirname(__file__), args.get('action'), args.get('folder'),
+                                          args.get('expected_id'), args.get('expected_source_sha256'))
+    if _events: _events.append('script_control', **result)
+    return result
+
+
+def op_events(args):
+    if _events is None: raise BridgeError('needs_addin', 'Event log requires the running add-in')
+    return _events.read(args.get('session_id'), args.get('after_seq', 0), args.get('limit', 100))
+
+
+def op_reload_addin(args):
+    result = _management().queue_reload(_app, os.path.dirname(__file__), INFO_PATH, args.get('request_id'))
+    if _events: _events.append('reload_requested', request_id=result['request_id'])
+    return result
 
 
 def op_design_rules(args):
@@ -1430,6 +1467,8 @@ def op_update_libraries(args):
 
 
 OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export": op_export,
+       "list_scripts": op_list_scripts, "inspect_script": op_inspect_script, "control_script": op_control_script,
+       "events": op_events, "reload_addin": op_reload_addin,
        "run": op_run, "run_script": op_run_script, "run_bundled_ulp": op_run_bundled_ulp,
        "run_registered_ulp": op_run_registered_ulp,
        "errors": op_errors, "save": op_save,
@@ -1491,6 +1530,13 @@ def _serve_conn(conn):
         if op not in OPS:
             _reply(conn, {"v": PROTOCOL, "id": rid, "ok": False, "error": {"code": "unknown_op", "message": f"unknown op {op!r}"}})
             return
+        if op == 'events':
+            # Cached data only: event inspection must remain available while Fusion's UI is busy.
+            try:
+                _reply(conn, {'v': PROTOCOL, 'id': rid, 'ok': True, 'result': op_events(req.get('args') or {})})
+            except (ValueError, BridgeError) as ex:
+                _reply(conn, {'v': PROTOCOL, 'id': rid, 'ok': False, 'error': {'code': 'bad_args', 'message': str(ex)}})
+            return
         timeout = min(float(req.get("timeout") or DEFAULT_TIMEOUT), 600.0)
         jid = uuid.uuid4().hex
         job = {"op": op, "args": req.get("args") or {}, "done": threading.Event(), "state": "queued", "result": None}
@@ -1544,7 +1590,7 @@ def _other_copy():
 
 
 def run(context):
-    global _app, _ui, _event, _handler, _server, _token
+    global _app, _ui, _event, _handler, _server, _token, _events
     _app = adsk.core.Application.get()
     _ui = _app.userInterface
     other = _other_copy()
@@ -1554,6 +1600,10 @@ def run(context):
                        "this copy was not started.", "Fusion Electronics MCP")
         return
     try:
+        if _events: _events.close()
+        _events = _management().EventLog()
+        _events.start(_app, adsk.core)
+        _events.append('bridge_started', addin_version=ADDIN_VERSION)
         with contextlib.suppress(Exception):
             _app.unregisterCustomEvent(EVENT_ID)
         _event = _app.registerCustomEvent(EVENT_ID)
@@ -1568,10 +1618,12 @@ def run(context):
         with open(INFO_PATH, "w", encoding="utf-8") as f:
             json.dump({"port": _server.getsockname()[1], "token": _token, "pid": os.getpid(),
                        "protocol": PROTOCOL, "addin_version": ADDIN_VERSION,
+                       "event_session_id": _events.session_id,
                        "started": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
         threading.Thread(target=_accept, args=(_server,), daemon=True).start()
         setattr(adsk.core, _OWNER_ATTR, os.path.abspath(__file__))
     except Exception:
+        if _events: _events.close()
         _ui.messageBox(traceback.format_exc(), "Fusion Electronics MCP failed to start")
 
 
@@ -1579,6 +1631,9 @@ def stop(context):
     if _other_copy() or _server is None:      # not the running copy: leave the other one alone
         return
     _stop.set()
+    if _events:
+        _events.append('bridge_stopping')
+        _events.close()
     with contextlib.suppress(Exception):
         _server.close()
     with contextlib.suppress(Exception):
@@ -1592,5 +1647,4 @@ def stop(context):
             os.remove(INFO_PATH)
     with contextlib.suppress(Exception):
         delattr(adsk.core, _OWNER_ATTR)
-    with contextlib.suppress(Exception):
-        shutil.rmtree(WORK_DIR, ignore_errors=True)
+    # Individual operations clean temporary files; retain legacy ULP output across reloads.

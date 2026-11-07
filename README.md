@@ -186,6 +186,38 @@ proposals, gives each preview a fresh single-use hash, and retains legacy output
 locations when read-back fails. Regenerate older edit plans after upgrading;
 add-in `0.14.13` remains compatible.
 
+### Scripts, add-ins and events
+
+Server `0.3.0+workflow.12` / add-in `0.14.14` adds native lifecycle management:
+
+- `list_fusion_scripts` lists scripts/add-ins already known to Fusion.
+- `inspect_fusion_script` returns an exact folder, ID and folder hash.
+- `run_fusion_script` requires that identity and reviewed hash; `stop_fusion_script`
+  requires the identity. Use only for explicitly requested, trusted programs.
+- `get_fusion_events` returns document, command and bridge lifecycle metadata.
+  Continue with `session_id` and `next_after_seq`; `reset` reports a new session
+  and `dropped` reports overwritten entries. The log holds 500 entries in memory
+  and lists supported/unavailable subscriptions. It is not a design diff or audit archive.
+- `reload_mcp_addin` launches the packaged `FusionElectronicsMCPReload` script,
+  which stops/restarts only the MCP add-in. The client verifies a new authenticated
+  bridge session and a successful ping. `get_mcp_reload_status(request_id)` inspects
+  an uncertain result without submitting another restart.
+
+Run `fusion-electronics-mcp install-addin --force` to install both folders. An
+older running add-in needs one initial Stop/Run to load these hooks; subsequent
+reloads use the tool. Restart the external MCP connection to discover new tools.
+Reloading the Fusion add-in does not reload the external MCP server, install an
+update, save/close designs, or recover a hung Fusion UI. Retained legacy ULP
+artifacts survive reloads. A failed restart may still require manual recovery.
+
+Script execution and stop handlers can edit/save designs, access files/network
+and open dialogs. There is no sandbox, guaranteed completion, read-back or rollback.
+The folder hash excludes `.git`, `__pycache__` and bytecode; it does not pin external
+imports/resources or a module Fusion already loaded. Inspect/review the source before
+running it. Management operations leave dialogs and focus alone. Event reads use
+cached data without Fusion's UI queue, but still honor the shared MCP operation lock.
+The MCP add-in and its reload helper cannot be stopped/run through generic controls.
+
 ## Libraries
 
 ### Find parts in Fusion libraries

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fusion-electronics-mcp"
-version = "0.3.0+workflow.11"
+version = "0.3.0+workflow.12"
 description = "MCP server that lets AI agents read and edit Autodesk Fusion Electronics designs"
 readme = "README.md"
 license = "MIT"
@@ -26,4 +26,4 @@ Homepage = "https://github.com/groundplane-studio/fusion-electronics-mcp"
 where = ["offline", "server"]
 
 [tool.setuptools.package-data]
-fusion_mcp = ["addin/FusionElectronicsMCP/*.py", "addin/FusionElectronicsMCP/*.manifest", "addin/FusionElectronicsMCP/ulps/*.ulp", "data/*.json", "data/rules/*.edru", "data/stackups/*.estackup"]
+fusion_mcp = ["addin/FusionElectronicsMCP/*.py", "addin/FusionElectronicsMCP/*.manifest", "addin/FusionElectronicsMCP/ulps/*.ulp", "addin/FusionElectronicsMCPReload/*.py", "addin/FusionElectronicsMCPReload/*.manifest", "data/*.json", "data/rules/*.edru", "data/stackups/*.estackup"]

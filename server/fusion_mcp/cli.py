@@ -48,30 +48,33 @@ def _link(src: str, dst: str) -> None:
 
 def install_addin(link: bool = False, force: bool = False) -> int:
     dest_root = fusion_addins_dir()
-    dest = os.path.join(dest_root, ADDIN_NAME)
     os.makedirs(dest_root, exist_ok=True)
-    if os.path.lexists(dest):
-        same = os.path.realpath(dest) == os.path.realpath(BUNDLED_ADDIN)
-        if same and link:
-            print(f"Already linked: {dest} -> {BUNDLED_ADDIN}")
-            return 0
-        if not force:
-            print(f"{dest} already exists (version {manifest_version(dest)}). "
-                  "Run again with --force to replace it.")
+    folders = [(os.path.join(os.path.dirname(BUNDLED_ADDIN), name), os.path.join(dest_root, name))
+               for name in (ADDIN_NAME, 'FusionElectronicsMCPReload')]
+    for src, dest in folders:
+        same = os.path.realpath(dest) == os.path.realpath(src)
+        if os.path.lexists(dest) and not force and not (same and link):
+            print(f"{dest} already exists. Run again with --force to replace it.")
             return 1
-        if os.path.islink(dest) or (sys.platform == "win32" and same):
-            os.unlink(dest) if os.path.islink(dest) else os.rmdir(dest)
+    for src, dest in folders:
+        same = os.path.realpath(dest) == os.path.realpath(src)
+        if same and link:
+            print(f"Already linked: {dest} -> {src}")
+            continue
+        if os.path.lexists(dest):
+            if os.path.islink(dest): os.unlink(dest)
+            elif os.path.isjunction(dest): os.rmdir(dest)
+            elif same: raise ValueError('Refusing to replace the bundled source directory')
+            else: shutil.rmtree(dest)
+        if link:
+            _link(src, dest)
         else:
-            shutil.rmtree(dest)
-    if link:
-        _link(BUNDLED_ADDIN, dest)
-        how = f"linked to {BUNDLED_ADDIN}"
-    else:
-        shutil.copytree(BUNDLED_ADDIN, dest, ignore=shutil.ignore_patterns("__pycache__", ".vscode", "*.pyc"))
-        how = "copied"
-    print(f"Add-in {manifest_version(BUNDLED_ADDIN)} {how}: {dest}")
-    print("In Fusion: Utilities > Add-Ins > Scripts and Add-Ins > Add-Ins tab > "
-          f"{ADDIN_NAME} > Run (tick 'Run on Startup' to start it with Fusion).")
+            shutil.copytree(src, dest, ignore=shutil.ignore_patterns("__pycache__", ".vscode", "*.pyc"))
+        print(f"{'Linked' if link else 'Copied'}: {dest}")
+    print(f"Installed add-in {manifest_version(BUNDLED_ADDIN)} and its reload helper. "
+          "Use reload_mcp_addin if 0.14.14+ is already running. For first activation or an older "
+          "running version: Fusion > Utilities > Scripts and Add-Ins > Add-Ins > "
+          f"{ADDIN_NAME} > Stop then Run (enable Run on Startup).")
     return 0
 
 

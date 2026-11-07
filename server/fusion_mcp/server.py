@@ -3,7 +3,7 @@
 Reads come from Fusion's EAGLE XML export (parsed here); writes are EAGLE
 commands sent through the add-in and verified by re-exporting. No network
 access except 127.0.0.1 to the add-in, and easyeda.com when check_jlc_orientation
-uses fetch=true (see easyeda.py). Explicitly requested legacy ULPs may have arbitrary
+uses fetch=true (see easyeda.py). Explicitly requested legacy ULPs and native scripts may have arbitrary
 external effects through Fusion. The service tools are stubs.
 """
 
@@ -45,7 +45,8 @@ mcp = MCPServer(
         "exported at call time. Normal edits are verified by reading the design back. "
         "ULP edit plans do not automatically undo uncertain results. Registered legacy ULPs require an explicit "
         "user request for each run, may save or affect external files, and provide snapshots/diffs without "
-        "guaranteed preview, completion or rollback. Other tools do not save until save_design is called."),
+        "guaranteed preview, completion or rollback. Native script/add-in run and stop controls also require "
+        "an explicit request and can have arbitrary effects, including saves. Other tools do not save until save_design is called."),
 )
 session = Session()
 library = Library()
@@ -85,6 +86,64 @@ def _layer_name(board, num: int) -> str:
 
 # ---------------------------------------------------------------------------
 # read
+
+
+@tool(READ)
+def list_fusion_scripts(query: str = '', limit: int = 25, offset: int = 0) -> dict:
+    """List scripts/add-ins already known to Fusion, with exact folders, IDs and running state.
+    Needs add-in 0.14.14+. Does not discover arbitrary files or install third-party scripts."""
+    return session.bridge.call('list_scripts', {'query': query, 'limit': limit, 'offset': offset})
+
+
+@tool(READ)
+def inspect_fusion_script(folder: str) -> dict:
+    """Inspect a known script/add-in and hash its local folder before an explicitly requested run.
+    Returns file hashes, not a security review. External imports/resources are not pinned."""
+    return session.bridge.call('inspect_script', {'folder': folder})
+
+
+@tool(ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
+def run_fusion_script(folder: str, expected_id: str, expected_source_sha256: str) -> dict:
+    """Run a known, trusted script/add-in only on an explicit user request for this program.
+    Use the exact folder, ID and reviewed folder hash from inspect_fusion_script. It can edit/save
+    designs, access files/network or open dialogs. No sandbox, preview, read-back or rollback is
+    promised. 'requested' is not completion. Already-running programs are left running.
+    MCP and its helper are protected; use reload_mcp_addin for the MCP add-in."""
+    return session.bridge.call('control_script', dict(action='run', folder=folder, expected_id=expected_id,
+                                                     expected_source_sha256=expected_source_sha256))
+
+
+@tool(ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True))
+def stop_fusion_script(folder: str, expected_id: str) -> dict:
+    """Stop an explicitly requested known script/add-in, checking its exact folder and ID.
+    Its stop handler can have arbitrary effects; no rollback. MCP and its helper are protected."""
+    return session.bridge.call('control_script', dict(action='stop', folder=folder, expected_id=expected_id))
+
+
+@tool(READ)
+def get_fusion_events(session_id: str | None = None, after_seq: int = 0, limit: int = 100) -> dict:
+    """Read the bounded 500-entry in-memory Fusion document/command/lifecycle event log.
+    Pass returned session_id and next_after_seq to continue. reset means the add-in restarted;
+    dropped means entries were overwritten. Metadata only, not a design diff or durable audit.
+    Reports unsupported event subscriptions. This does not export or modify a design."""
+    return session.bridge.call('events', dict(session_id=session_id, after_seq=after_seq, limit=limit))
+
+
+@tool(ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
+def reload_mcp_addin() -> dict:
+    """Restart only FusionElectronicsMCP through its packaged independent helper; verify reconnection.
+    Requires the running add-in 0.14.14+ and installed helper. Does not install files, save/close
+    designs, reload the external MCP server, or recover a hung Fusion UI. Waits up to roughly
+    40 seconds. On uncertain results inspect get_mcp_reload_status; never automatically retry."""
+    from .lifecycle import reload_addin
+    return reload_addin(session.bridge)
+
+
+@tool(READ)
+def get_mcp_reload_status(request_id: str) -> dict:
+    """Inspect a prior reload request and, when restarted, check the new bridge without rerunning it."""
+    from .lifecycle import reload_status
+    return reload_status(session.bridge, request_id)
 
 
 @tool(READ)

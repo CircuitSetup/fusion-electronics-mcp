@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Lifecycle management (workflow.12 / add-in 0.14.14)
+- List and inspect native Fusion scripts/add-ins; run reviewed folder hashes or
+  stop exact identities on explicit request, with MCP/helper targets protected.
+- Record bounded document, command and bridge events with cursor, reset, overflow
+  and subscription coverage reporting. Detach handlers on stop.
+- Package an independent fixed-target reload helper, retain status records, and
+  verify a new authenticated bridge session without resubmitting uncertain runs.
+- Install both folders; preserve legacy ULP artifacts across add-in reloads.
+
 ### ULP review fixes (workflow.11)
 - Require and revalidate explicit existing-sheet selectors for schematic edit
   proposals, so switching the visible sheet cannot redirect a reviewed edit.

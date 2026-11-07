@@ -24,7 +24,15 @@ We aim to reply within a week and to fix confirmed problems in the next release.
   They may edit/save designs, access files/network or launch processes with Fusion's
   permissions. Snapshots/diffs do not capture those external effects, guarantee
   completion or provide rollback. Interactive dialogs are left for the user.
-- Outside legacy ULPs, `check_jlc_orientation` with `fetch=true` downloads footprints
+- Native script/add-in run and stop tools also require an explicit user request.
+  Runs check exact folder, script ID and reviewed folder hash; stop checks identity.
+  These programs and their stop handlers run with Fusion's permissions, without
+  sandboxing, effect verification or rollback. External dependencies and previously
+  loaded modules are not pinned by the folder hash. Dialogs are left to the user.
+  The independent reload helper has a fixed MCP target, checks the previous bridge
+  instance and a short deadline, and exposes status without authentication tokens.
+  Event logs are bounded in-memory metadata, not a complete security audit.
+- Outside legacy ULPs and native scripts, `check_jlc_orientation` with `fetch=true` downloads footprints
   from easyeda.com; Fusion itself may communicate with Autodesk services.
 - MCP tools act with your permissions in Fusion: an agent connected to this
   server can edit any design you have open. Connect agents you trust, and review
