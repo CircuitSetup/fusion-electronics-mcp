@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### ULP review fixes (workflow.11)
+- Require and revalidate explicit existing-sheet selectors for schematic edit
+  proposals, so switching the visible sheet cannot redirect a reviewed edit.
+- Give each preview a unique hashed ID; a new reviewed preview remains usable
+  after an unsuccessful attempt, while the previous plan stays single-use.
+- Persist legacy bridge results and generated-file locations before read-back,
+  including when export or saved-document identity checks fail.
+- Regenerate schema-1 plans after upgrading; add-in 0.14.13 remains compatible.
+
 ### Registered ULPs (workflow.10 / add-in 0.14.13)
 - Discover locally cached Fusion ULPs and register reviewed, hash-pinned sources.
 - Run structured read ULPs or preview edit commands, then apply an authorized plan

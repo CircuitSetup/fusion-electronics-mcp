@@ -166,6 +166,8 @@ def preview_ulp_edit(name: str, arguments: list[str], expected_document_id: str)
     """Run a registered edit-mode proposal generator without applying its commands.
     Returns exact command preview, explicit XML attribute changes, plan path and SHA-256.
     Review the commands and expected changes with the user before apply_ulp_edit.
+    Schematic proposals must begin with EDIT .sN selecting an existing sheet; every sheet selector
+    is validated. A fresh preview has a fresh single-use hash, even when the proposed edit is identical.
     Supports existing board/schematic object attributes; needs add-in 0.14.13+.
     """
     from .custom_ulp import preview
@@ -178,6 +180,7 @@ def apply_ulp_edit(plan_path: str, expected_sha256: str) -> dict:
     Rejects stale document/source/plan; sends frozen validated commands once and verifies the entire
     exported design against declared changes. An uncertain outcome consumes the attempt: inspect Fusion,
     never blindly retry or undo. Does not save. Needs add-in 0.14.13+.
+    Old schema-1 plans require a fresh preview. Schematic sheet selectors are revalidated before dispatch.
     """
     from .custom_ulp import apply
     return apply(session, plan_path, expected_sha256)

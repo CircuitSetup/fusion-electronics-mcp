@@ -181,6 +181,11 @@ Fusion ULP Manager programs can be registered by their reviewed source hash.
 Sources must be reviewed and self-contained. Registration is not a security sandbox.
 See [registration, output contracts and limitations](docs/registered-ulps.md).
 
+Server `0.3.0+workflow.11` requires explicit sheet selection in schematic edit
+proposals, gives each preview a fresh single-use hash, and retains legacy output
+locations when read-back fails. Regenerate older edit plans after upgrading;
+add-in `0.14.13` remains compatible.
+
 ## Libraries
 
 ### Find parts in Fusion libraries

@@ -1,6 +1,6 @@
 # Registered ULPs
 
-Requires server `0.3.0+workflow.10`, running add-in `0.14.13`, and a fresh MCP
+Requires server `0.3.0+workflow.11`, running add-in `0.14.13`, and a fresh MCP
 connection. General EAGLE `RUN` and `SCRIPT` commands remain blocked. These tools
 execute only registered sources whose SHA-256 still matches the reviewed copy.
 
@@ -55,6 +55,15 @@ For `mode="edit"`, replace `data` with `commands` and `changes`:
 }
 ```
 
+For a schematic edit, `commands` must start with `EDIT .sN;`, where N is an
+existing sheet number, for example `EDIT .s1; MOVE (0 0) (2 0);`. Subsequent
+sheet selections use the same restricted syntax and must also name existing
+sheets. This explicitly selects the reviewed target even if the user switches
+sheets between preview and apply. Arbitrary file/library `EDIT` commands are
+rejected, and board proposals cannot contain `EDIT`. Each selector is revalidated
+against the current export before dispatch; apply leaves the last selected sheet
+visible. A proposal may select multiple existing sheets.
+
 Each XPath must identify exactly one existing supported object. Changes are string
 attribute values (null removes an attribute). The initial contract supports attributes
 of elements, instances, parts, attributes, wires, vias, text, labels, nets and signals;
@@ -68,6 +77,10 @@ can therefore fail read-back even when Fusion accepts them.
 before and after generating output. The preview writes escaped HTML and a JSON plan
 under the server's `ulp-plans` data directory. Review exact commands, expected changes
 and SHA-256 before authorizing `apply_ulp_edit(plan_path, expected_sha256)`.
+Every preview includes a unique ID in its hash. After inspecting an uncertain
+result, generating and reviewing a new preview is possible even if the design is
+unchanged; the original attempted plan stays consumed. Existing schema-1 plans
+must be regenerated; current plans use schema 2.
 
 Apply rechecks source registration, target identity/version and the whole exported
 state. It validates the frozen commands again and dispatches once. The generator is
@@ -107,6 +120,9 @@ The success label is `completed_unverified`: it means the call returned and snap
 were obtained, not that the program achieved its intent or all delayed work finished.
 An execution/export error, tab switch or saved-version change is `state_unknown`;
 the before snapshot is retained even if no after snapshot could be obtained.
+The bridge result, including its generated-file directory, is saved immediately
+after execution returns, before attempting the after snapshot. It remains available
+in `state_unknown` reports if export or identity checks fail.
 
 There is no guaranteed command preview, completion or rollback. Legacy programs may
 save designs, modify other documents/files, use the network, or launch processes.

@@ -101,7 +101,7 @@ def read(session, name, arguments, expected_document_id, directory=None):
     return {'name': name, 'sha256': entry['sha256'], 'document': before['document'], 'data': data['data']}
 
 
-def validate_commands(commands):
+def validate_commands(commands, before=None):
     if not isinstance(commands, str) or not commands.strip() or len(commands) > 100000:
         raise ValueError('Expected a nonempty command string, at most 100000 characters')
     allowed = {'MOVE', 'ROTATE', 'VALUE', 'NAME', 'ATTRIBUTE', 'CHANGE', 'MIRROR', 'SMASH'}
@@ -119,7 +119,19 @@ def validate_commands(commands):
     if quoted: raise ValueError('Unclosed command quote')
     if ''.join(buf).strip(): rows.append(''.join(buf).strip())
     if not rows or len(rows) > 500: raise ValueError('Expected 1..500 commands')
+    schematic = before is not None and before['document']['kind'] == 'schematic'
+    sheet_count = 0
+    if schematic:
+        if not before.get('schematic'): raise ValueError('Missing schematic export')
+        sheet_count = len(ET.fromstring(before['schematic']).findall('./drawing/schematic/sheets/sheet'))
+        if not re.fullmatch(r'EDIT\s+\.s[1-9][0-9]*', rows[0]):
+            raise ValueError('Schematic proposals must begin with EDIT .sN for an existing target sheet')
     for row in rows:
+        if row.split()[0] == 'EDIT' and schematic:
+            match = re.fullmatch(r'EDIT\s+\.s([1-9][0-9]*)', row)
+            if match is None or int(match[1]) > sheet_count:
+                raise ValueError('EDIT may only select an existing schematic sheet')
+            continue
         if row.split()[0] not in allowed: raise ValueError('Unsupported editing command: ' + row.split()[0])
     # Preserve whitespace inside quoted values; Session.with_grid collapses it.
     return 'GRID MM 0.0001; ' + ' '.join(row + ';' for row in rows) + ' GRID LAST;'
@@ -166,9 +178,9 @@ def preview(session, name, arguments, expected_document_id, directory=None, plan
     directory = directory or U.registry_dir(); plans = Path(plans) if plans else plan_dir()
     with session.bridge.lock.hold('preview registered ULP'):
         entry, before, data = _run(session, name, arguments, expected_document_id, 'edit', directory)
-        commands = validate_commands(data['commands'])
+        commands = validate_commands(data['commands'], before)
         expected, changes = expected_snapshot(before, data['changes'])
-        plan = {'schema': 1, 'registration': entry, 'arguments': arguments, 'before': before,
+        plan = {'schema': 2, 'preview_id': uuid.uuid4().hex, 'registration': entry, 'arguments': arguments, 'before': before,
                 'expected': expected, 'commands': commands, 'changes': changes}
         sha = U.digest(plan); plan['sha256'] = sha
         if len(json.dumps(plan, indent=2, sort_keys=True).encode('utf-8')) > 32 * 1024 * 1024:
@@ -199,15 +211,17 @@ def apply(session, plan_path, expected_sha256, directory=None, plans=None):
         if attempt.exists(): raise ValueError('This plan was already attempted; inspect the design and create a new preview')
         entry, _ = U.load(directory, plan['registration']['name'])
         if entry != plan['registration']: raise ValueError('Registration changed; create a new preview')
-        if entry['mode'] != 'edit' or plan.get('schema') != 1: raise ValueError('Invalid edit plan')
+        if (entry['mode'] != 'edit' or plan.get('schema') != 2
+                or not isinstance(plan.get('preview_id'), str) or not re.fullmatch('[a-f0-9]{32}', plan['preview_id'])):
+            raise ValueError('Invalid or old edit plan; create a new preview')
         U.arguments(entry, plan['arguments'])
+        before = snapshot(session)
+        if fingerprint(before) != fingerprint(plan['before']): raise ValueError('Stale plan or wrong document')
         commands = plan['commands']
         prefix, suffix = 'GRID MM 0.0001; ', ' GRID LAST;'
         if (not isinstance(commands, str) or not commands.startswith(prefix) or not commands.endswith(suffix)
-                or validate_commands(commands[len(prefix):-len(suffix)]) != commands):
+                or validate_commands(commands[len(prefix):-len(suffix)], before) != commands):
             raise ValueError('Invalid plan commands')
-        before = snapshot(session)
-        if fingerprint(before) != fingerprint(plan['before']): raise ValueError('Stale plan or wrong document')
         expected, _ = expected_snapshot(before, [{k:v for k,v in c.items() if k != 'before'} for c in plan['changes']])
         if fingerprint(expected) != fingerprint(plan['expected']): raise ValueError('Invalid expected result')
         with attempt.open('x', encoding='utf-8') as f: json.dump({'status': 'started'}, f)
@@ -265,11 +279,13 @@ def legacy(session, name, arguments, expected_document_id, expected_source_sha25
             result = session.bridge.call('run_registered_ulp', {'name': name, 'arguments': arguments,
                 'registration_sha256': U.digest(entry), 'expected_document_id': expected_document_id,
                 'legacy_source_sha256': expected_source_sha256}, timeout=120)
+            report['bridge_result'] = result
+            U.atomic_json(path, report)
             after = snapshot(session, allow_library=True)
             report['after'] = after
             report['diff'] = {kind: xml_diff(before.get(kind), after.get(kind)) for kind in ('board', 'schematic', 'library')}
             if before['document'] != after['document']: raise ValueError('Document identity or saved version changed')
-            report.update(status='completed_unverified', bridge_result=result)
+            report['status'] = 'completed_unverified'
         except Exception as ex:
             report.update(status='state_unknown', error=str(ex))
         report['warning'] = 'No guaranteed preview, completion or rollback. External file/network/process effects are not captured. Inspect Fusion before another run.'
