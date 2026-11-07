@@ -146,6 +146,25 @@ With Fusion running:
 fusion-electronics-mcp doctor
 ```
 
+## Read-only ULP probe
+
+`run_bundled_ulp(name="probe", design="PCB")` runs the reviewed, bundled probe
+in the active board or schematic. `design` is optional and checks the exact
+document name; the tool never switches documents. It reports group membership,
+check status, variant, grid/layers, and either board pour-contour samples or
+schematic `nets()` / `allnets()` data. It does not save, recalculate pours or run DRC/ERC.
+
+Only `probe` is accepted: no caller-supplied paths, source or ULP arguments.
+Results use a private temporary file which is removed after the call. Selected-object,
+net and pour lists are capped at 100 items and contour samples at 8 wires per pour;
+counts are complete and layers are reported in full.
+`checked` describes Fusion's existing check status, not a check performed by this tool.
+An empty contour result does not prove that a pour has been calculated.
+
+Requires server `0.3.0+workflow.9` and add-in `0.14.12` (reinstall/restart the
+add-in), or the updated server's built-in transport. Restart the MCP connection
+to discover the new tool. See [live findings and limitations](docs/ulp-probe.md).
+
 ## Libraries
 
 ### Find parts in Fusion libraries

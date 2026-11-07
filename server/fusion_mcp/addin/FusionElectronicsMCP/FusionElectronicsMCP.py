@@ -11,6 +11,7 @@ add-in only touches Fusion, always on the main thread.
 There is no arbitrary code execution. EAGLE commands pass an allowlist of
 verbs that edit the open design only: no RUN (ULPs), SCRIPT, WRITE, EXPORT,
 CAM, OPEN or other file/system commands.
+The separate run_bundled_ulp operation runs only packaged, reviewed read-only ULPs.
 
 Connection info (port + per-session token) is written to
 %APPDATA%/fusion-electronics-mcp/bridge.json and removed on stop.
@@ -34,7 +35,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.11"
+ADDIN_VERSION = "0.14.12"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -486,6 +487,50 @@ def op_run_script(args):
         with contextlib.suppress(Exception):
             os.remove(path)
     return {"raw": raw, "ms": round((time.perf_counter() - t0) * 1000, 1), "editor": _product_kind()}
+
+
+BUNDLED_ULPS = {"probe": "probe.ulp"}
+
+
+def op_run_bundled_ulp(args):
+    """Run only a reviewed, bundled read-only ULP; never accept source, paths or ULP arguments."""
+    name = args.get("name", "probe")
+    if set(args) - {"name", "design"} or not isinstance(name, str) or name not in BUNDLED_ULPS:
+        raise BridgeError("bad_args", "only the bundled 'probe' ULP is supported; no paths or extra arguments")
+    doc, editor = _app.activeDocument, _product_kind()
+    if doc is None or editor not in ("board", "schematic"):
+        raise BridgeError("wrong_editor", "the probe needs an active board or schematic")
+    design = args.get("design")
+    if design is not None and (not isinstance(design, str) or design != doc.name):
+        raise BridgeError("wrong_document", "the requested design is not active")
+    source = os.path.join(os.path.dirname(__file__), "ulps", BUNDLED_ULPS[name])
+    if not os.path.isfile(source):
+        raise BridgeError("missing_ulp", "the bundled ULP is missing; reinstall the add-in/server")
+    os.makedirs(WORK_DIR, exist_ok=True)
+    before = doc.isModified
+    t0 = time.perf_counter()
+    with tempfile.TemporaryDirectory(prefix="ulp-", dir=WORK_DIR) as folder:
+        output = os.path.join(folder, "result.json")
+        paths = [p.replace("\\", "/") for p in (source, output)]
+        if any(any(c in p for c in "'\";\r\n") for p in paths):
+            raise BridgeError("bad_path", "ULP paths contain unsupported command characters")
+        # RUN is deliberately not added to validate(): only these packaged programs may execute.
+        _app.executeTextCommand(f"Electron.run RUN '{paths[0]}' '{paths[1]}';")
+        if _app.activeDocument != doc or _product_kind() != editor or doc.isModified != before:
+            raise BridgeError("context_changed", "the document or its modified state changed during the probe")
+        try:
+            with open(output, "rb") as f:
+                raw = f.read(2 * 1024 * 1024 + 1)
+            if len(raw) > 2 * 1024 * 1024:
+                raise ValueError("probe output exceeds 2 MiB")
+            data = json.loads(raw)
+            if (not isinstance(data, dict) or data.get("schema") != 1 or data.get("probe") != name
+                    or data.get("editor") != editor or data.get("complete") is not True):
+                raise ValueError("incomplete or mismatched probe output")
+        except (OSError, ValueError) as ex:
+            raise BridgeError("ulp_failed", f"no valid result from the bundled ULP: {ex}") from None
+    return {"name": name, "document": doc.name, "editor": editor, "data": data,
+            "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
 
 def op_design_rules(args):
@@ -1336,7 +1381,8 @@ def op_update_libraries(args):
 
 
 OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export": op_export,
-       "run": op_run, "run_script": op_run_script, "errors": op_errors, "save": op_save,
+       "run": op_run, "run_script": op_run_script, "run_bundled_ulp": op_run_bundled_ulp,
+       "errors": op_errors, "save": op_save,
        "close_library": op_close, "list_designs": op_list_designs, "open_design": op_open_design,
        "find_documents": op_find_documents,
        "close_design": op_close_design, "design_rules": op_design_rules, "new_design": op_new_design,

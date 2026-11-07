@@ -1,0 +1,117 @@
+#usage "Read-only MCP probe. The runner supplies a private JSON output path."
+
+// No editor commands, group changes, dialogs, network access or external processes.
+string quote(string value) {
+  string result = "\"", escaped;
+  for (int i = 0; i < strlen(value); i++) {
+    int c = value[i];
+    if (c == 34) result += "\\\"";
+    else if (c == 92) result += "\\\\";
+    else if (c >= 0 && c < 32) {
+      sprintf(escaped, "\\u%04x", c);
+      result += escaped;
+    }
+    else result += strsub(value, i, 1);
+  }
+  return result + "\"";
+}
+
+void grid_info(UL_GRID G) {
+  printf("\"grid\":{\"distance\":%.9f,\"unit\":%d,\"unitdist\":%d,\"on\":%d,\"multiple\":%d},",
+         G.distance, G.unit, G.unitdist, G.on, G.multiple);
+}
+
+void layer_info(UL_LAYER L, int first) {
+  printf("%s{\"number\":%d,\"name\":%s,\"visible\":%d,\"used\":%d}",
+         first ? "" : ",", L.number, quote(L.name), L.visible, L.used);
+}
+
+if (argc != 2 || (!board && !schematic)) exit(1);
+fileerror();
+output(argv[1], "wt") {
+  printf("{\"schema\":1,\"probe\":\"probe\",\"variant\":%s,", quote(variant()));
+  if (board) board(B) {
+    int first = 1, elements = 0, selected = 0, signals = 0, hidden = 0;
+    int selected_wires = 0, selected_vias = 0, pours = 0;
+    printf("\"editor\":\"board\",\"checked\":%d,", B.checked);
+    grid_info(B.grid);
+    printf("\"layers\":[");
+    B.layers(L) { layer_info(L, first); first = 0; }
+    printf("],\"selected_elements\":[");
+    B.elements(E) {
+      elements++;
+      if (ingroup(E)) {
+        if (selected < 100) printf("%s%s", selected ? "," : "", quote(E.name));
+        selected++;
+      }
+    }
+    B.wires(W) { if (ingroup(W)) selected_wires++; }
+    printf("],\"hidden_airwire_nets\":[");
+    B.signals(S) {
+      signals++;
+      if (S.airwireshidden) {
+        if (hidden < 100) printf("%s%s", hidden ? "," : "", quote(S.name));
+        hidden++;
+      }
+      S.wires(W) { if (ingroup(W)) selected_wires++; }
+      S.vias(V) { if (ingroup(V)) selected_vias++; }
+    }
+    printf("],\"pours\":[");
+    B.signals(S) S.polyPours(P) {
+      int outlines = 0, contours = 0, fillings = 0;
+      P.wires(W) { outlines++; }
+      if (pours < 100) {
+        printf("%s{\"net\":%s,\"layer\":%d,\"outline_wires\":%d,\"contour_sample_mm\":[",
+               pours ? "," : "", quote(S.name), P.layer, outlines);
+      }
+      P.contours(W) {
+        if (pours < 100 && contours < 8)
+          printf("%s[%.6f,%.6f,%.6f,%.6f,%.6f]", contours ? "," : "",
+                 u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), W.curve);
+        contours++;
+      }
+      P.fillings(W) { fillings++; }
+      if (pours < 100)
+        printf("],\"contour_wires\":%d,\"filling_wires\":%d}", contours, fillings);
+      pours++;
+    }
+    printf("],\"counts\":{\"elements\":%d,\"signals\":%d,\"selected_elements\":%d,\"selected_wires\":%d,\"selected_vias\":%d,\"hidden_airwire_nets\":%d,\"pours\":%d},",
+           elements, signals, selected, selected_wires, selected_vias, hidden, pours);
+  }
+  else schematic(S) {
+    int first = 1, parts = 0, allparts = 0, nets = 0, allnets = 0, sheets = 0, selected = 0;
+    printf("\"editor\":\"schematic\",\"checked\":%d,", S.checked);
+    grid_info(S.grid);
+    printf("\"layers\":[");
+    S.layers(L) { layer_info(L, first); first = 0; }
+    S.parts(P) { parts++; }
+    S.allparts(P) { allparts++; }
+    printf("],\"nets\":[");
+    S.nets(N) {
+      if (nets < 100) printf("%s%s", nets ? "," : "", quote(N.name));
+      nets++;
+    }
+    printf("],\"allnets\":[");
+    S.allnets(N) {
+      if (allnets < 100) printf("%s%s", allnets ? "," : "", quote(N.name));
+      allnets++;
+    }
+    printf("],\"selected_instances\":[");
+    S.sheets(H) {
+      sheets++;
+      H.instances(I) {
+        if (ingroup(I)) {
+          if (selected < 100)
+            printf("%s{\"part\":%s,\"gate\":%s,\"sheet\":%d}", selected ? "," : "",
+                   quote(I.part.name), quote(I.gate.name), H.number);
+          selected++;
+        }
+      }
+    }
+    printf("],\"counts\":{\"parts\":%d,\"allparts\":%d,\"nets\":%d,\"allnets\":%d,\"sheets\":%d,\"selected_instances\":%d},",
+           parts, allparts, nets, allnets, sheets, selected);
+  }
+  printf("\"sample_limits\":{\"items\":100,\"contour_wires_per_pour\":8},\"complete\":true}\n");
+}
+if (fileerror()) exit(1);
+exit(0);

@@ -97,6 +97,18 @@ def get_context() -> dict:
 
 
 @tool(READ)
+def run_bundled_ulp(name: str = "probe", design: str | None = None) -> dict:
+    """Run the bundled read-only 'probe' in the active board or schematic (no document switch).
+    Reports live group membership, check status, variant, grid/layers and board pour-contour
+    samples or schematic hierarchy counts. Does not recalculate pours/DRC or save. Samples
+    are bounded; totals are included. design optionally requires the exact active document name.
+    Arbitrary ULP names, paths, source and arguments are not accepted. Needs add-in 0.14.12+
+    or the built-in transport with current server files.
+    """
+    return session.bridge.call("run_bundled_ulp", {"name": name, "design": design}, timeout=60)
+
+
+@tool(READ)
 def list_designs(folder: str | None = None) -> dict:
     """Electronics designs and libraries in the active Fusion project's top folder, or in one
     folder path ('Live tests', 'Parts/Connectors'); folders are not searched recursively (walking

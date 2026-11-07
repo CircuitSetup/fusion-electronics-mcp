@@ -42,7 +42,7 @@ ADDIN_SOURCE = os.path.join(os.path.dirname(__file__), "addin", "FusionElectroni
 MARK = "@@FEMCP@@"
 # operations that only read the design (run as read-only scripts: allowed while
 # the person is in the middle of a command)
-READ_ONLY_OPS = {"ping", "context", "export", "design_rules", "layers", "pours", "list_designs", "errors", "elements3d", "lib_device3d", "pcb3d_bodies"}
+READ_ONLY_OPS = {"ping", "context", "export", "design_rules", "layers", "pours", "list_designs", "errors", "elements3d", "lib_device3d", "pcb3d_bodies", "run_bundled_ulp"}
 _BUSY = "while a command dialog is open"
 _NO_SESSION = "not initialized"      # Fusion forgot our MCP session: initialize again
 
@@ -109,7 +109,7 @@ def _literal(text: str, width: int = 1000) -> str:
 
 def build_script(op: str, args: dict, read_only: bool) -> str:
     end = "" if read_only else "\n    _ui.terminateActiveCommand()   # an EAGLE command leaves its tool active"
-    return STREAM_REPAIR + _ops_source() + f'''
+    return STREAM_REPAIR + f"\n__file__ = {ADDIN_SOURCE!r}\n" + _ops_source() + f'''
 
 _ARGS = {_literal(json.dumps(args))}
 
