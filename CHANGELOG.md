@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Native library workflow (workflow.24 / add-in 0.14.18)
+- Add `new_library` to create a native Electronics library and optionally save it
+  in the active project with verified document and cloud-file identity.
+- Return bounded project-listing pages with continuation offsets and direct-open
+  file IDs instead of discarding slow listings; use bulk native file snapshots.
+- Reject ambiguous name-only opens and preserve the close-before-placement guard.
+
 ### Functional schematic blocks (workflow.23)
 - Complete local feedback paths and repeated-pin connections with continuous orthogonal wires;
   keep one named signal port per external block net and retain local power/ground symbols.

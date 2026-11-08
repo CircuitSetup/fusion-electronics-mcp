@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.17"
+ADDIN_VERSION = "0.14.18"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -940,43 +940,90 @@ def op_new_design(args):
     return op_context({})
 
 
-def _project_designs(folder=None, project=None, budget_s=8.0):
-    """Designs and libraries in the active project's top folder, or in one named folder path
-    ('Live tests', 'Parts/Connectors'). Never a recursive walk: walking a big project's folder
-    tree held the main thread until Fusion froze (2705.1.15, three times), so a search stops
-    after budget_s and says so."""
+def op_new_library(args):
+    name, folder = args.get("name"), args.get("folder")
+    if name is not None and (not isinstance(name, str) or not name.strip()
+                             or any(c in name for c in '/\\') or any(ord(c) < 32 for c in name)):
+        raise BridgeError("bad_args", "name must be a nonempty library name without path separators or control characters")
+    if folder is not None and name is None:
+        raise BridgeError("bad_args", "folder requires a name so the new library can be saved")
+    command = _ui.commandDefinitions.itemById("NewElectronLbrDocumentCommand")
+    if command is None or not command.controlDefinition.isEnabled:
+        raise BridgeError("unsupported", "this Fusion context has no enabled New Electronics Library command")
+    project = _app.data.activeProject if name else None
+    target = _data_folder(_norm_folder(folder)) if name else None
+    before = _docs()
+    command.execute()
+    _settle(40)
+    doc = _app.activeDocument
+    if doc is None or any(_same_document(doc, old) for old in before) or _kind_of(doc) != "library":
+        raise BridgeError("state_unknown", "Fusion did not activate a verifiable new library; inspect get_context before retrying")
+    if name:
+        try:
+            saved = doc.saveAs(name, target, "created by fusion-electronics-mcp", "")
+        except Exception as exc:
+            raise BridgeError("state_unknown", f"new library save raised {exc}; inspect get_context before retrying") from None
+        if not saved:
+            raise BridgeError("save_failed", "Fusion did not save the new library; it remains open, inspect get_context before retrying")
+        _settle(40)
+        if not doc.isSaved or not _file_matches(doc.dataFile, project, _norm_folder(folder), name, "flbr"):
+            raise BridgeError("state_unknown", "new library save identity was not verified; it remains open, inspect get_context before retrying")
+        _remember_folder(project.name, name, "flbr", _norm_folder(folder), doc.dataFile.id, project.id)
+    return op_context({})
+
+
+def _project_folder(folder=None, project=None):
+    """Resolve one folder path without enumerating siblings or walking the project tree."""
     proj = _app.data.activeProject
     if project and project != proj.name:
         raise BridgeError("unsupported", "only the active project can be listed: walking another project's "
                           "folders froze Fusion (2705.1.15); open that project in Fusion first")
-    t0 = time.time()
     node = proj.rootFolder
-    path = ""
-    for part in [x for x in (folder or "").split("/") if x]:
-        node = next((node.dataFolders.item(i) for i in range(node.dataFolders.count)
-                     if node.dataFolders.item(i).name == part), None)
+    path = _norm_folder(folder)
+    for part in path.split("/") if path else []:
+        node = node.dataFolders.itemByName(part)
         if node is None:
             raise BridgeError("not_found", f"no folder {folder!r} in project {proj.name!r}")
-        path = f"{path}/{part}" if path else part
-        if time.time() - t0 > budget_s:
-            raise BridgeError("timeout", f"listing project {proj.name!r} took too long; open the design in Fusion by hand")
+    return proj, node, path
+
+
+def _project_designs(folder=None, project=None, budget_s=8.0):
+    """Complete name lookup for open_design; partial searches must never select an ambiguous file."""
+    started = time.monotonic()
+    proj, node, path = _project_folder(folder, project)
     out = []
-    for i in range(node.dataFiles.count):
-        f = node.dataFiles.item(i)
+    for f in node.dataFiles.asArray():
         if f.fileExtension in ("fprj", "flbr"):
             out.append((path, f))
-        if time.time() - t0 > budget_s:
-            raise BridgeError("timeout", f"listing project {proj.name!r} took too long; open the design in Fusion by hand")
+        if time.monotonic() - started > budget_s:
+            raise BridgeError("timeout", f"listing project {proj.name!r} took too long; use list_designs pages, "
+                              "then open with the returned data_file_id")
     return proj, out
 
 
 def op_list_designs(args):
-    proj, found = _project_designs(folder=args.get("folder"), project=args.get("project"))
-    return {"project": proj.name,
-            "designs": [{"name": f.name, "folder": path, "version": f.versionNumber}
-                        for path, f in found if f.fileExtension == "fprj"],
-            "libraries": [{"name": f.name, "folder": path, "version": f.versionNumber}
-                          for path, f in found if f.fileExtension == "flbr"]}
+    limit, offset = args.get("limit", 25), args.get("offset", 0)
+    if type(limit) is not int or not 1 <= limit <= 100 or type(offset) is not int or offset < 0:
+        raise BridgeError("bad_args", "limit must be an integer in 1..100 and offset a nonnegative integer")
+    started = time.monotonic()
+    proj, node, path = _project_folder(args.get("folder"), args.get("project"))
+    # One native snapshot avoids a cloud collection lookup for every file.
+    files = node.dataFiles.asArray()
+    result = {"project": proj.name, "project_id": proj.id, "folder": path,
+              "designs": [], "libraries": [], "total_files": len(files), "offset": offset}
+    end = min(offset, len(files))
+    for i in range(offset, min(offset + limit, len(files))):
+        f = files[i]
+        ext = f.fileExtension
+        if ext in ("fprj", "flbr"):
+            result["designs" if ext == "fprj" else "libraries"].append(
+                {"name": f.name, "folder": path, "version": f.versionNumber, "data_file_id": f.id})
+        end = i + 1
+        # Native calls cannot be interrupted; always return at least one file's progress.
+        if time.monotonic() - started > 8.0:
+            break
+    result.update(complete=end == len(files), next_offset=end if end < len(files) else None)
+    return result
 
 
 def op_find_documents(args):
@@ -1164,6 +1211,8 @@ def op_open_design(args):
                           "(it is not searched recursively), or open it in Fusion by hand"
                           + (f". Designs have been found in {', '.join(repr(k or 'top folder') for k in known)}"
                              if known else ""))
+    if len(cand) > 1:
+        raise BridgeError("ambiguous", f"more than one file matches {name!r}; use list_designs and pass data_file_id")
     path, file = cand[0]
     _remember_folder(project, name, ext, path, getattr(file, "id", None), project_id)
     _app.documents.open(file)
@@ -1226,10 +1275,7 @@ def _data_folder(path):
     """DataFolder in the active project for a 'A/B' path, created if missing."""
     folder = _app.data.activeProject.rootFolder
     for part in [x for x in (path or "").split("/") if x]:
-        nxt = None
-        for i in range(folder.dataFolders.count):
-            if folder.dataFolders.item(i).name == part:
-                nxt = folder.dataFolders.item(i)
+        nxt = folder.dataFolders.itemByName(part)
         folder = nxt or folder.dataFolders.add(part)
     return folder
 
@@ -1531,7 +1577,7 @@ OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export"
        "run_registered_ulp": op_run_registered_ulp,
        "errors": op_errors, "save": op_save,
        "close_library": op_close, "list_designs": op_list_designs, "open_design": op_open_design,
-       "find_documents": op_find_documents,
+       "find_documents": op_find_documents, "new_library": op_new_library,
        "close_design": op_close_design, "design_rules": op_design_rules, "new_design": op_new_design,
        "pours": op_pours, "create_package3d": op_create_package3d,
        "layers": op_layers, "violation_mode": op_violation_mode, "update_libraries": op_update_libraries,

@@ -22,7 +22,13 @@ from fusion_mcp import server as S
 OUT = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "fusion-electronics-mcp", "validation")
 os.makedirs(OUT, exist_ok=True)
 
-designs = S.list_designs()["designs"]
+designs, offset = [], 0
+while True:
+    page = S.list_designs(offset=offset)
+    designs.extend(page["designs"])
+    if page["complete"]:
+        break
+    offset = page["next_offset"]
 wanted = sys.argv[1:] or [d["name"] for d in designs if d["name"] != "Basic Board"]
 
 for d in [x for x in designs if x["name"] in wanted]:
@@ -39,7 +45,7 @@ for d in [x for x in designs if x["name"] in wanted]:
             report[key] = {"error": traceback.format_exc()[-800:]}
         timing[key] = round(time.perf_counter() - t, 1)
 
-    run("open", lambda: S.open_design(name, d["folder"]))
+    run("open", lambda: S.open_design(name, d["folder"], data_file_id=d["data_file_id"]))
     run("summary", S.get_board_summary)
     run("layer_stack", S.get_layer_stack)
     run("review", lambda: S.review_schematic(include_erc=True))

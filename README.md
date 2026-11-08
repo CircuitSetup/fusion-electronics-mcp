@@ -329,8 +329,12 @@ Any library works: these settings only name the devices to use.
 For parts no library has, the server keeps part definitions (JSON files) in its
 component library folder and builds them into a Fusion library of yours:
 
-1. In Fusion, create an empty electronics library in your project (for example
-   "MCP Library") and save it.
+1. Ask your agent to run `new_library(name="MCP Library", folder="Parts")`.
+   It creates a native Electronics library, saves it in the active project
+   (creating the folder if missing), and verifies the saved file identity.
+   Omit `folder` for the project root, or omit both arguments for an unsaved
+   library. Requires add-in 0.14.18+. This always creates a new library;
+   to use an existing one, list and open it as described below.
 2. Get the part's footprint as a KiCad `.kicad_mod`: from KiCad's libraries, or
    JLCPCB's own footprint and 3D model with
    [easyeda2kicad](https://github.com/uPesy/easyeda2kicad.py)
@@ -340,7 +344,8 @@ component library folder and builds them into a Fusion library of yours:
 3. Ask your agent to create the part (`create_library_part`: footprint, name,
    value, JLCPCB number, pin names). Two-pin passives get the same symbols as
    the rest of your schematic; other parts get a box with named pins.
-4. Open your library in Fusion and have the agent run `insert_library_part`,
+4. With the library active (`new_library` leaves it open; `open_library` opens
+   an existing one), have the agent run `insert_library_part`,
    `save_design`, then `attach_3d_model` with the part's STEP file. A model
    that would sit upside down is refused.
    To add the footprint to a device set you already have instead (another
@@ -617,6 +622,19 @@ counts, parts, net names, or electrical rules are built into the server.
 
 ### Integration safeguards
 
+- `list_designs(folder=None, limit=25, offset=0)` returns bounded pages of designs
+  and libraries plus `complete` and `next_offset`. Follow the continuation even
+  when a page contains no Electronics files: offsets count all files. A slow page
+  returns its progress after eight seconds between native calls. It uses one
+  native file snapshot per page and never walks subfolders. Each entry includes
+  `data_file_id`, which can be passed to `open_library` or `open_design` to avoid
+  another listing. Restart at offset 0 if the folder changes between pages.
+  The budget cannot interrupt a single stalled Fusion/cloud API call.
+- `new_library` verifies a new library tab before saving, then checks its name,
+  type, project and folder. Failed or uncertain saves leave the new tab available
+  for inspection with `get_context`; do not blindly retry and create duplicates.
+  Existing documents and their unsaved changes are preserved. Close the saved
+  library before placing parts from it, as required by the placement crash guard.
 - `open_design` and `open_library` accept an optional `data_file_id` for direct cloud lookup. The add-in validates the file's name, kind, project and requested folder, and remembers known IDs to avoid repeated project enumeration.
 - Document activation and closing use the linked Electronics Design family, including differently named schematic and PCB tabs. Creating a design checks that both children are actually linked before reporting success. Missing compatible toolbar commands are reported as unsupported. On Fusion 2706.1.14, `new_design` refuses before opening tabs because native creation did not establish verifiable links; create, link and save the family in Fusion first.
 - 3D updates require an observed PCB association or an exact saved file reference; unrelated mechanical documents are not used for Pull.

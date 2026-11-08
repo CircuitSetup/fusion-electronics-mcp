@@ -191,7 +191,7 @@ class SessionTest(unittest.TestCase):
 
 
 EXPECTED_TOOLS = {
-    "get_context", "list_designs", "open_design", "open_library", "new_design", "close_design",
+    "get_context", "list_designs", "open_design", "open_library", "new_library", "new_design", "close_design",
     "get_board_summary", "list_parts", "get_part", "list_nets", "get_net", "get_layer_stack", "get_design_rules",
     "prepare_layer_stack", "check_layer_stack",
     "run_drc", "run_erc", "review_schematic", "list_diff_pairs", "check_length_match", "check_impedance",

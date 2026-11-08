@@ -83,7 +83,8 @@ mcp = MCPServer(
         "ULP edit plans do not automatically undo uncertain results. Registered legacy ULPs require an explicit "
         "user request for each run, may save or affect external files, and provide snapshots/diffs without "
         "guaranteed preview, completion or rollback. Native script/add-in run and stop controls also require "
-        "an explicit request and can have arbitrary effects, including saves. Other tools do not save until save_design is called."),
+        "an explicit request and can have arbitrary effects, including saves. new_design/new_library with a name "
+        "save the new document immediately; other tools do not save until save_design is called."),
 )
 session = Session()
 library = Library()
@@ -361,11 +362,14 @@ def run_legacy_ulp(name: str, arguments: list[str], expected_document_id: str, e
 
 
 @tool(READ)
-def list_designs(folder: str | None = None) -> dict:
-    """Electronics designs and libraries in the active Fusion project's top folder, or in one
-    folder path ('Live tests', 'Parts/Connectors'); folders are not searched recursively (walking
-    a big project's folder tree froze Fusion)."""
-    return session.bridge.call("list_designs", {"folder": folder}, timeout=120)
+def list_designs(folder: str | None = None, limit: int = 25, offset: int = 0) -> dict:
+    """One bounded page of designs/libraries in the active project's top folder or folder path
+    ('Parts/Connectors'). Follow next_offset until complete=true, including empty pages: offsets
+    count all files, including non-Electronics files. limit is 1..100 files examined; a slow page
+    returns progress after eight seconds between native calls. Never walks subfolders. Returns
+    data_file_id for direct open_design/open_library without listing again. Folder changes between
+    pages require restarting at offset=0. Needs add-in 0.14.18+ (or built-in transport)."""
+    return session.bridge.call("list_designs", {"folder": folder, "limit": limit, "offset": offset}, timeout=120)
 
 
 @tool(ADDITIVE)
@@ -390,6 +394,17 @@ def open_library(name: str, folder: str | None = None, allow_unsaved: bool = Fal
     it if open). allow_unsaved and data_file_id as in open_design."""
     return session.bridge.call("open_design", {"name": name, "folder": folder, "kind": "library",
                                                "allow_unsaved": allow_unsaved, "data_file_id": data_file_id}, timeout=180)
+
+
+@tool(ADDITIVE)
+def new_library(name: str | None = None, folder: str | None = None) -> dict:
+    """Create and activate a native Fusion Electronics library. With name, save it immediately
+    into the active project (folder path created if missing) and verify the saved file identity.
+    Without name, leave it unsaved; folder requires name. Existing documents are left open and
+    unsaved changes preserved. Creates a new file, including when the name already exists; use
+    open_library to edit an existing one. Needs add-in 0.14.18+. On uncertain results inspect
+    get_context before retrying. Insert parts, save_design, then close_library before placement."""
+    return session.bridge.call("new_library", {"name": name, "folder": folder}, timeout=120)
 
 
 @tool(ADDITIVE)
