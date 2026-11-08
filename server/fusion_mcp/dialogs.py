@@ -220,6 +220,12 @@ FORM_SUPPLY_VALUE = {
     "label": "kept the power symbol's default value (set afterwards)",
 }
 
+# ADD's nonmodal tool palette can be visible while a library-update question blocks.
+FORM_ADD_PALETTE = {
+    "title": r"^ADD$", "requires": [], "actions": [],
+    "label": "observed ADD palette; placement verified by read-back",
+}
+
 FORM_RENAME_ALL_SEGMENTS = {
     "title": r"^Name$",
     "requires": ["every Segment on this Sheet"],

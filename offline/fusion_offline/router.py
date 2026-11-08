@@ -38,6 +38,9 @@ class Route:
     joined: str = ""
     conflicts: set = field(default_factory=set)   # route_all connections this route crosses
     widths: list = field(default_factory=list)    # per leg: None = the route's width, else a neck-down width
+    via_drill: float = 0.3
+    via_diameter: float = 0.6
+    via_tented: bool = False
 
     def pieces(self, width: float):
         """(layer, points, width) per leg: the neck-downs at pads carry their own width."""
@@ -49,7 +52,8 @@ class Route:
         return {"net": self.net, "legs": [{"layer": l, "points": [list(p) for p in pts], **({"width": w} if w else {})}
                                           for (l, pts), w in zip(self.legs, ws)],
                 "vias": [list(v) for v in self.vias], "length_mm": round(self.length_mm, 3), "ends_on": self.joined,
-                "problems": self.problems}
+                "problems": self.problems, "via_drill_mm": self.via_drill,
+                "via_diameter_mm": self.via_diameter, "via_tented": self.via_tented}
 
 
 def _layer_ok(o: Obstacle, layer: int) -> bool:
@@ -311,7 +315,7 @@ SQ2 = math.sqrt(2)
 
 def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: tuple,
           goal: tuple[float, float], goal_layers: tuple, width: float = 0.25, clearance: float | None = None,
-          prefer_layer: int | None = None, vias: bool = True, via_drill: float = 0.3, via_d: float = 0.6,
+          prefer_layer: int | None = None, vias: bool = True, via_drill: float | None = None, via_d: float | None = None,
           step: float = 0.127, turn_cost: float = 0.6, via_cost: float = 8.0, layer_cost: float = 0.15,
           max_nodes: int = 2_000_000, join_existing: bool = False, margin_mm: float | None = None,
           soft_cost: float = 4.0, tap_exclude: set | None = None, pour_cost: float = 30.0,
@@ -333,6 +337,22 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     m = margin_mm if margin_mm is not None else max(6.0, 0.6 * span)
     window = (min(start[0], goal[0]) - m, min(start[1], goal[1]) - m, max(start[0], goal[0]) + m, max(start[1], goal[1]) + m)
     obs_all = cache if cache else board_obstacles(root)
+    from . import annular
+    rules = obs_all[1]
+    minimum_drill = _mm(rules.get('msDrill'), 0.0)
+    signal = next((s for s in root.findall('.//board/signals/signal') if s.get('name') == net), None)
+    net_class = signal.get('class', '0') if signal is not None else '0'
+    for cls in root.findall('.//board/classes/class'):
+        if cls.get('number') == net_class:
+            minimum_drill = max(minimum_drill, _mm(cls.get('drill'), 0.0))
+    via_drill = max(.3, minimum_drill) if via_drill is None else via_drill
+    if not math.isfinite(via_drill) or via_drill <= 0 or (vias and via_drill < minimum_drill - 1e-6):
+        raise ValueError(f'via drill must be positive and at least {minimum_drill:g} mm under the board rules')
+    minimum_diameter = max(annular.required_diameter(via_drill),
+                          *annular.copper(rules, 'Via', via_drill, 0).values())
+    via_d = max(.6, minimum_diameter) if via_d is None else via_d
+    if not math.isfinite(via_d) or via_d <= 0 or (vias and via_d < minimum_diameter - 1e-6):
+        raise ValueError(f'via diameter must be at least {minimum_diameter:g} mm under the board rules')
     necks, nw = [], neck_width
     for p in (start, goal):
         short = _pad_short_side(obs_all[0], net, p)
@@ -344,7 +364,8 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
              necks=necks, neck_width=nw, hug=hug)
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
-    r = Route(net)
+    r = Route(net, via_drill=via_drill, via_diameter=via_d,
+              via_tented=via_drill <= _mm(rules.get('mlViaStopLimit'), 0.0))
     ny, nx = G.ny, G.nx
     for (pi, pj) in ((si, sj), (gi, gj)):  # the start/goal pad cells are free even if a neighbour's clearance reaches them
         if 0 <= pi < nx and 0 <= pj < ny:

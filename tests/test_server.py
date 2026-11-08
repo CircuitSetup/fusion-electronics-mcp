@@ -66,6 +66,9 @@ class AddinAllowlistTest(unittest.TestCase):
     def test_allowed(self):
         self.addin.validate("GRID MM; MOVE 'R1' (1 1); EDIT 'X.pac'; EDIT .s2; DRC;")
 
+    def test_group_selection_for_verified_bulk_edits(self):
+        self.addin.validate("DISPLAY ALL; GROUP ALL; DELETE (C> 0 0);")
+
     def test_blocked(self):
         for bad in ("RUN 'x.ulp';", "SCRIPT 'x.scr';", "WRITE;", "EXPORT SCRIPT 'x';", "EDIT 'other.brd';",
                     "CAM;", "OPEN 'x.lbr';"):

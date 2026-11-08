@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Circuit connection verification (workflow.15 / add-in 0.14.17)
+- Verify requested pad connections on the linked PCB after `connect_pins`, including
+  calls whose schematic pins are already connected; missing forward annotation is a failure.
+- Normalize requested net names to Fusion's uppercase convention before checking or writing.
+- Allow native GROUP selections for verified bulk circuit edits.
+- Handle repeated ADD library-refresh prompts with checks that existing component
+  definitions, schematic connections and PCB placement/routing remain intact.
+- Size free-router vias from the board's drill/annular rules, carry those sizes through
+  planning and writes, and apply required tenting using Fusion's working group-change path.
+- Add a live seven-component LED-driver acceptance test covering exact schematic/PCB
+  connectivity, placement previews, moves/rotations, routing completion and ERC/DRC.
+
 ### Review fixes (workflow.14 / add-in 0.14.16 / reload helper 0.2.0)
 - Bind 3D body IDs to the entity/occurrence inventory; reject old IDs after deletion,
   reordering, replacement or token rotation before making any measurement.

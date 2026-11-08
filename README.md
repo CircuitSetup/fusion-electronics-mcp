@@ -561,7 +561,18 @@ credential: the agent must still obtain the user's explicit apply authorization.
 Only the new batch/block tools use this guarded path; legacy tools retain their
 existing interfaces. Changes made outside the MCP can invalidate a plan.
 
-Development verification: `PYTHONPATH=server:offline:tests python -m unittest discover -s tests`.
+  Development verification: `PYTHONPATH=server:offline:tests python -m unittest discover -s tests`.
+
+  The opt-in `tests/live/e2e_led_driver.py` builds a seven-component 5 V LED test circuit
+  using the public tools. Start with an empty, linked disposable schematic/PCB family,
+  activate its schematic, and pass its exact `--document-id` plus `--output-dir`.
+  It checks schematic pins against PCB pads, placement/rotation and preview nonmutation,
+  then routes six nets and requires zero remaining airwires and zero ERC/DRC findings.
+  It never saves or closes designs and stops on the first failure. Exports and reports
+  stay in the output directory for inspection; `--stage` permits explicitly continuing
+  a stage after the failure has been investigated. The exact installed library/device
+  requirements are listed in the script. This checks CAD construction, not electrical
+  simulation or physical LED operation.
 On Windows use semicolons in `PYTHONPATH`. Offline success is distinct from
 acceptance on a disposable Fusion design. Never exercise write tests on a user's
 production schematic, and never claim bench or regulatory acceptance from these tests.

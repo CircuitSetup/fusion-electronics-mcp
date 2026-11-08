@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.16"
+ADDIN_VERSION = "0.14.17"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -51,7 +51,7 @@ U_PER_MM = 320000.0
 # EAGLE command verbs allowed through `run` / `run_script`.
 ALLOWED_VERBS = {
     "ADD", "ATTRIBUTE", "AUTO", "CHANGE", "CIRCLE", "CLASS", "CONNECT", "DELETE", "DESCRIPTION",
-    "DISPLAY", "DRC", "EDIT", "ERC", "GATESWAP", "GRID", "HOLE", "INVOKE", "JUNCTION", "LABEL", "LAYER", "MIRROR",
+    "DISPLAY", "DRC", "EDIT", "ERC", "GATESWAP", "GRID", "GROUP", "HOLE", "INVOKE", "JUNCTION", "LABEL", "LAYER", "MIRROR",
     "MOVE", "NAME", "NET", "PACKAGE", "PAD", "PIN", "PINSWAP", "POLYGON", "PREFIX", "RATSNEST",
     "RECT", "REDO", "REPLACE", "RIPUP", "ROTATE", "ROUTE", "SET", "SIGNAL", "SMASH", "SMD",
     "SPLIT", "TECHNOLOGY", "TEXT", "UNDO", "VALUE", "VIA", "WIRE",

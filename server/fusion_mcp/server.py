@@ -1287,7 +1287,8 @@ def add_part(device: str, library_name: str, ref: str, x_mm: float, y_mm: float,
              angle: float = 0, sheet: int = 1) -> dict:
     """Place a device (device set + variant name, e.g. 'RES_0603_10K_1%_1/10W') from a Fusion
     library into the schematic. The part is forward-annotated onto the board. `sheet` may be an
-    existing sheet or the next new one (sheets + 1)."""
+    existing sheet or the next new one (sheets + 1). A library refresh prompt is accepted only
+    with read-back checks that existing component definitions, wiring and layout are preserved."""
     sch = _snap(board=False).schematic()
     if ref in sch.parts:
         raise ValueError(f"{ref} already exists; pick an unused reference designator")
@@ -1296,14 +1297,33 @@ def add_part(device: str, library_name: str, ref: str, x_mm: float, y_mm: float,
     cmd = C.add_part(device, library_name, ref, x_mm, y_mm, angle, sheet)
 
     def verify(before, after):
+        from fusion_offline import edit_plan as P
+        from .edit_plan import verify_board
         sch = after.schematic()
         p = sch.parts.get(ref)
         if p is None:
             return False, f"{ref} did not appear (check the device and library names; the library must be saved and closed)"
+        old = before.schematic()
+        if set(sch.parts) != set(old.parts) | {ref} or any(sch.parts.get(r) != part for r, part in old.parts.items()):
+            return False, "An existing component changed while adding the part"
+        old_defs = P.library_definitions(D.read_xml(before.sch_xml))
+        new_defs = P.library_definitions(D.read_xml(after.sch_xml))
+        if any(new_defs.get(r) != definition for r, definition in old_defs.items()):
+            return False, "An existing component library definition changed"
+        if any(_pin_map(sch).get(pin) != net for pin, net in _pin_map(old).items()) or any(i not in sch.instances for i in old.instances):
+            return False, "An existing schematic connection or placement changed"
+        try:
+            verify_board({'board_xml': before.board_xml.decode('utf-8') if before.board_xml is not None else None},
+                         {'board_xml': after.board_xml.decode('utf-8') if after.board_xml is not None else None},
+                         after.sch_xml.decode('utf-8'))
+        except ValueError as ex:
+            return False, str(ex)
         on_board = after.board_xml is None or any(e.name == ref for e in after.fab().elements)
         return on_board, f"{ref} placed as {p.deviceset}{p.device}" + ("" if on_board else " but not on the board")
 
-    after, detail = session.verified_write("schematic", cmd, verify)
+    after, detail = session.verified_write("schematic", cmd, verify,
+        answers=[(r"A different version of device set .+ is already present in this file and needs to be updated", "Yes")],
+        forms=[dialogs.FORM_ADD_PALETTE])
     return {"ok": True, "detail": detail, "part": get_part(ref)}
 
 
@@ -1312,8 +1332,10 @@ def connect_pins(net: str, pins: list[str], allow_merge: bool = False, labels: b
     """Connect schematic pins into a named net. Pins are PART.PIN or PART.PAD. Each pin gets a short
     named wire stub with a net label (labels=false to omit), so no wire crosses other parts and
     every piece of the net is visibly named. Refuses to join two existing nets unless allow_merge
-    is true."""
-    snap = _snap(board=False)
+    is true. Names are normalized to Fusion's uppercase net names. Read-back checks the linked
+    PCB's pad connections as well as the schematic."""
+    net = net.upper()
+    snap = _snap()
     sch = snap.schematic()
     targets = [_resolve_pin(sch, p) for p in pins]
     for t in targets:
@@ -1322,13 +1344,12 @@ def connect_pins(net: str, pins: list[str], allow_merge: bool = False, labels: b
             raise ValueError(f"{t.part}.{t.pin} is already on net {cur!r}; pass allow_merge=true to join it to {net!r}")
     cmd = " ".join(C.net_stub(net, t.x, t.y, t.outward, sheet=t.sheet, label=labels)
                    for t in targets if sch.net_of(t.part, t.pin, t.gate) != net)
-    if not cmd:
-        return {"ok": True, "detail": "already connected", "net": net}
     before_map = _pin_map(sch)
     wanted = {(t.part, t.gate, t.pin) for t in targets}
 
     def verify(before, after):
-        m = _pin_map(after.schematic())
+        after_sch = after.schematic()
+        m = _pin_map(after_sch)
         missing = [".".join(k) for k in wanted if m.get(k) != net]
         changed = [f"{k[0]}.{k[1]}: {before_map.get(k)} -> {v}" for k, v in m.items()
                    if k not in wanted and before_map.get(k) != v and not (allow_merge and v == net)]
@@ -1336,8 +1357,27 @@ def connect_pins(net: str, pins: list[str], allow_merge: bool = False, labels: b
             return False, "not connected: " + ", ".join(missing)
         if changed:
             return False, "other pins changed net: " + "; ".join(changed[:10])
+        if before.board_xml is not None:
+            if after.board_xml is None:
+                return False, "Linked PCB disappeared during connection"
+            expected = {contact: name for name, sig in before.board().signals.items() for contact in sig.contacts}
+            actual = {contact: name for name, sig in after.board().signals.items() for contact in sig.contacts}
+            for pin in after_sch.pins:
+                key = (pin.part, pin.gate, pin.pin)
+                if key in wanted or before_map.get(key) != m.get(key):
+                    for pad in (pin.pad or '').split():
+                        expected[(pin.part, pad)] = m[key]
+            if actual != expected:
+                bad = [f'{ref}.{pad}' for ref, pad in expected.keys() | actual.keys()
+                       if expected.get((ref, pad)) != actual.get((ref, pad))]
+                return False, "linked PCB connections differ from schematic edit: " + ", ".join(sorted(bad)[:10])
         return True, f"{len(wanted)} pins on {net}"
 
+    if not cmd:
+        ok, detail = verify(snap, snap)
+        if not ok:
+            raise WriteFailed(detail)
+        return {"ok": True, "detail": "already connected", "net": net}
     answers = [(MERGE_PROMPT, "Yes")] if allow_merge else None
     after, detail = session.verified_write("schematic", cmd, verify, answers=answers)
     return {"ok": True, "detail": detail, "net": get_net(net)}
@@ -2046,8 +2086,8 @@ def route_pair(p_net: str, n_net: str, centreline_mm: list[list[float]], width_m
 
 @tool(ADDITIVE)
 def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer: str = "any",
-                allow_vias: bool = True, clearance_mm: float | None = None, via_drill_mm: float = 0.3,
-                via_diameter_mm: float = 0.6, grid_mm: float = 0.127, dry_run: bool = True) -> dict:
+                allow_vias: bool = True, clearance_mm: float | None = None, via_drill_mm: float | None = None,
+                via_diameter_mm: float | None = None, grid_mm: float = 0.127, dry_run: bool = True) -> dict:
     """Route one connection between two pads (PART.PAD, e.g. 'J1.A19' to 'J9.5') the way a person
     would: straight runs, 45-degree corners (no 90s), around other nets' copper with the design's
     clearance (or clearance_mm), keepouts and the board edge, ending exactly on the pad centres.
@@ -2055,7 +2095,8 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     (allow_vias=false forbids them). dry_run=true (default) returns the plan and a picture without
     writing; run again with dry_run=false to draw it (checked against the board afterwards).
     width_mm: when left out, the width the net's saved current needs (set_net_current; IPC-2221 on
-    the outer layers), else 0.25 mm."""
+    the outer layers), else 0.25 mm. Via drill/diameter default to the board's minimums
+    and annular-ring policy; undersized overrides are refused. Vias follow its tenting limit."""
     from fusion_offline import router as RT
     from fusion_offline.render import render
     snap = _snap(schematic=False)
@@ -2090,8 +2131,7 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     cmds = ["GRID MM; SET WIRE_BEND 2;"]
     for l, pts, w in r.pieces(width_mm):
         cmds.append(C.add_trace(an, wmap[l], w, pts))
-    for vx, vy in r.vias:
-        cmds.append(C.add_via(an, vx, vy, via_drill_mm, via_diameter_mm))
+    cmds.extend(_route_vias(an, r))
     cmds.append("SET WIRE_BEND 1;")
 
     def verify(before, after):
@@ -2108,6 +2148,20 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     after, detail = session.verified_write("board", " ".join(cmds), verify, schematic=False)
     out.update(written=True, detail=detail, routing=_routing_state(after))
     return out
+
+
+def _route_vias(net, route):
+    cmds = [C.add_via(net, x, y, route.via_drill, route.via_diameter) for x, y in route.vias]
+    if route.vias and route.via_tented:
+        pre, post = _only_layers([18])
+        cmds.append(pre)
+        # Fusion 2706 ignores single-via CHANGE STOP; a tiny via-only group applies it.
+        for x, y in route.vias:
+            corners = [(x-.0001, y-.0001), (x+.0001, y-.0001), (x+.0001, y+.0001), (x-.0001, y+.0001)]
+            cmds.append('GROUP ' + ' '.join(C.pt(*p) for p in corners)
+                        + f'; CHANGE STOP OFF (C> {C.n(x)} {C.n(y)});')
+        cmds.append(post)
+    return cmds
 
 
 @tool(ADDITIVE)
@@ -2182,7 +2236,7 @@ def route_net(net: str, width_mm: float | None = None, layer: str = "any", allow
                     "picture": pic["path"], "skipped": steps, "width_mm": width_mm,
                     **({"width_from": width_note} if width_note else {})}
         wmap = {1: _write_layer("top"), 16: _write_layer("bottom")}
-        cmds = ["GRID MM; SET WIRE_BEND 2;"] + [C.add_trace(net, wmap[l], w, pts) for l, pts, w in r.pieces(width_mm)] +                [C.add_via(net, vx, vy, 0.3, 0.6) for vx, vy in r.vias] + ["SET WIRE_BEND 1;"]
+        cmds = ["GRID MM; SET WIRE_BEND 2;"] + [C.add_trace(net, wmap[l], w, pts) for l, pts, w in r.pieces(width_mm)] + _route_vias(net, r) + ["SET WIRE_BEND 1;"]
         n_air = len(air)
 
         def verify(before, after, n_air=n_air):
@@ -2267,7 +2321,7 @@ def route_close(max_len_mm: float = 8.0, width_mm: float = 0.25, widths: dict[st
                 ET.SubElement(sigs[net], "wire", {"x1": str(p[0]), "y1": str(p[1]), "x2": str(q[0]), "y2": str(q[1]),
                                                   "width": str(lw), "layer": str(l)})
         for vx, vy in r.vias:
-            ET.SubElement(sigs[net], "via", {"x": str(vx), "y": str(vy), "extent": "1-16", "drill": "0.3", "diameter": "0.6"})
+            ET.SubElement(sigs[net], "via", {"x": str(vx), "y": str(vy), "extent": "1-16", "drill": str(r.via_drill), "diameter": str(r.via_diameter)})
         done.append((net, s_pad[0], g_pad[0] if g_pad else str(g_pt), w, r))
     out = {"routed": [{"net": n, "from": a, "to": b, "width_mm": w, "length_mm": round(r.length_mm, 2), "vias": len(r.vias)}
                       for n, a, b, w, r in done], "skipped": skipped}
@@ -2277,7 +2331,7 @@ def route_close(max_len_mm: float = 8.0, width_mm: float = 0.25, widths: dict[st
     cmds = ["GRID MM; SET WIRE_BEND 2;"]
     for n, a, b, w, r in done:
         cmds += [C.add_trace(n, wmap[l], lw, pts).replace("GRID MM; ", "") for l, pts, lw in r.pieces(w)]
-        cmds += [C.add_via(n, vx, vy, 0.3, 0.6).replace("GRID MM; ", "") for vx, vy in r.vias]
+        cmds += _route_vias(n, r)
     cmds.append("SET WIRE_BEND 1;")
     before_air = _routing_state(snap)["unrouted_connections"]
 
@@ -2348,7 +2402,7 @@ def route_remaining(width_mm: float = 0.25, widths: dict[str, float] | None = No
     for cid, r in res.routes.items():
         c = by_id[cid]
         cmds += [C.add_trace(c.net, wmap[l], w, pts).replace("GRID MM; ", "") for l, pts, w in r.pieces(c.width)]
-        cmds += [C.add_via(c.net, vx, vy, 0.3, 0.6).replace("GRID MM; ", "") for vx, vy in r.vias]
+        cmds += _route_vias(c.net, r)
     cmds.append("SET WIRE_BEND 1;")
     before_air = _routing_state(snap)["unrouted_connections"]
 
