@@ -42,6 +42,9 @@ class FakeSession:
         return contextlib.nullcontext()
 
     def call(self, op, *args, **kwargs):
+        if op == 'design_rules':
+            return {'xml': '<layerstackup>' + ''.join(
+                f'<layerdef type="Signal" layer="{n}"/>' for n in self.layers) + '</layerstackup>'}
         assert op == 'pours', op
         return {'pours': copy.deepcopy(self.after if self.commands else self.before)}
 
@@ -54,6 +57,50 @@ class FakeSession:
 
 
 class PourCreationTest(unittest.TestCase):
+    def test_configured_layers_and_independent_same_layer_priorities(self):
+        for native, exported in [([1, 304], [1, 16]),
+                                 ([1, 2, 303, 304], [1, 2, 15, 16]),
+                                 ([1, 2, 3, 302, 303, 304], [1, 2, 3, 14, 15, 16])]:
+            names = ['top', *[f'inner{i}' for i in range(1, len(native)-1)], 'bottom']
+            root = ET.fromstring('<eagle><drawing><board><designrules/><signals/></board></drawing></eagle>')
+            ET.SubElement(root.find('.//designrules'), 'param', name='layerSetup',
+                          value='(' + '*'.join(map(str, exported)) + ')')
+            snap = Snapshot(board_xml=ET.tostring(root))
+            for alias, number, export in zip(names, native, exported):
+                for requested in (alias, number, export):
+                    for rank in range(1, 7):
+                        background = pour(); background.update(net='VOUT', layer=number, rank=6)
+                        other_layer = pour(); other_layer['layer'] = native[-1] if number == native[0] else native[0]
+                        actual = pour(); actual.update(layer=number, rank=rank)
+                        fake = FakeSession([background, other_layer], [other_layer, actual, background])
+                        fake.layers = native
+                        with self.subTest(layers=native, requested=requested, rank=rank), \
+                                patch.object(S, 'session', fake), patch.object(S, '_snap', return_value=snap):
+                            result = S.add_pour('GND', requested, points_mm=POINTS, rank=rank)
+                            self.assertTrue(result['ok'])
+                            self.assertIn(f'LAYER {number};', fake.commands[0])
+                            self.assertIn(f'CHANGE RANK {rank};', fake.commands[0])
+
+    def test_unconfigured_inner_and_noncopper_layers_refused_before_write(self):
+        fake = FakeSession([], []); fake.layers = [1, 304]
+        snap = snapshot([])
+        for layer in ('inner1', 'inner0', 21):
+            with self.subTest(layer=layer), patch.object(S, 'session', fake), \
+                    patch.object(S, '_snap', return_value=snap):
+                with self.assertRaisesRegex(Exception, 'layer'):
+                    S.add_pour('GND', layer, points_mm=POINTS)
+                self.assertFalse(fake.commands)
+
+    def test_rank_must_be_an_integer_in_range_before_write(self):
+        for rank in (0, 7, -1, 1.5, True, '2'):
+            actual = pour(); actual['rank'] = int(rank)
+            fake = FakeSession([], [actual])
+            with self.subTest(rank=rank), patch.object(S, 'session', fake), \
+                    patch.object(S, '_write_layer', return_value=304):
+                with self.assertRaisesRegex(Exception, 'rank'):
+                    S.add_pour('GND', points_mm=POINTS, rank=rank)
+                self.assertFalse(fake.commands)
+
     def run_pour(self, after, before=None, **kwargs):
         fake = FakeSession(before or [], after)
         with patch.object(S, 'session', fake), patch.object(S, '_write_layer', return_value=304):

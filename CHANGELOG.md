@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Pour layers and priorities (workflow.20)
+- Plan each pour on its configured copper layer with explicit same-layer priorities; document
+  equal-rank conflicts, same-net merging and independent layers.
+- Reject fractional/non-integer ranks instead of silently truncating; test native/export layer
+  mapping on two-, four- and six-layer stacks and preserve other pours across all ranks.
+
 ### Datasheet-guided pours (workflow.19)
 - Require source-linked pour boundaries and connections relative to actual IC pads, orientation,
   keepouts and ground topology; leave unsupported filled-copper checks explicitly unverified.

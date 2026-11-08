@@ -54,6 +54,9 @@ mcp = MCPServer(
         "net/layer, exposed-pad connections, thermal reliefs, return paths and copper exclusions. "
         "Do not substitute a board-wide ground pour for a specified local layout; inspect actual fill "
         "and leave unsupported pour-layout/continuity checks unverified. "
+        "Plan pours per configured copper layer and inspect existing pours before choosing ranks "
+        "1 (highest) through 6 (lowest); ranks govern different-net overlaps on the same layer, "
+        "not connections between layers or separation of same-net copper. "
         "Only if no suitable library is available, create the missing assets from manufacturer drawings; "
         "verify pin mapping, footprint dimensions and 3D alignment, and report incomplete assets explicitly. Acquire "
         "manufacturer datasheets, applicable application notes, errata and reference-board layouts. "
@@ -2889,6 +2892,12 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
     pads to the pour (Fusion's default is a thin 0.1524 mm; the gap comes from the design rule
     slThermalIsolate). rank sets priority where pours of different nets overlap on a layer: rank 1
     wins and is cut out of higher ranks (e.g. output islands rank 1 inside a rank 3 GND plane).
+    layer accepts top/bottom/innerN, configured native IDs or classic export IDs; configure the
+    stack first and prefer names to avoid numbering ambiguity. Add each layer's pour separately.
+    Inspect list_pours before assigning ranks: rank must be an integer 1..6. Priorities apply only
+    to different nets on the same layer; equal-rank overlaps need DRC/fill inspection, not an
+    assumed creation-order priority. Same-net pours can merge regardless of rank. Separate layers
+    do not compete by rank and need actual vias/pads to connect.
     thermals=false requests direct pad connections when the datasheet requires them.
     For IC-specific pours, derive explicit points_mm from the cited layout and actual pad positions,
     rotation and board side; do not use a board-wide default in place of a prescribed local pour.
@@ -2896,8 +2905,8 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
     Respects keepouts (add_keepout); requests refill immediately. Verifies the native outline and
     settings, not actual filled-copper coverage, exposed-pad attachment or return-path continuity.
     Inspect those after refill; unavailable fill evidence remains unverified."""
-    if not 1 <= int(rank) <= 6:
-        raise ValueError("rank is 1 (highest priority) to 6")
+    if type(rank) is not int or not 1 <= rank <= 6:
+        raise ValueError("rank must be an integer from 1 (highest priority) to 6 (lowest)")
     if type(thermals) is not bool:
         raise ValueError('thermals must be boolean')
     if not all(math.isfinite(v) for v in (inset_mm, isolate_mm, width_mm, thermal_width_mm)) or \
@@ -2924,7 +2933,7 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
         raise ValueError('Pour outline needs at least three finite vertices enclosing nonzero area')
     # straight bends: a diagonal edge would otherwise be drawn as a 45-degree jog
     cmd = (f"GRID MM; CHANGE POUR SOLID; CHANGE ISOLATE {C.n(isolate_mm)}; CHANGE ORPHANS OFF; "
-           f"CHANGE THERMALS {'ON' if thermals else 'OFF'}; CHANGE THERMALWIDTH {C.n(thermal_width_mm)}; CHANGE RANK {int(rank)}; "
+           f"CHANGE THERMALS {'ON' if thermals else 'OFF'}; CHANGE THERMALWIDTH {C.n(thermal_width_mm)}; CHANGE RANK {rank}; "
            f"LAYER {wl}; SET WIRE_BEND 2; POLYGON {C.q(net)} {C.n(width_mm)} {_poly_cmd(pts)}; "
            f"SET WIRE_BEND 1; RATSNEST;")
 
@@ -2947,7 +2956,7 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
         if len(remaining) != 1:
             return False, 'Expected exactly one new pour'
         p = remaining[0]
-        expected = dict(net=net, layer=wl, thermals=thermals, rank=int(rank), orphans=False, hatched=False)
+        expected = dict(net=net, layer=wl, thermals=thermals, rank=rank, orphans=False, hatched=False)
         bad = [k for k, v in expected.items() if p.get(k) != v]
         dimensions = dict(isolate_mm=isolate_mm, width_mm=width_mm)
         if thermals:
@@ -4547,6 +4556,7 @@ def get_datasheet_workflow(mpn: str = '', manufacturer_domain: str = '') -> dict
         'set_design_requirements binds an inspected file hash to the exact active PCB. plan_datasheet_placement proposes moves; move_parts/place_clusters/tidy preserve constraints.',
         'Configure actual stackup first. route_trace/route_net/route_remaining use configured copper layers and bound net policies. Also use current/SI/pour/via checks.',
         'For datasheet-specified pours, inspect the layout drawing and record net, copper layer, IC-pad-relative boundary/coverage, exposed-pad tie, thermal relief versus direct connection, via pattern, ground joining point and copper exclusions under/near sensitive or switching nodes. Transform that geometry using actual IC pad locations, rotation and board side; numerical interpretations of qualitative drawings remain assumptions. Use explicit add_pour points_mm and thermals=false for required direct connections, plus required keepouts and separate nets. Do not replace a prescribed local pour with a board-wide default.',
+        'Plan each pour by net, configured copper layer, boundary and integer rank 1 (highest) through 6 (lowest). Inspect list_pours first; use top/bottom/innerN with the actual stack, adding each layer separately. For different-net overlaps on the same layer, choose distinct ranks when one must clear the other (for example a rank-1 island inside a rank-6 plane). Equal ranks do not establish creation-order priority; inspect refill and DRC. Same-net pours can merge regardless of rank. Ranks do not compete across layers or establish interlayer connectivity; verify required vias/pads. Preserve existing pours and verify each new layer/rank by native read-back.',
         'Refill after placement/routing/pour changes, verify native pour outlines/settings, then inspect actual filled copper for IC-pad connections, islands, narrow necks, required coverage and return continuity. Record source-linked pour/keepout/thermal_vias checks and a pour_layout or return_path requirement for unsupported fill/topology checks. Missing fill evidence remains unverified; DRC or polygon existence alone cannot establish the specified IC-relative layout.',
         'check_design_requirements verifies actual exported geometry and source hashes. Resolve fail/unverified findings; DRC/ERC alone is not datasheet compliance.'],
         'research_queries': [f'{mpn} {kind} site:{manufacturer_domain}' for kind in ('datasheet', 'application note', 'errata', 'evaluation board layout')],
