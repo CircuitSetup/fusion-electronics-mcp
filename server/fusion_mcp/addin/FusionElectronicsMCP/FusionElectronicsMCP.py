@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.15"
+ADDIN_VERSION = "0.14.16"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -638,7 +638,7 @@ def op_geometry_bodies(args):
     return {'document': _doc_info(doc), 'bodies': rows[offset:offset+limit], 'total': len(rows),
             'solid_count': len(native), 'unsupported_geometry': unsupported,
             'next_offset': offset+limit if offset+limit < len(rows) else None,
-            'coverage': 'Current root-context BRep bodies, including hidden bodies. Body IDs are inventory positions, not persistent edit handles; refresh after model changes. Missing or outdated models are not detected.'}
+            'coverage': 'Current root-context BRep bodies, including hidden bodies. Body IDs bind positions to an entity/occurrence inventory fingerprint; changed inventories or rotated tokens require a fresh inventory. These are not persistent edit handles. Missing or outdated models are not detected.'}
 
 
 def op_geometry_clearance(args):
@@ -1649,6 +1649,7 @@ def _other_copy():
 
 def run(context):
     global _app, _ui, _event, _handler, _server, _token, _events
+    reload_ticket = _management().claim_reload(adsk.core, os.path.dirname(__file__))
     _app = adsk.core.Application.get()
     _ui = _app.userInterface
     other = _other_copy()
@@ -1673,13 +1674,15 @@ def run(context):
         _server.bind(("127.0.0.1", 0))
         _server.listen(8)
         os.makedirs(INFO_DIR, exist_ok=True)
-        with open(INFO_PATH, "w", encoding="utf-8") as f:
-            json.dump({"port": _server.getsockname()[1], "token": _token, "pid": os.getpid(),
+        info = {"port": _server.getsockname()[1], "token": _token, "pid": os.getpid(),
                        "protocol": PROTOCOL, "addin_version": ADDIN_VERSION,
                        "event_session_id": _events.session_id,
-                       "started": time.strftime("%Y-%m-%dT%H:%M:%S")}, f)
+                       "reload_request_id": reload_ticket['request_id'] if reload_ticket else None,
+                       "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        _management().U.atomic_json(INFO_PATH, info)
         threading.Thread(target=_accept, args=(_server,), daemon=True).start()
         setattr(adsk.core, _OWNER_ATTR, os.path.abspath(__file__))
+        if reload_ticket is not None: reload_ticket['bridge_session'] = info
     except Exception:
         if _events: _events.close()
         _ui.messageBox(traceback.format_exc(), "Fusion Electronics MCP failed to start")

@@ -4,7 +4,7 @@
     "id": "1497455a-4622-48fd-b225-48fbd1e6c830",
     "author": "Ground Plane Studio, LLC",
     "description": {"": "One-shot supervisor for reloading the sibling Fusion Electronics MCP add-in."},
-    "version": "0.1.0",
+    "version": "0.2.0",
     "supportedOS": "windows|mac",
     "editEnabled": true
 }

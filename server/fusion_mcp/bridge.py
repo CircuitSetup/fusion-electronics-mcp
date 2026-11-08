@@ -141,6 +141,13 @@ class Bridge:
                                 "are cancelled). Install it with `fusion-electronics-mcp install-addin` and run it "
                                 "from Utilities > Add-Ins.")
         info = self._info()
+        if op in ('geometry_bodies', 'geometry_clearance'):
+            try:
+                version = tuple(int(part) for part in info.get('addin_version', '').split('.'))
+            except ValueError:
+                version = ()
+            if version < (0, 14, 16):
+                raise BridgeOpError('needs_addin', 'Inventory-bound geometry inspection requires add-in 0.14.16+; install and reload it first')
         if info.get("protocol") != PROTOCOL:
             raise BridgeUnavailable(f"add-in protocol {info.get('protocol')} != server protocol {PROTOCOL}; "
                                     "update the add-in")

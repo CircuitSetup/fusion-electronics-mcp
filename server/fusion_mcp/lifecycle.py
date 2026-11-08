@@ -4,7 +4,7 @@ from pathlib import Path
 import time
 import uuid
 
-from .addin.FusionElectronicsMCP.management import request_id
+from .addin.FusionElectronicsMCP.management import request_id, U
 from .bridge import BridgeOpError, BridgeUnavailable
 
 
@@ -21,20 +21,32 @@ def reload_status(bridge, rid):
         return {'request_id': rid, 'status': 'not_found'}
     # Never send the bridge authentication token back in MCP results.
     result = {key: record[key] for key in ('request_id', 'status', 'error', 'pid', 'target_folder') if key in record}
-    if record['status'] == 'restarted':
+    receipt = record.get('bridge_session') or {}
+    bound = (receipt.get('reload_request_id') == rid and receipt.get('pid') == record.get('pid')
+             and bool(receipt.get('token') and receipt.get('event_session_id'))
+             and receipt['token'] != record.get('old_token'))
+    result.update(current_session=False, reachable=None, verification_available=bound)
+    if bound:
+        result.update(addin_version=receipt['addin_version'], event_session_id=receipt['event_session_id'])
+    if bound and record['status'] in ('restarted', 'verified'):
         try:
             info = read_json(bridge.info_path)
-            if (info.get('token') and info['token'] != record['old_token']
-                    and info.get('pid') == record['pid'] and info.get('event_session_id')
-                    and bridge.transport() == 'addin'):
+            keys = ('pid', 'token', 'event_session_id', 'reload_request_id', 'addin_version')
+            result['current_session'] = all(info.get(key) == receipt.get(key) for key in keys)
+            if result['current_session'] and bridge.transport() == 'addin':
+                result['reachable'] = False
                 ping = bridge.call('ping', timeout=2)
                 current = read_json(bridge.info_path)
-                if (current.get('token') == info['token'] and ping.get('pid') == info['pid']
-                        and ping.get('addin_version') == info.get('addin_version')):
-                    result.update(status='verified', addin_version=ping['addin_version'],
-                                  event_session_id=info['event_session_id'])
+                result['current_session'] = all(current.get(key) == receipt.get(key) for key in keys)
+                if (result['current_session'] and ping.get('pid') == receipt['pid']
+                        and ping.get('addin_version') == receipt['addin_version']):
+                    if record['status'] != 'verified':
+                        record.update(status='verified', verified_at=time.time())
+                        U.atomic_json(path, record)
+                    result.update(status='verified', reachable=True)
         except (OSError, ValueError, BridgeUnavailable, BridgeOpError):
             pass
+    result['verified_at'] = record.get('verified_at')
     return result
 
 

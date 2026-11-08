@@ -32,11 +32,12 @@ class LifecycleTest(unittest.TestCase):
             rid = args['request_id']
             if self.mode == 'unsupported': raise BridgeOpError('unknown_op', 'old add-in')
             if self.mode == 'missing': raise BridgeUnavailable('lost reply')
+            receipt = self.old | {'token': 'SECRET-NEW', 'event_session_id': 'new', 'reload_request_id': rid}
             M.U.atomic_json(self.root / 'reloads' / (rid + '.json'),
                             dict(request_id=rid, status='failed' if self.mode == 'failed' else 'restarted',
-                                 pid=123, old_token=self.old['token']))
+                                 pid=123, old_token=self.old['token'], bridge_session=receipt))
             if self.mode != 'unchanged':
-                M.U.atomic_json(self.info, self.old | {'token': 'SECRET-NEW', 'event_session_id': 'new'})
+                M.U.atomic_json(self.info, receipt)
             if self.mode == 'lost_reply': raise BridgeUnavailable('lost reply')
             return {'request_id': rid}
         if op == 'ping':
@@ -67,6 +68,68 @@ class LifecycleTest(unittest.TestCase):
         with self.assertRaises(ValueError): L.reload_addin(self.bridge)
         self.assertEqual(self.calls, [])
 
+    def test_unrelated_session_never_verifies_old_request(self):
+        rid = 'e'*32
+        receipt = self.old | {'token':'expected-session', 'event_session_id':'expected', 'reload_request_id':rid}
+        M.U.atomic_json(self.root / 'reloads' / (rid+'.json'), dict(request_id=rid, status='restarted',
+                       pid=123, old_token=self.old['token'], bridge_session=receipt))
+        M.U.atomic_json(self.info, self.old | {'token':'unrelated', 'event_session_id':'unrelated'})
+        result = L.reload_status(self.bridge, rid)
+        self.assertNotEqual(result['status'], 'verified')
+        self.assertEqual(self.calls, [])
+
+    def test_verified_history_keeps_original_session_after_another_restart(self):
+        result = L.reload_addin(self.bridge, timeout=0)
+        self.assertEqual(result['status'], 'verified')
+        M.U.atomic_json(self.info, self.old | {'token':'another', 'event_session_id':'another'})
+        self.calls.clear()
+        history = L.reload_status(self.bridge, result['request_id'])
+        self.assertEqual(history['status'], 'verified')
+        self.assertEqual(history['event_session_id'], 'new')
+        self.assertFalse(history['current_session'])
+        self.assertEqual(self.calls, [])
+
+    def test_legacy_receipt_and_changed_session_during_ping_do_not_verify(self):
+        result = L.reload_addin(self.bridge, timeout=0)
+        rid = result['request_id']; path = self.root / 'reloads' / (rid+'.json')
+        record = L.read_json(path); record['status'] = 'restarted'
+        receipt = record.pop('bridge_session'); M.U.atomic_json(path, record)
+        self.calls.clear()
+        self.assertFalse(L.reload_status(self.bridge, rid)['verification_available'])
+        self.assertEqual(self.calls, [])
+        record['bridge_session'] = receipt; M.U.atomic_json(path, record)
+        def changed(*args, **kwargs):
+            M.U.atomic_json(self.info, self.old | {'token':'unexpected'})
+            return {'pid':123, 'addin_version':'0.14.14'}
+        self.bridge.call = changed
+        self.assertNotEqual(L.reload_status(self.bridge, rid)['status'], 'verified')
+
+    def test_helper_persists_acknowledgement_and_clears_unclaimed_ticket(self):
+        for acknowledge in (True, False, None):
+            addin = load_addin()
+            path = Path(addin.__file__).parent.parent / M.HELPER_NAME / (M.HELPER_NAME + '.py')
+            spec = importlib.util.spec_from_file_location('reload_test', path)
+            helper = importlib.util.module_from_spec(spec); spec.loader.exec_module(helper)
+            helper.adsk.terminate = MagicMock()
+            helper._app = types.SimpleNamespace(fireCustomEvent=MagicMock())
+            helper._status = self.root / 'status.json'; helper._request = {'request_id':'b'*32, 'status':'supervising'}
+            ticket = {'request_id':'b'*32, 'target_folder':str(helper.OWNER), 'pid':M.os.getpid(), 'expires':M.time.time()+30}
+            setattr(helper.adsk.core, M.RELOAD_ATTR, ticket)
+            with patch.object(helper.M, 'perform_reload', return_value=ticket), patch.object(helper.threading, 'Timer'):
+                handler = helper.ReloadHandler(); handler.notify(None)
+                helper.adsk.terminate.assert_not_called()
+                if acknowledge is not False:
+                    claimed = M.claim_reload(helper.adsk.core, helper.OWNER)
+                    if acknowledge:
+                        claimed['bridge_session'] = {'token':'bound', 'reload_request_id':'b'*32}
+                handler.notify(None)
+                record = L.read_json(helper._status)
+                self.assertEqual(record['status'], 'restarted' if acknowledge else 'failed')
+                if acknowledge: self.assertEqual(record['bridge_session']['token'], 'bound')
+                self.assertFalse(hasattr(helper.adsk.core, M.RELOAD_ATTR))
+                self.assertIsNone(M.claim_reload(helper.adsk.core, helper.OWNER))
+                helper.adsk.terminate.assert_called_once()
+
     def test_helper_rejects_pending_duplicate_and_expires_before_stop(self):
         owner = self.root / 'FusionElectronicsMCP'; owner.mkdir()
         folder = self.root / M.HELPER_NAME; folder.mkdir(); (folder / (M.HELPER_NAME + '.py')).touch()
@@ -80,7 +143,7 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(helper.runs, 1)
         request = L.read_json(self.root / 'reloads' / ('a'*32 + '.json'))
         with patch.object(M.time, 'time', return_value=request['expires'] + 1), self.assertRaises(ValueError):
-            M.perform_reload(app, owner, self.info, request)
+            M.perform_reload(app, owner, self.info, request, types.SimpleNamespace())
         self.assertEqual(target.stops, 0)
 
     def test_helper_queues_main_thread_event_cleans_up_and_records_failure(self):

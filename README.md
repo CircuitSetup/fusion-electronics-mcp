@@ -203,6 +203,12 @@ Server `0.3.0+workflow.12` / add-in `0.14.14` adds native lifecycle management:
   bridge session and a successful ping. `get_mcp_reload_status(request_id)` inspects
   an uncertain result without submitting another restart.
 
+With workflow.14, target add-in 0.14.16 and helper 0.2.0, verification is bound to
+a one-use startup ticket. The helper stores the acknowledged session, and successful
+ping verification is persisted. History retains that original session after subsequent
+restarts; `current_session` and `reachable` separately describe its current state.
+Older reload records without an acknowledgement cannot be retroactively verified.
+
 Run `fusion-electronics-mcp install-addin --force` to install both folders. An
 older running add-in needs one initial Stop/Run to load these hooks; subsequent
 reloads use the tool. Restart the external MCP connection to discover new tools.
@@ -248,7 +254,12 @@ Any measurement failure, unsupported geometry in an all-body check, or exhausted
 60-second between-pair budget yields `complete: false` and no overall pass. One native
 geometry call cannot be interrupted. More than 32 solids requires explicit subsets;
 each subset checks pairs within itself, so include cross-subset pairs when needed.
-Body IDs are inventory positions: refresh after edits or a model update.
+From workflow.14 / add-in 0.14.16, body IDs include an inventory fingerprint of
+body and occurrence entity tokens. Deletion, replacement or reordering invalidates
+old IDs instead of silently selecting different bodies. Token rotation may also
+invalidate them conservatively. Refresh `get_3d_bodies` after edits or a rejected
+stale ID; IDs from older add-ins must be regenerated. The fingerprint binds body
+identity, not geometry state: measurements always use current geometry.
 
 API references: [active selections](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/core_UserInterface_activeSelections.htm),
 [interference inputs and root context](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/fusion_Design_createInterferenceInput.htm),

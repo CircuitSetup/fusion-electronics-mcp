@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Review fixes (workflow.14 / add-in 0.14.16 / reload helper 0.2.0)
+- Bind 3D body IDs to the entity/occurrence inventory; reject old IDs after deletion,
+  reordering, replacement or token rotation before making any measurement.
+- Bind reloads to a one-use startup ticket and an acknowledged bridge session;
+  persist verification and keep historical results separate from current liveness.
+- Never verify a legacy or unacknowledged request from an unrelated later restart.
+
 ### Selection, command and 3D geometry inspection (workflow.13 / add-in 0.14.15)
 - Inspect current native selections and active/searchable command definitions without
   executing commands, dismissing dialogs or changing selection.

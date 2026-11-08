@@ -1,5 +1,7 @@
 """Read-only UI and BRep inspection; called on Fusion's main thread."""
 import itertools
+import hashlib
+import json
 import math
 import time
 
@@ -82,24 +84,40 @@ def commands(ui, query='', command_id=None, limit=25, offset=0):
             'coverage': 'Public command definitions and control flags; not proof a command can execute in this context. Active native dialog inputs are not exposed. No commands are executed.'}
 
 
+def entity_token(entity):
+    token = entity.entityToken
+    if not isinstance(token, str) or not token:
+        raise ValueError('Fusion did not provide an entity identity; cannot bind body selections')
+    return token
+
+
 def bodies(design):
     root = design.rootComponent
     occurrences = root.allOccurrences
     if occurrences.count > 5000: raise ValueError('Design exceeds the 5000-occurrence inspection limit')
     sources = [('<root>', root)] + [(o.fullPathName, o) for i in range(occurrences.count) if (o := occurrences.item(i))]
-    rows, native, unsupported = [], {}, []
+    rows, native, unsupported, identity_parts = [], {}, [], []
     for path, source in sources:
+        identity_parts.append((path, None if path == '<root>' else entity_token(source)))
         meshes = source.meshBodies.count if path == '<root>' else len(source.meshBodies)
         if meshes: unsupported.append({'occurrence_path': path, 'kind': 'mesh', 'count': meshes})
         for i in range(source.bRepBodies.count):
             if len(rows) >= 10000: raise ValueError('Design exceeds the 10000-body inspection limit')
             body = source.bRepBodies.item(i)
+            identity_parts.append((path, i, entity_token(body) if body.isValid else None))
             identity = f'{path}/body[{i}]'
             row = {'body_id': identity, 'name': body.name, 'occurrence_path': path,
                    'solid': body.isSolid, 'valid': body.isValid}
             rows.append(row)
             if row['solid'] and row['valid']: native[identity] = body
             else: unsupported.append({'body_id': identity, 'kind': 'non_solid_or_invalid'})
+    # Tokens may rotate for the same entity: invalidate conservatively, never alias an old position.
+    revision = hashlib.sha256(json.dumps(identity_parts).encode('utf-8')).hexdigest()
+    for row in rows:
+        row['body_id'] = revision + '/' + row['body_id']
+    for item in unsupported:
+        if 'body_id' in item: item['body_id'] = revision + '/' + item['body_id']
+    native = {revision + '/' + key: value for key, value in native.items()}
     return rows, native, unsupported
 
 

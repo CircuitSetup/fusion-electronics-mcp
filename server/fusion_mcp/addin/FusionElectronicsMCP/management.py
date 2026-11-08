@@ -16,6 +16,7 @@ spec.loader.exec_module(U)
 MAIN_ID = '7c1f5e2a-4b3d-4e8f-9a61-2d0c8b5e9f41'
 HELPER_ID = '1497455a-4622-48fd-b225-48fbd1e6c830'
 HELPER_NAME = 'FusionElectronicsMCPReload'
+RELOAD_ATTR = '_fusion_electronics_mcp_reload_ticket'
 
 
 def canonical(path): return os.path.normcase(os.path.realpath(path))
@@ -178,7 +179,21 @@ def queue_reload(app, owner_folder, info_path, rid):
     return {'request_id': rid, 'status': 'queued'}
 
 
-def perform_reload(app, owner_folder, info_path, request):
+def claim_reload(core, owner_folder):
+    ticket = getattr(core, RELOAD_ATTR, None)
+    if not ticket or canonical(ticket['target_folder']) != canonical(owner_folder): return None
+    delattr(core, RELOAD_ATTR)
+    if ticket['pid'] != os.getpid() or time.time() > ticket['expires']: return None
+    ticket['claimed'] = True
+    return ticket
+
+
+def clear_reload(core, ticket):
+    if ticket is not None and getattr(core, RELOAD_ATTR, None) is ticket:
+        delattr(core, RELOAD_ATTR)
+
+
+def perform_reload(app, owner_folder, info_path, request, core):
     if time.time() > request['expires']: raise ValueError('Reload request expired; nothing stopped')
     if request['pid'] != os.getpid() or canonical(request['target_folder']) != canonical(owner_folder):
         raise ValueError('Reload target does not match this helper')
@@ -188,5 +203,12 @@ def perform_reload(app, owner_folder, info_path, request):
     target = script_at(app, str(owner_folder))
     if target.id != MAIN_ID or not target.isRunning: raise ValueError('Expected running MCP add-in not found')
     if not target.stop() or target.isRunning: raise ValueError('MCP add-in did not stop; restart was not attempted')
-    if not target.run(): raise ValueError('MCP add-in stopped but Fusion refused to restart it')
-    return {'status': 'restarted'}
+    ticket = {key: request[key] for key in ('request_id', 'pid', 'expires', 'target_folder')}
+    ticket['claimed'] = False
+    setattr(core, RELOAD_ATTR, ticket)
+    try:
+        if not target.run(): raise ValueError('MCP add-in stopped but Fusion refused to restart it')
+    except Exception:
+        clear_reload(core, ticket)
+        raise
+    return ticket

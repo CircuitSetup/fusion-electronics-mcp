@@ -132,7 +132,8 @@ def get_fusion_events(session_id: str | None = None, after_seq: int = 0, limit: 
 @tool(ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False))
 def reload_mcp_addin() -> dict:
     """Restart only FusionElectronicsMCP through its packaged independent helper; verify reconnection.
-    Requires the running add-in 0.14.14+ and installed helper. Does not install files, save/close
+    Requires the running add-in 0.14.14+ to launch; install target 0.14.16+ and helper 0.2.0+ for
+    request-bound verification. Does not install files, save/close
     designs, reload the external MCP server, or recover a hung Fusion UI. Waits up to roughly
     40 seconds. On uncertain results inspect get_mcp_reload_status; never automatically retry."""
     from .lifecycle import reload_addin
@@ -141,7 +142,9 @@ def reload_mcp_addin() -> dict:
 
 @tool(READ)
 def get_mcp_reload_status(request_id: str) -> dict:
-    """Inspect a prior reload request and, when restarted, check the new bridge without rerunning it."""
+    """Inspect a prior reload without rerunning it. Verified history retains its acknowledged session;
+    current_session and reachable report its present state separately. Legacy records without a
+    startup receipt cannot be verified. Authentication tokens are never returned."""
     from .lifecycle import reload_status
     return reload_status(session.bridge, request_id)
 
@@ -182,8 +185,9 @@ def get_3d_bodies(limit: int = 25, offset: int = 0) -> dict:
     """Inventory BRep bodies in the active 3D design, or the verified open linked 3D PCB.
     Returns current body IDs, occurrence paths, solid/valid flags, document ID and unsupported
     geometry. Includes hidden bodies; does not generate/sync a model or switch documents.
-    Use document.document_id and body_ids for check_3d_clearance. IDs are inventory positions;
-    refresh after model changes. Needs add-in 0.14.15+. Units in geometry checks are mm."""
+    Use document.document_id and body_ids for check_3d_clearance. IDs include an entity/occurrence
+    inventory fingerprint; refresh if the inventory or tokens change. Needs add-in 0.14.16+.
+    Units in geometry checks are mm."""
     return session.bridge.call('geometry_bodies', {'limit': limit, 'offset': offset})
 
 
@@ -197,7 +201,7 @@ def check_3d_clearance(expected_document_id: str, minimum_clearance_mm: float = 
     Failed/unsupported or time-limited checks are incomplete, never a pass. Missing/outdated models
     cannot be detected. Hidden solids are included. Intentional contacts/overlaps need interpretation.
     No bodies are created, models synchronized, designs saved or history modes changed. Needs
-    add-in 0.14.15+. A native geometry call can outlast the between-pair 60-second budget."""
+    add-in 0.14.16+ for inventory-bound IDs. A native geometry call can outlast the between-pair 60-second budget."""
     return session.bridge.call('geometry_clearance', dict(expected_document_id=expected_document_id,
                                minimum_clearance_mm=minimum_clearance_mm, body_ids=body_ids), timeout=120)
 

@@ -2,6 +2,7 @@ import asyncio
 import math
 import sys
 import types
+import uuid
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,8 @@ class Items:
 
 def point(x=0, y=0, z=0): return types.SimpleNamespace(x=x, y=y, z=z)
 def body(name, solid=True):
-    return types.SimpleNamespace(name=name, isSolid=solid, isValid=True, objectType='adsk::fusion::BRepBody')
+    return types.SimpleNamespace(name=name, isSolid=solid, isValid=True, entityToken=uuid.uuid4().hex,
+                                 objectType='adsk::fusion::BRepBody')
 
 
 class InspectionTest(unittest.TestCase):
@@ -53,7 +55,7 @@ class InspectionTest(unittest.TestCase):
         a, b = body('A'), body('B')
         proxy = body('Nested instance')
         root = types.SimpleNamespace(bRepBodies=Items(a, b), meshBodies=Items(), allOccurrences=Items(
-            types.SimpleNamespace(fullPathName='Parent:1+Part:2', bRepBodies=Items(proxy), meshBodies=[])))
+            types.SimpleNamespace(fullPathName='Parent:1+Part:2', entityToken='occurrence-token', bRepBodies=Items(proxy), meshBodies=[])))
         design = types.SimpleNamespace(rootComponent=root,
             createInterferenceInput=MagicMock(side_effect=lambda values: types.SimpleNamespace(entities=values)),
             analyzeInterference=MagicMock(return_value=Items(*([types.SimpleNamespace(interferenceBody=types.SimpleNamespace(volume=overlap))] if overlap else []))))
@@ -65,7 +67,7 @@ class InspectionTest(unittest.TestCase):
     def test_geometry_uses_root_context_proxies_and_converts_distance(self):
         app, design, core, proxy = self.geometry()
         rows, native, unsupported = self.I.bodies(design)
-        self.assertIs(native['Parent:1+Part:2/body[0]'], proxy)
+        self.assertIs(native[rows[2]['body_id']], proxy)
         result = self.I.clearance(app, design, core, 0.4, [rows[0]['body_id'], rows[2]['body_id']])
         self.assertTrue(result['complete']); self.assertFalse(result['meets_requested_clearance'])
         pair = result['pairs'][0]
@@ -81,6 +83,36 @@ class InspectionTest(unittest.TestCase):
         self.assertEqual(result['pairs'][0]['overlap_volume_mm3'], 2)
         self.assertEqual(result['pairs'][0]['status'], 'interference')
         app.measureManager.measureMinimumDistance.assert_not_called()
+
+    def test_selected_ids_cannot_alias_after_delete_reorder_or_replacement(self):
+        for edit in ('delete', 'reorder', 'replace', 'occurrence_replace'):
+            app, design, core, _ = self.geometry()
+            rows, _, _ = self.I.bodies(design)
+            chosen = [rows[0]['body_id'], rows[2]['body_id']]
+            if edit == 'delete': design.rootComponent.bRepBodies.values.pop(0)
+            elif edit == 'reorder': design.rootComponent.bRepBodies.values.reverse()
+            elif edit == 'replace': design.rootComponent.bRepBodies.values[0] = body('A')
+            else: design.rootComponent.allOccurrences.item(0).entityToken = 'replacement-instance'
+            with self.subTest(edit=edit), self.assertRaisesRegex(ValueError, 'refresh|get_3d_bodies'):
+                self.I.clearance(app, design, core, 0.2, chosen)
+            design.analyzeInterference.assert_not_called()
+        fresh = self.I.bodies(design)[0]
+        self.assertTrue(self.I.clearance(app, design, core, 0.2, [fresh[0]['body_id'], fresh[2]['body_id']])['complete'])
+
+    def test_missing_identity_and_token_rotation_fail_closed(self):
+        app, design, core, _ = self.geometry()
+        ids = [row['body_id'] for row in self.I.bodies(design)[0]]
+        design.rootComponent.bRepBodies.item(0).entityToken = 'rotated-token'
+        with self.assertRaises(ValueError): self.I.clearance(app, design, core, 0.2, ids)
+        design.rootComponent.bRepBodies.item(0).entityToken = ''
+        with self.assertRaises(ValueError): self.I.bodies(design)
+        design.analyzeInterference.assert_not_called()
+
+    def test_unsupported_body_uses_the_inventory_bound_id(self):
+        _, design, _, _ = self.geometry()
+        design.rootComponent.bRepBodies.item(0).isSolid = False
+        rows, _, unsupported = self.I.bodies(design)
+        self.assertEqual(unsupported[0]['body_id'], rows[0]['body_id'])
 
     def test_failures_unsupported_and_invalid_inputs_never_pass(self):
         app, design, core, _ = self.geometry()
@@ -150,11 +182,21 @@ class InspectionTest(unittest.TestCase):
         for op in B.INSPECTION_OPS:
             with patch.object(bridge, 'transport', return_value='builtin'), self.assertRaises(B.BridgeOpError): bridge._call(op)
             with patch.object(bridge, 'transport', return_value='addin'), \
-                 patch.object(bridge, '_info', return_value={'protocol':1,'pid':123,'port':1,'token':'test'}), \
+                 patch.object(bridge, '_info', return_value={'protocol':1,'pid':123,'port':1,'token':'test','addin_version':'0.14.16'}), \
                  patch.object(B.socket, 'create_connection', return_value=connection), \
                  patch.object(B.dialogs, 'supported', side_effect=AssertionError('must not dismiss a dialog')), \
                  patch.object(B.dialogs, 'foreground', side_effect=AssertionError('must not change focus')):
                 self.assertEqual(bridge._call(op), {})
+
+    def test_geometry_requires_addin_with_inventory_bound_ids(self):
+        from fusion_mcp import bridge as B
+        bridge = B.Bridge()
+        for version in ('0.14.15', '', 'unknown'):
+            with patch.object(bridge, 'transport', return_value='addin'), \
+                 patch.object(bridge, '_info', return_value={'addin_version':version}), \
+                 patch.object(B.socket, 'create_connection') as connect:
+                with self.assertRaises(B.BridgeOpError): bridge._call('geometry_clearance', {})
+                connect.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()

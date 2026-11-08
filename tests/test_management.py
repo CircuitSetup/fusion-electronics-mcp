@@ -101,19 +101,24 @@ class ManagementTest(unittest.TestCase):
         info = self.root / 'bridge.json'; M.U.atomic_json(info, {'pid': M.os.getpid(), 'token': 'old'})
         request = {'request_id': 'a'*32, 'expires': M.time.time()+30, 'pid': M.os.getpid(),
                    'old_token': 'old', 'target_folder': str(self.owner)}
-        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request | {'expires': 0})
-        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request | {'old_token': 'other'})
-        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request | {'target_folder': str(self.root)})
+        core = types.SimpleNamespace()
+        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request | {'expires': 0}, core)
+        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request | {'old_token': 'other'}, core)
+        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request | {'target_folder': str(self.root)}, core)
         self.assertEqual(target.stops, 0)
-        result = M.perform_reload(self.app, self.owner, info, request)
-        self.assertEqual(result['status'], 'restarted'); self.assertEqual((target.stops, target.runs), (1, 1))
+        result = M.perform_reload(self.app, self.owner, info, request, core)
+        self.assertFalse(result['claimed']); self.assertEqual((target.stops, target.runs), (1, 1))
+        self.assertIsNone(M.claim_reload(core, self.root / 'another-copy'))
+        self.assertIs(M.claim_reload(core, self.owner), result)
+        self.assertTrue(result['claimed'])
+        self.assertIsNone(M.claim_reload(core, self.owner))
 
     def test_reload_stop_failure_never_runs_target(self):
         M = self.M; target = Script(self.owner, identity=M.MAIN_ID); target.isRunning = True
         target.stop = lambda: False; self.app.scripts.values.append(target)
         info = self.root / 'bridge.json'; M.U.atomic_json(info, {'pid': M.os.getpid(), 'token': 'old'})
         request = {'expires': M.time.time()+30, 'pid': M.os.getpid(), 'old_token':'old', 'target_folder':str(self.owner)}
-        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request)
+        with self.assertRaises(ValueError): M.perform_reload(self.app, self.owner, info, request, types.SimpleNamespace())
         self.assertEqual(target.runs, 0)
 
 
