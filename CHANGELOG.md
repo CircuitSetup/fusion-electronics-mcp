@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Datasheet reference and footprint reuse (workflow.18)
+- Make the exact part's datasheet pinout and recommended land pattern authoritative during library creation.
+- Reuse compatible standard footprints independently of part-specific symbols/devices; create a new
+  footprint only for unique geometry or when no existing footprint meets the datasheet.
+- Expose these instructions in workflow discovery and library creation/insertion tool guidance,
+  including compatibility checks and cited pinout/land-pattern pages.
+
 ### IC library acquisition and live via correction (workflow.17)
 - Instruct the host to search local libraries, then online CAD sources and install suitable assets,
   creating missing symbols, footprints and 3D representations only as a fallback.
