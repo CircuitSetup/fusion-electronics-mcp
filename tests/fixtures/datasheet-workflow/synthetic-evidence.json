@@ -1,0 +1,28 @@
+{
+  "ds": {
+    "mpn": "TEST-BUCK",
+    "package": "QFN",
+    "revision": "A",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_url": "https://vendor.example/buck.pdf",
+    "page_count": 4,
+    "inspected_pages": {
+      "1": {
+        "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
+  },
+  "cap": {
+    "mpn": "TEST-CAP",
+    "package": "0805",
+    "revision": "B",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "source_url": "https://vendor.example/cap.pdf",
+    "page_count": 1,
+    "inspected_pages": {
+      "1": {
+        "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    }
+  }
+}

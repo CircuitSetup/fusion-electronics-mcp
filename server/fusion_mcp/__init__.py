@@ -3,7 +3,7 @@
 import os
 import sys
 
-__version__ = "0.3.0+workflow.15"
+__version__ = "0.3.0+workflow.16"
 PROJECT_URL = "https://github.com/groundplane-studio/fusion-electronics-mcp"
 
 

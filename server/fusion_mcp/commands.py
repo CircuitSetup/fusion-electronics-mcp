@@ -58,9 +58,11 @@ def rotate_part(ref: str, angle: float, bottom: bool) -> str:
     return f"{GRID} ROTATE {orient(angle, bottom)} {q(ref)};"
 
 
-def add_via(net: str, x: float, y: float, drill: float, diameter: float | None = None) -> str:
+def add_via(net: str, x: float, y: float, drill: float, diameter: float | None = None,
+            extent: tuple | None = None) -> str:
     dia = n(diameter) if diameter else "auto"
-    return f"{GRID} CHANGE DRILL {n(drill)}; VIA {q(net)} {dia} round {pt(x, y)};"
+    span = f'{int(extent[0])}-{int(extent[1])} ' if extent else ''
+    return f"{GRID} CHANGE DRILL {n(drill)}; VIA {q(net)} {dia} round {span}{pt(x, y)};"
 
 
 def add_trace(net: str, layer: int, width: float, points: list[tuple[float, float]]) -> str:

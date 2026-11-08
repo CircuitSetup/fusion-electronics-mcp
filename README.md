@@ -1,5 +1,7 @@
 # fusion-electronics-mcp
 
+For IC-based design, see the [datasheet workflow](docs/datasheet-workflow.md): acquired manufacturer PDFs with text/diagram inspection, source-linked component and layout requirements, constrained multilayer routing, and requirement-by-requirement read-back reports. Install the `documents` extra and start with `get_datasheet_workflow`.
+
 An MCP server that lets AI agents read, review and edit PCB designs in
 Autodesk Fusion Electronics: schematic capture, placement, impedance-controlled
 routing, pours and stitching, design checks, and JLCPCB manufacturing outputs.

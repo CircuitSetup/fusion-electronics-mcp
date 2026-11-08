@@ -9,6 +9,7 @@ always empty in Fusion, so read-back is the only success signal.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -46,6 +47,7 @@ class Session:
         self.bridge = bridge or Bridge()
         self._drc_cache: tuple[int, list] | None = None     # (hash of the board export, its DRC errors)
         self.last_drc: dict | None = None
+        self.last_requirements: dict | None = None
 
     # -- primitives ----------------------------------------------------------
     def context(self) -> dict:
@@ -153,7 +155,8 @@ class Session:
                        board: bool = True, schematic: bool = True,
                        answers: list[tuple[str, str]] | None = None,
                        forms: list[dict] | None = None, timeout: float = 60.0,
-                       design: str | None = None) -> tuple[Snapshot, str]:
+                       design: str | None = None, expected_board_sha256: str | None = None,
+                       expected_document_id: str | None = None) -> tuple[Snapshot, str]:
         """Run `commands` in `editor` (the add-in groups them into ONE undo
         step), then check verify(before, after). Returns (after, detail).
 
@@ -169,12 +172,21 @@ class Session:
         try:
             with (lock.hold("write") if lock else contextlib.nullcontext()):
                 return self._verified_write(editor, commands, verify, board, schematic, answers, forms,
-                                            timeout, design)
+                                            timeout, design, expected_board_sha256, expected_document_id)
         except FusionBusy as ex:
             raise WriteFailed(f"{ex} Nothing was written.") from None
 
-    def _verified_write(self, editor, commands, verify, board, schematic, answers, forms, timeout, design):
+    def _verified_write(self, editor, commands, verify, board, schematic, answers, forms, timeout, design,
+                        expected_board_sha256=None, expected_document_id=None):
         before = self.snapshot(board, schematic)
+        if expected_document_id and (self.context().get('active_document') or {}).get('document_id') != expected_document_id:
+            raise WriteFailed('The planned document changed; nothing was written')
+        if expected_board_sha256 and hashlib.sha256(before.board_xml or b'').hexdigest() != expected_board_sha256:
+            raise WriteFailed('The planned board changed; re-plan before writing')
+        from . import design_requirements as DR
+        constraints = DR.bound(self) if editor == 'board' and before.board_xml is not None else None
+        constrained_document = (self.context().get('active_document') or {}).get('document_id') if constraints else None
+        requirements_before = DR.report(self, D.read_xml(before.board_xml), constraints) if constraints else None
         if design:
             self.require_design(design)
         # DRC before and after (bridge.drc_after_writes): the reply says what the write broke. Only
@@ -207,7 +219,22 @@ class Session:
         shown = list(res.get("dialogs", []))
         messages = list(res.get("messages", []))
         after = self.snapshot(board, schematic)
+        if constraints and (self.context().get('active_document') or {}).get('document_id') != constrained_document:
+            raise WriteFailed('Active document changed during constrained write; inspect original PCB. No UNDO sent to another document.')
         ok, detail = verify(before, after)
+        if editor == 'board' and after.board_xml is not None:
+            from fusion_offline import requirements as requirements_checks
+            try:
+                fresh_constraints = DR.bound(self)
+                if constraints:
+                    if not fresh_constraints or fresh_constraints[0] != constraints[0]:
+                        raise ValueError('Requirements binding changed during write')
+                self.last_requirements = DR.report(self, D.read_xml(after.board_xml), fresh_constraints)
+                bad = requirements_checks.regressions(requirements_before, self.last_requirements) if requirements_before else []
+                if bad:
+                    ok, detail = False, 'Datasheet requirement regression: ' + ', '.join(bad)
+            except (ValueError, OSError, KeyError) as ex:
+                ok, detail = False, 'Datasheet requirements could not be verified: ' + str(ex)
         unexpected = [d for d in shown if not d.get("expected")]
         note = ("; Fusion showed " + "; ".join(describe(d) for d in shown)) if shown else ""
         if messages:
@@ -234,6 +261,8 @@ class Session:
             return after, detail + drc_note + note
         changed = after.board_xml != before.board_xml or after.sch_xml != before.sch_xml
         if changed:
+            if constraints and (self.context().get('active_document') or {}).get('document_id') != constrained_document:
+                raise WriteFailed('Active document changed before rollback; no UNDO sent to another document. Inspect the original PCB.')
             self.undo(editor)
             restored = self.snapshot(board, schematic)
             clean = restored.board_xml == before.board_xml and restored.sch_xml == before.sch_xml

@@ -53,6 +53,7 @@ class ReviewRegressions(unittest.TestCase):
     def test_autoroute_unknown_does_not_read_or_restore_while_job_may_run(self):
         bridge = mock.Mock(lock=None)
         sess = mock.Mock(bridge=bridge)
+        sess.context.return_value = {'active_document': {'kind': 'board', 'name': 'fixture'}}
         with mock.patch.object(S, 'session', sess), \
              mock.patch.object(AR, 'run', side_effect=AR.AutorouteStateUnknown('still running')):
             result = S.autoroute.__wrapped__(nets=['TEST'], top_router=True)

@@ -9,7 +9,7 @@ can. The grid is anchored on the start pad, and the last leg is re-aimed so the 
 ends exactly on the target pad centre. Every result is checked against the exact
 geometry before it is returned.
 
-Layers are the classic export's copper numbers: 1 = top, 16 = bottom.
+Layers use configured export copper IDs in stack order (typically 1 = top, 16 = bottom).
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ class Route:
     via_drill: float = 0.3
     via_diameter: float = 0.6
     via_tented: bool = False
+    via_extent: tuple = (1, 16)
 
     def pieces(self, width: float):
         """(layer, points, width) per leg: the neck-downs at pads carry their own width."""
@@ -53,7 +54,24 @@ class Route:
                                           for (l, pts), w in zip(self.legs, ws)],
                 "vias": [list(v) for v in self.vias], "length_mm": round(self.length_mm, 3), "ends_on": self.joined,
                 "problems": self.problems, "via_drill_mm": self.via_drill,
-                "via_diameter_mm": self.via_diameter, "via_tented": self.via_tented}
+                "via_diameter_mm": self.via_diameter, "via_tented": self.via_tented,
+                "via_extent": list(self.via_extent)}
+
+
+def copper_layers(root):
+    from .design import parse_board_design
+    return tuple(parse_board_design(root).copper_layers)
+
+
+def via_layers(root, via):
+    layers = copper_layers(root)
+    ends = tuple(int(n) for n in via.get('extent', f'{layers[0]}-{layers[-1]}').split('-'))
+    if len(ends) != 2 or any(n not in layers for n in ends):
+        raise ValueError('Via extent is not in the configured copper stack')
+    i, j = (layers.index(n) for n in ends)
+    if i >= j:
+        raise ValueError('Via extent must follow copper stack order')
+    return layers[i:j+1]
 
 
 def _layer_ok(o: Obstacle, layer: int) -> bool:
@@ -198,7 +216,7 @@ class Grid:
                 continue
             ground = re.match(r"(?i)^(a|d|p)?gnd", pnet)
             inside_p = _in_poly(poly, XX, YY)
-            if not ground and player in (1, 16):
+            if not ground and player in (copper_layers(root)[0], copper_layers(root)[-1]):
                 vb |= inside_p                 # no via punched through another net's outer power pour
                                                # (inner planes are made for vias to pass)
             if player in cost:
@@ -320,7 +338,8 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
           max_nodes: int = 2_000_000, join_existing: bool = False, margin_mm: float | None = None,
           soft_cost: float = 4.0, tap_exclude: set | None = None, pour_cost: float = 30.0,
           plane_cost: float = 0.25, cache=None, h_weight: float = 1.0, soft_tags: set | None = None,
-          rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0) -> Route:
+          rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
+          layers: tuple | None = None, via_spans: list | None = None) -> Route:
     """Route `net` from pad centre `start` (on any of start_layers) to pad centre `goal`, or
     (join_existing) to whichever is nearer: the goal pad or any trace the net already has, which
     it taps where it meets it (Fusion connects a trace ending part-way along another, verified
@@ -331,6 +350,21 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     Neck-down: a trace wider than the pad it starts or ends on (a power trace on a fine-pitch
     pin) narrows to the pad's short side (or neck_width) within neck_len of the pad, as a person
     does it; the rest of the run keeps its width."""
+    stack = copper_layers(root)
+    if via_spans is not None and vias:
+        if not via_spans:
+            vias = False
+        elif any(tuple(span) != (stack[0], stack[-1]) for span in via_spans):
+            raise ValueError('Unsupported via span/technology; only full-stack through vias can be routed')
+    layers = tuple(layers) if layers is not None else stack
+    if not layers or len(set(layers)) != len(layers) or any(l not in stack for l in layers):
+        raise ValueError('Routing layers must be unique configured copper layers')
+    if prefer_layer is not None and prefer_layer not in layers:
+        raise ValueError('Preferred layer is not allowed for this route')
+    start_layers = tuple(l for l in start_layers if l in layers)
+    goal_layers = tuple(l for l in goal_layers if l in layers)
+    if not start_layers or not goal_layers:
+        return Route(net, problems=['Endpoint inaccessible on allowed routing layers'])
     span = math.dist(start, goal)
     if span > 40 and step < 0.25:          # long runs: a coarser grid keeps the search small
         step = 0.254
@@ -356,15 +390,15 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     necks, nw = [], neck_width
     for p in (start, goal):
         short = _pad_short_side(obs_all[0], net, p)
-        if short and short < width:
+        if short and short < width and neck_len > 0:
             necks.append((p[0], p[1], neck_len + short / 2))
             nw = min(nw or short, short)
-    G = Grid(root, net, width, clearance, step, start, via_d=via_d, window=window, cache=obs_all,
+    G = Grid(root, net, width, clearance, step, start, layers=layers, via_d=via_d, window=window, cache=obs_all,
              soft_cost=soft_cost, pour_cost=pour_cost, plane_cost=plane_cost, soft_tags=soft_tags, rip_cost=rip_cost,
              necks=necks, neck_width=nw, hug=hug)
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
-    r = Route(net, via_drill=via_drill, via_diameter=via_d,
+    r = Route(net, via_drill=via_drill, via_diameter=via_d, via_extent=(stack[0], stack[-1]),
               via_tented=via_drill <= _mm(rules.get('mlViaStopLimit'), 0.0))
     ny, nx = G.ny, G.nx
     for (pi, pj) in ((si, sj), (gi, gj)):  # the start/goal pad cells are free even if a neighbour's clearance reaches them
@@ -374,7 +408,9 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     ex = tap_exclude or set()
     key = lambda p: (round(p[0], 3), round(p[1], 3))
     taps = [t for t in (_net_traces(root, net) if join_existing else [])
-            if not (G.outside(*t[1]) and G.outside(*t[2])) and (key(t[1]), key(t[2])) not in ex and (key(t[2]), key(t[1])) not in ex]
+            if not (G.outside(*t[1]) and G.outside(*t[2]))
+            and (key(t[1]), key(t[2])) not in ex and (key(t[2]), key(t[1])) not in ex
+            and (t[0], key(t[1]), key(t[2])) not in ex and (t[0], key(t[2]), key(t[1])) not in ex]
     # heuristic: octile distance (in steps) to the nearest target (goal or sampled taps), precomputed
     tgt = [(gi, gj)]
     for l, a, b in taps:
@@ -583,7 +619,8 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
     """A* over cells x layers (x 8 directions when full). Returns ([(cell, layer index)], the cell
     where it tapped an existing trace or None, expansions, hit the limit)."""
     S = 8 if full else 1
-    nst = nx * ny * 2 * S
+    nlay = len(L)
+    nst = nx * ny * nlay * S
     INF = 1e18
     best = array("d", [INF]) * nst
     came = array("q", [-1]) * nst
@@ -594,16 +631,15 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         if l in lidx:
             if full:
                 for d in range(8):
-                    st = ((sidx * 2 + lidx[l]) << 3) | d
+                    st = ((sidx * nlay + lidx[l]) << 3) | d
                     best[st] = 0.0
                     push(open_, (H[sidx], 0.0, st))
             else:
-                st = sidx * 2 + lidx[l]
+                st = sidx * nlay + lidx[l]
                 best[st] = 0.0
                 push(open_, (H[sidx], 0.0, st))
     end, end_tap_cell = None, None
     n = 0
-    nlay = len(L)
     while open_:
         f, g, st = pop(open_)
         if g > best[st] + 1e-9:
@@ -614,8 +650,7 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         else:
             d = dirs[st]
             rest = st
-        li = rest & 1
-        idx = rest >> 1
+        idx, li = divmod(rest, nlay)
         l = L[li]
         if idx == gidx and l in goal_set:
             end = st
@@ -641,7 +676,7 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
             if di and dj and (Bl[idx + di * ny] or Bl[idx + dj]):
                 continue                           # no squeezing diagonally between two blocked cells
             ng = g + base * pm + (turn_cost if (d >= 0 and dd) else 0.0) + Cl[nidx] * base
-            ns = (((nidx * 2 + li) << 3) | nd) if full else nidx * 2 + li
+            ns = (((nidx * nlay + li) << 3) | nd) if full else nidx * nlay + li
             if ng < best[ns] - 1e-9:
                 best[ns] = ng
                 came[ns] = st
@@ -651,7 +686,7 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         if vias and not VB[idx]:
             for nli in range(nlay):
                 if nli != li and not B[L[nli]][idx]:
-                    ns = (((idx * 2 + nli) << 3) | (d & 7)) if full else idx * 2 + nli
+                    ns = (((idx * nlay + nli) << 3) | (d & 7)) if full else idx * nlay + nli
                     ng = g + via_cost
                     if ng < best[ns] - 1e-9:
                         best[ns] = ng
@@ -666,17 +701,18 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         path.append(came[path[-1]])
     path.reverse()
     if full:
-        return [((st >> 3) >> 1, (st >> 3) & 1) for st in path], end_tap_cell, n, False
-    return [(st >> 1, st & 1) for st in path], end_tap_cell, n, False
+        return [divmod(st >> 3, nlay) for st in path], end_tap_cell, n, False
+    return [divmod(st, nlay) for st in path], end_tap_cell, n, False
 
 
 def _net_traces(root: ET.Element, net: str) -> list:
     out = []
+    stack = copper_layers(root)
     for sig in root.iterfind("./drawing/board/signals/signal"):
         if sig.get("name") != net:
             continue
         for w in sig.iterfind("wire"):
-            if w.get("layer") in ("1", "16") and not float(w.get("curve") or 0):
+            if int(w.get("layer")) in stack and not float(w.get("curve") or 0):
                 out.append((int(w.get("layer")), (float(w.get("x1")), float(w.get("y1"))),
                             (float(w.get("x2")), float(w.get("y2")))))
     return out
@@ -778,7 +814,7 @@ def check_route(G: Grid, r: Route) -> list[str]:
 
 
 def pad_target(root: ET.Element, ref: str, pad: str) -> tuple[float, float, tuple, str | None]:
-    """(x, y, copper layers, net) of a part's pad: through-hole pads are on both layers,
+    """(x, y, copper layers, net) of a part's pad: through-hole pads span the configured stack,
     an SMD on its side (a mirrored part's SMDs are on the bottom)."""
     from .eagle import parse_rot
     from .stitch import _f, _xf
@@ -797,46 +833,59 @@ def pad_target(root: ET.Element, ref: str, pad: str) -> tuple[float, float, tupl
         for p in pk.iterfind("pad"):
             if p.get("name") == pad:
                 x, y = _xf(_f(p, "x"), _f(p, "y"), _f(el, "x"), _f(el, "y"), ang, mir)
-                return round(x, 4), round(y, 4), (1, 16), net
+                return round(x, 4), round(y, 4), copper_layers(root), net
         for p in pk.iterfind("smd"):
             if p.get("name") == pad:
                 x, y = _xf(_f(p, "x"), _f(p, "y"), _f(el, "x"), _f(el, "y"), ang, mir)
-                side = 16 if (p.get("layer") == "1") == mir else 1
+                stack = copper_layers(root)
+                side = stack[-1] if (int(p.get("layer")) == stack[0]) == mir else stack[0]
                 return round(x, 4), round(y, 4), (side,), net
         raise KeyError(f"{ref} has no pad {pad!r}")
     raise KeyError(f"no part {ref!r} on the board")
 
 
-def fragment(root: ET.Element, net: str, start: tuple[float, float]) -> tuple[set, tuple]:
+def fragment(root: ET.Element, net: str, start: tuple[float, float], start_layers=None,
+             include_layers=False) -> tuple[set, tuple]:
     """The piece of `net`'s copper that touches `start`: its trace segments (as rounded end pairs)
     and the copper layers present at `start`. Traces join at shared ends and through vias."""
     key = lambda x, y: (round(float(x), 3), round(float(y), 3))
     sig = next((s for s in root.iterfind("./drawing/board/signals/signal") if s.get("name") == net), None)
+    stack = copper_layers(root)
     if sig is None:
-        return set(), (1, 16)
+        return set(), stack
     segs = [(key(w.get("x1"), w.get("y1")), key(w.get("x2"), w.get("y2")), int(w.get("layer")))
-            for w in sig.iterfind("wire") if w.get("layer") in ("1", "16")]
-    vias = {key(v.get("x"), v.get("y")) for v in sig.iterfind("via")}
+            for w in sig.iterfind("wire") if int(w.get("layer")) in stack and not float(w.get('curve', '0'))]
+    vias = {}
+    for v in sig.iterfind('via'):
+        vias.setdefault(key(v.get('x'), v.get('y')), set()).update(via_layers(root, v))
+    for c in sig.iterfind('contactref'):
+        x, y, ls, _ = pad_target(root, c.get('element'), c.get('pad'))
+        if len(ls) > 1: vias.setdefault(key(x, y), set()).update(ls)
     def on(p, a, b):                       # p on segment a-b (a tap ending part-way along it)
         return _seg_dist(p[0], p[1], (a[0], a[1], b[0], b[1])) <= 0.002
 
     s0 = key(*start)
-    seen_pts = {(s0, l) for l in (1, 16)} if s0 in vias else set()
-    layers_at = {l for a, b, l in segs if s0 in (a, b) or on(s0, a, b)} | ({1, 16} if s0 in vias else set())
-    seen_pts |= {(s0, l) for l in layers_at}
-    out, changed = set(), True
+    layers_at = {l for a, b, l in segs if s0 in (a, b) or on(s0, a, b)} | set(vias.get(s0, ()))
+    if start_layers is not None:
+        layers_at &= set(start_layers)
+    if layers_at & set(vias.get(s0, ())):
+        layers_at |= set(vias[s0])
+    seen_pts = {(s0, l) for l in layers_at}
+    out, visited, changed = set(), set(), True
     while changed:
         changed = False
         for a, b, l in segs:
-            if (a, b) in out:
+            if (a, b, l) in visited:
                 continue
             if (a, l) in seen_pts or (b, l) in seen_pts or any(ll == l and on(p, a, b) for p, ll in seen_pts):
-                out.add((a, b))
+                out.add((l, a, b) if include_layers else (a, b))
+                visited.add((a, b, l))
                 hits = [a, b] + [q for a2, b2, l2 in segs if l2 == l for q in (a2, b2) if on(q, a, b)]
+                hits += [p for p, ls in vias.items() if l in ls and on(p, a, b)]
                 for p in hits:
-                    for ll in ((1, 16) if p in vias else (l,)):
+                    for ll in (vias[p] if l in vias.get(p, ()) else (l,)):
                         if (p, ll) not in seen_pts:
                             seen_pts.add((p, ll))
                             changed = True
-    return out, tuple(sorted(layers_at)) or (1, 16)
+    return out, tuple(sorted(layers_at)) or stack
 

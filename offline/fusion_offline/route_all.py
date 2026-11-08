@@ -50,7 +50,7 @@ def _commit(root, c: Conn, r):
             ET.SubElement(sg, "wire", {"x1": str(p[0]), "y1": str(p[1]), "x2": str(q[0]), "y2": str(q[1]),
                                        "width": str(w), "layer": str(l), "mcp_conn": c.id})
     for vx, vy in r.vias:
-        ET.SubElement(sg, "via", {"x": str(vx), "y": str(vy), "extent": "1-16", "drill": str(r.via_drill),
+        ET.SubElement(sg, "via", {"x": str(vx), "y": str(vy), "extent": '-'.join(map(str, r.via_extent)), "drill": str(r.via_drill),
                                   "diameter": str(r.via_diameter), "mcp_conn": c.id})
 
 
@@ -62,32 +62,35 @@ def _rip(root, ids: set):
 
 
 def _not_joined(root, c: Conn) -> set:
-    frag, _ = RT.fragment(root, c.net, c.goal)
+    frag, _ = RT.fragment(root, c.net, c.goal, c.goal_layers, include_layers=True)
     key = lambda p: (round(p[0], 3), round(p[1], 3))
     out = set()
-    for _l, a, b in RT._net_traces(root, c.net):
-        k = (key(a), key(b))
-        if k not in frag and (k[1], k[0]) not in frag:
+    for layer, a, b in RT._net_traces(root, c.net):
+        k = (layer, key(a), key(b))
+        if k not in frag and (layer, k[2], k[1]) not in frag:
             out.add(k)
     return out
 
 
 def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: int = 3,
-              rip_cost: float = 15.0, **kw) -> Result:
+              rip_cost: float = 15.0, policies=None, priorities=None, **kw) -> Result:
     work = copy.deepcopy(root)
     res = Result(root=work)
     by_id = {c.id: c for c in conns}
     tries = Counter()
-    queue = list(conns)
+    queue = sorted(conns, key=lambda c: -(priorities or {}).get(c.net, 0))
+    base_options = kw.copy()
     while queue:
         c = queue.pop(0)
+        kw = {**base_options, **(policies or {}).get(c.net, {})}
+        allow_vias = vias and kw.pop('vias', True)
         if c.id in res.routes:
             continue
         # tap only copper already joined to the goal: tapping a piece that is not (a bus lane no
         # pin has reached yet) would look routed and leave the connection open
         kw["tap_exclude"] = _not_joined(work, c)
         r = RT.route(work, c.net, c.start, c.start_layers, c.goal, c.goal_layers, width=c.width,
-                     vias=vias, join_existing=True, **kw)
+                     vias=allow_vias, join_existing=True, **kw)
         if r.legs and not r.problems:
             _commit(work, c, r)
             res.routes[c.id] = r
@@ -99,7 +102,7 @@ def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: in
             continue
         laid = {i for i in res.routes}
         kw["tap_exclude"] = _not_joined(work, c)
-        r2 = RT.route(work, c.net, c.start, c.start_layers, c.goal, c.goal_layers, width=c.width, vias=vias,
+        r2 = RT.route(work, c.net, c.start, c.start_layers, c.goal, c.goal_layers, width=c.width, vias=allow_vias,
                       join_existing=True, soft_tags=laid, rip_cost=rip_cost, **kw)
         if not r2.legs or r2.problems:
             res.failed[c.id] = (r2.problems or r.problems or ["no route"])[0]
@@ -114,7 +117,7 @@ def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: in
         res.rips += len(rip)
         kw["tap_exclude"] = _not_joined(work, c)
         r3 = RT.route(work, c.net, c.start, c.start_layers, c.goal, c.goal_layers, width=c.width,
-                      vias=vias, join_existing=True, **kw)
+                      vias=allow_vias, join_existing=True, **kw)
         if r3.legs and not r3.problems:
             _commit(work, c, r3)
             res.routes[c.id] = r3

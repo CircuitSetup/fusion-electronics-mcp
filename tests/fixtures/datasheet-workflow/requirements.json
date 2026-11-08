@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "sources": {
+    "ds": {
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "manifest_path": "ds.manifest.json"
+    },
+    "cap": {
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "manifest_path": "cap.manifest.json"
+    }
+  },
+  "devices": {
+    "U1": {
+      "mpn": "TEST-BUCK",
+      "package": "QFN"
+    },
+    "C1": {
+      "mpn": "TEST-CAP",
+      "package": "0805"
+    },
+    "L1": {
+      "mpn": "TEST-INDUCTOR",
+      "package": "0805",
+      "value": "2.2uH"
+    },
+    "C2": {
+      "mpn": "TEST-OUTPUT-CAP",
+      "package": "0805",
+      "value": "22uF"
+    },
+    "R1": {
+      "mpn": "TEST-FB-UPPER",
+      "package": "0805",
+      "value": "100k"
+    },
+    "R2": {
+      "mpn": "TEST-FB-LOWER",
+      "package": "0805",
+      "value": "20k"
+    }
+  },
+  "operating_conditions": {
+    "vin_v": 5,
+    "temperature_c": 25
+  },
+  "requirements": [
+    {
+      "id": "cin-near-vin",
+      "type": "distance",
+      "device": "U1",
+      "origin": "assumption",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "statement": "Synthetic test requirement, not a real datasheet.",
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "pads": [
+        "U1.VIN",
+        "C1.1"
+      ],
+      "net": "VIN",
+      "max_mm": 3,
+      "same_side": true,
+      "rationale": "Synthetic chosen bound for a qualitative layout recommendation",
+      "qualitative": true
+    },
+    {
+      "id": "cin-path",
+      "type": "path_length",
+      "device": "U1",
+      "origin": "manufacturer",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "statement": "Synthetic test requirement, not a real datasheet.",
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "pads": [
+        "U1.VIN",
+        "C1.1"
+      ],
+      "net": "VIN",
+      "max_mm": 3
+    },
+    {
+      "id": "power-route",
+      "type": "routing",
+      "device": "U1",
+      "origin": "manufacturer",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "statement": "Synthetic test requirement, not a real datasheet.",
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "net": "VIN",
+      "layers": [
+        1,
+        2,
+        15,
+        16
+      ],
+      "min_width_mm": 0.4,
+      "clearance_mm": 0.2,
+      "priority": 10
+    },
+    {
+      "id": "ep-vias",
+      "type": "thermal_vias",
+      "device": "U1",
+      "origin": "manufacturer",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "statement": "Synthetic test requirement, not a real datasheet.",
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "pad": "U1.EP",
+      "net": "GND",
+      "radius_mm": 1,
+      "min_count": 1,
+      "min_drill_mm": 0.3
+    },
+    {
+      "device": "U1",
+      "origin": "assumption",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "rationale": "Synthetic engineering acceptance bound; not a manufacturer specification.",
+      "id": "feedback-placement",
+      "type": "distance",
+      "statement": "Keep feedback network near the feedback pin.",
+      "pads": [
+        "U1.FB",
+        "R1.2"
+      ],
+      "net": "FB",
+      "max_mm": 3
+    },
+    {
+      "device": "U1",
+      "origin": "assumption",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "rationale": "Synthetic engineering acceptance bound; not a manufacturer specification.",
+      "id": "switch-path",
+      "type": "path_length",
+      "statement": "Bound the actual switch-to-inductor wire.",
+      "pads": [
+        "U1.SW",
+        "L1.1"
+      ],
+      "net": "SW",
+      "max_mm": 5
+    },
+    {
+      "device": "U1",
+      "origin": "assumption",
+      "source": "ds",
+      "pages": [
+        1
+      ],
+      "conditions": {
+        "vin_v": [
+          4,
+          6
+        ],
+        "temperature_c": [
+          0,
+          85
+        ]
+      },
+      "rationale": "Synthetic engineering acceptance bound; not a manufacturer specification.",
+      "id": "reference-return",
+      "type": "return_path",
+      "statement": "Assess GND reference-plane continuity and switching return loop.",
+      "net": "SW",
+      "reference_net": "GND",
+      "reference_layer": 2
+    }
+  ],
+  "components": {}
+}

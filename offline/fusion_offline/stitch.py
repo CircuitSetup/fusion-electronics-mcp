@@ -100,6 +100,8 @@ def _xf(px, py, x, y, angle, mirror):
 def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[float, float, float, float]]]:
     """(obstacles, rules, outline segments) from a board XML root."""
     board = root.find("./drawing/board")
+    from .design import parse_board_design
+    stack = parse_board_design(root).copper_layers
     rules = {p.get("name"): p.get("value") for p in board.iterfind("./designrules/param")}
     obs: list[Obstacle] = []
     # pad -> net from the signals' contactrefs
@@ -134,7 +136,7 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
             cx, cy = _xf(_f(smd, "x"), _f(smd, "y"), ex, ey, ang, mir)
             prot, _ = parse_rot(smd.get("rot"))
             a = (ang + prot) * (-1 if mir else 1)
-            side = 16 if (smd.get("layer") == "1") == mir else 1
+            side = stack[-1] if (int(smd.get("layer")) == stack[0]) == mir else stack[0]
             net_ = pad_net.get((el.get("name"), smd.get("name")))
             dx, dy = _f(smd, "dx"), _f(smd, "dy")
             if _f(smd, "roundness") >= 100:

@@ -132,6 +132,8 @@ class FakeBridge:
             self.xml = f.read()
 
     def call(self, op, args=None, timeout=60, answers=None, forms=None):
+        if op == 'context':
+            return {'active_document': {'kind': 'board', 'name': 'fixture'}}
         if op == "activate":
             return {}
         if op == "run":

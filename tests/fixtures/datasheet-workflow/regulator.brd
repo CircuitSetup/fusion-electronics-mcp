@@ -1,0 +1,103 @@
+<eagle>
+  <drawing>
+    <board>
+      <plain>
+        <wire x1="0" y1="0" x2="30" y2="0" layer="20" width="0" />
+        <wire x1="30" y1="0" x2="30" y2="20" layer="20" width="0" />
+        <wire x1="30" y1="20" x2="0" y2="20" layer="20" width="0" />
+        <wire x1="0" y1="20" x2="0" y2="0" layer="20" width="0" />
+      </plain>
+      <designrules>
+        <param name="layerSetup" value="(1*2*15*16)" />
+      </designrules>
+      <libraries>
+        <library name="L">
+          <packages>
+            <package name="QFN">
+              <smd name="VIN" x="0" y="0" dx="0.6" dy="0.6" layer="1" />
+              <smd name="EP" x="2" y="0" dx="1" dy="1" layer="1" />
+              <smd name="SW" x="2" y="2" dx=".6" dy=".6" layer="1" />
+              <smd name="FB" x="0" y="-2" dx=".6" dy=".6" layer="1" />
+              <smd name="VOS" x="2" y="-2" dx=".6" dy=".6" layer="1" />
+              <smd name="AGND" x="2" y="-4" dx=".6" dy=".6" layer="1" />
+              <smd name="EN" x="-2" y="-2" dx=".6" dy=".6" layer="1" />
+              <smd name="PG" x="4" y="-4" dx=".6" dy=".6" layer="1" />
+            </package>
+            <package name="0805">
+              <smd name="1" x="0" y="0" dx="0.6" dy="0.6" layer="1" />
+              <smd name="2" x="0" y="1.5" dx="0.6" dy="0.6" layer="1" />
+            </package>
+          </packages>
+        </library>
+      </libraries>
+      <elements>
+        <element name="U1" library="L" package="QFN" x="10" y="10">
+          <attribute name="MPN" value="TEST-BUCK" />
+        </element>
+        <element name="C1" library="L" package="0805" x="8" y="10">
+          <attribute name="MPN" value="TEST-CAP" />
+        </element>
+        <element name="L1" library="L" package="0805" x="16" y="12" value="2.2uH">
+          <attribute name="MPN" value="TEST-INDUCTOR" />
+        </element>
+        <element name="C2" library="L" package="0805" x="18" y="8" value="22uF">
+          <attribute name="MPN" value="TEST-OUTPUT-CAP" />
+        </element>
+        <element name="R1" library="L" package="0805" x="10" y="4" value="100k">
+          <attribute name="MPN" value="TEST-FB-UPPER" />
+        </element>
+        <element name="R2" library="L" package="0805" x="6" y="4" value="20k">
+          <attribute name="MPN" value="TEST-FB-LOWER" />
+        </element>
+      </elements>
+      <signals>
+        <signal name="VIN">
+          <contactref element="U1" pad="VIN" />
+          <contactref element="C1" pad="1" />
+          <wire x1="8" y1="10" x2="10" y2="10" layer="1" width=".5" />
+          <contactref element="U1" pad="EN" />
+          <wire x1="8" y1="8" x2="8" y2="10" layer="1" width=".5" />
+        </signal>
+        <signal name="GND">
+          <contactref element="U1" pad="EP" />
+          <contactref element="C1" pad="2" />
+          <via x="12" y="10" drill="0.3" diameter="0.6" extent="1-16" />
+          <contactref element="C2" pad="2" />
+          <contactref element="R2" pad="2" />
+          <contactref element="U1" pad="AGND" />
+          <wire x1="12" y1="6" x2="12" y2="10" layer="1" width=".4" />
+          <via x="8" y="11.5" drill=".3" diameter=".6" extent="1-16" />
+          <wire x1="8" y1="11.5" x2="12" y2="10" layer="16" width=".4" />
+          <via x="18" y="9.5" drill=".3" diameter=".6" extent="1-16" />
+          <wire x1="18" y1="9.5" x2="12" y2="10" layer="16" width=".4" />
+          <via x="6" y="5.5" drill=".3" diameter=".6" extent="1-16" />
+          <wire x1="6" y1="5.5" x2="12" y2="10" layer="16" width=".4" />
+        </signal>
+        <signal name="SW">
+          <contactref element="U1" pad="SW" />
+          <contactref element="L1" pad="1" />
+          <wire x1="12" y1="12" x2="16" y2="12" layer="1" width=".5" />
+        </signal>
+        <signal name="VOUT">
+          <contactref element="L1" pad="2" />
+          <contactref element="C2" pad="1" />
+          <contactref element="U1" pad="VOS" />
+          <contactref element="R1" pad="1" />
+          <wire x1="16" y1="13.5" x2="20" y2="13.5" layer="1" width=".5" />
+          <wire x1="20" y1="13.5" x2="20" y2="8" layer="1" width=".5" />
+          <wire x1="20" y1="8" x2="18" y2="8" layer="1" width=".5" />
+          <wire x1="18" y1="8" x2="12" y2="8" layer="1" width=".5" />
+          <wire x1="18" y1="8" x2="18" y2="4" layer="1" width=".25" />
+          <wire x1="18" y1="4" x2="10" y2="4" layer="1" width=".25" />
+        </signal>
+        <signal name="FB">
+          <contactref element="U1" pad="FB" />
+          <contactref element="R1" pad="2" />
+          <contactref element="R2" pad="1" />
+          <wire x1="10" y1="8" x2="10" y2="5.5" layer="1" width=".25" />
+          <wire x1="10" y1="5.5" x2="6" y2="4" layer="1" width=".25" />
+        </signal>
+      </signals>
+    </board>
+  </drawing>
+</eagle>
