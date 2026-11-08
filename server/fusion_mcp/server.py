@@ -57,6 +57,11 @@ mcp = MCPServer(
         "Plan pours per configured copper layer and inspect existing pours before choosing ranks "
         "1 (highest) through 6 (lowest); ranks govern different-net overlaps on the same layer, "
         "not connections between layers or separation of same-net copper. "
+        "Do not assume a two-layer PCB: assess routing density, continuous return planes, impedance, "
+        "noise, current and thermal requirements, then choose the lowest adequate manufacturer-supported "
+        "layer count. Use prepare_layer_stack for a sourced physical stack and per-layer roles; import "
+        "its preset through Layer Stack Manager using available UI automation, save, and require "
+        "check_layer_stack to pass before using added layers. File creation alone does not apply a stack. "
         "Only if no suitable library is available, create the missing assets from manufacturer drawings; "
         "verify pin mapping, footprint dimensions and 3D alignment, and report incomplete assets explicitly. Acquire "
         "manufacturer datasheets, applicable application notes, errata and reference-board layouts. "
@@ -3533,7 +3538,7 @@ def _rules_base(allow_unsaved: bool):
     return root, xml, note, doc.get("name") or "board"
 
 
-def _save_rule_file(name: str, text: str, out_dir: str | None) -> str:
+def _save_rule_file(name: str, text: str, out_dir: str | None, suffix: str = '.edru') -> str:
     from . import data_dir
     folder = out_dir or data_dir("rules")
     # rule files go only to the per-user rules folder, the temp folder or the user's Downloads / Documents
@@ -3545,10 +3550,110 @@ def _save_rule_file(name: str, text: str, out_dir: str | None) -> str:
     if not any(real == a or real.startswith(a + os.sep) for a in allowed):
         raise ValueError(f"out_dir must be inside {', '.join(allowed)}")
     os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, re.sub(r"[^\w.+-]+", "_", name) + ".edru")
+    path = os.path.join(folder, re.sub(r"[^\w.+-]+", "_", name) + suffix)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return path
+
+
+@tool(ADDITIVE)
+def prepare_layer_stack(stackup_file: str, layer_roles: list[dict], rationale: str,
+                        source_url: str, out_dir: str | None = None) -> dict:
+    """Prepare a manufacturer-backed stack for the active PCB; does NOT apply it.
+    Select a suitable .estackup or .edru from list_design_rules or a researched manufacturer file.
+    Justify the lowest adequate layer count from routing, return-path, impedance, noise/current or
+    thermal requirements. Never invent dielectric/copper values. source_url records the inspected
+    manufacturer reference, not independent approval of its contents.
+    layer_roles: one object per copper layer, top to bottom: role=signal/ground/power/mixed,
+    net required for ground/power; references lists adjacent planes by 1-based physical position.
+    Example four-layer roles: signal references [2], ground net GND, ground net GND, signal references [3].
+    Creates a stack-only .estackup (preserves other board rules) and document-bound plan_file.
+    Supports even layer counts 2..64 and through vias; refuses layer removal. Use available UI
+    automation to import file in Layer Stack Manager > Layer Stack > Open Preset File, apply and
+    save, then check_layer_stack(plan_file). Do not route new layers until read-back passes.
+    Roles are intent; the tool does not create planes or certify return paths/impedance."""
+    import hashlib
+    import json
+    from pathlib import Path
+    from urllib.parse import urlparse
+    from fusion_offline import stackup as ST
+    from .design_requirements import identity
+    if not isinstance(rationale, str) or not rationale.strip():
+        raise ValueError('A design-specific layer-count rationale is required')
+    url = urlparse(source_url)
+    if url.scheme != 'https' or not url.hostname:
+        raise ValueError('Provide the inspected manufacturer HTTPS source_url')
+    raw = Path(stackup_file).read_bytes()
+    profile = ST.validate_stackup(raw)
+    ST.validate_layer_roles(layer_roles, len(profile['copper_layers']))
+    root = ET.fromstring(raw)
+    stack = root if root.tag == 'layerstackup' else root.find('.//layerstackup')
+    output = ET.Element('eagle', version='9.7.0'); output.append(stack)
+    text = '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(output, encoding='unicode')
+    with session.bridge.lock.hold('prepare layer stack'):
+        doc = session.context().get('active_document') or {}
+        if doc.get('kind') != 'board' or not identity(doc):
+            raise ValueError('Activate the exact PCB before preparing a stack')
+        current = _snap(schematic=False).board().copper_layers
+        if identity(session.context().get('active_document') or {}) != identity(doc):
+            raise ValueError('Active board changed during stack preparation')
+        if len(current) > len(profile['copper_layers']):
+            raise ValueError('Layer removal is not supported; preserve existing copper and vias')
+        name = f"stack_{hashlib.sha256((identity(doc) + text).encode()).hexdigest()[:16]}"
+        path = _save_rule_file(name, text, out_dir, '.estackup')
+        plan = dict(version=1, board_id=identity(doc), file=path,
+                    sha256=hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+                    source_url=source_url, source_file=str(Path(stackup_file).resolve()),
+                    source_sha256=hashlib.sha256(raw).hexdigest(), rationale=rationale,
+                    layer_roles=layer_roles)
+        plan_file = _save_rule_file(name, json.dumps(plan, indent=2), out_dir, '.stack-plan.json')
+    return {**plan, 'plan_file': plan_file, 'status': 'pending_import', 'physical_stack': profile,
+            'next_steps': ['Import file using Layer Stack Manager > Layer Stack > Open Preset File; apply and save.',
+                           'Run check_layer_stack with plan_file before routing/pouring new layers.',
+                           'Recheck net layer/via policies, copper assignments, pours, impedance/current and DRC after import.'],
+            'unverified': ['Manufacturer suitability and source review are supplied by the caller.',
+                           'Layer roles and reference-plane continuity require actual copper and connection checks.']}
+
+
+@tool(READ)
+def check_layer_stack(plan_file: str) -> dict:
+    """Verify a prepared stack against the exact PCB's saved native physical stack and export layer map.
+    Unsaved edits can leave Fusion's working copy stale: report unverified until saved.
+    A pass covers physical layers/materials/via spans only, not plane creation, SI or thermal approval."""
+    import hashlib
+    import json
+    from pathlib import Path
+    from fusion_offline import stackup as ST
+    from .design_requirements import identity
+    plan = json.loads(Path(plan_file).read_text(encoding='utf-8-sig'))
+    raw = Path(plan['file']).read_bytes()
+    if plan.get('version') != 1 or hashlib.sha256(raw).hexdigest() != plan['sha256']:
+        raise ValueError('Prepared stack file changed; inspect and prepare it again')
+    expected = ST.validate_stackup(raw)
+    ST.validate_layer_roles(plan['layer_roles'], len(expected['copper_layers']))
+    with session.bridge.lock.hold('verify layer stack'):
+        doc = session.context().get('active_document') or {}
+        if doc.get('kind') != 'board' or identity(doc) != plan['board_id']:
+            raise ValueError('Stack plan belongs to a different board')
+        if doc.get('modified') is not False:
+            return {'status': 'unverified', 'reason': 'Save the PCB first; native stack read-back may be stale.'}
+        exported = _snap(schematic=False).board().copper_layers
+        native = session.bridge.call('design_rules', timeout=60)
+        after = session.context().get('active_document') or {}
+        if identity(after) != plan['board_id'] or after.get('modified') is not False:
+            return {'status': 'unverified', 'reason': 'Active board changed during stack verification.'}
+        try:
+            actual = ST.validate_stackup(native['xml'])
+        except ValueError as ex:
+            return {'status': 'fail', 'reason': f'Native stack is incomplete or unsupported: {ex}'}
+        matched = actual == expected and len(exported) == len(actual['copper_layers'])
+    return {'status': 'pass' if matched else 'fail',
+            'reason': 'Physical stack and layer mapping match' if matched else 'Physical stack or export layer count differs from the prepared stack',
+            'physical_stack': actual, 'readback_modified': native.get('modified'),
+            'layer_map': {str(a): b for a, b in zip(exported, actual['copper_layers'])} if matched else {},
+            'layer_roles': plan['layer_roles'],
+            'unverified': ['Layer roles, reference-plane continuity and interlayer connections require actual copper checks.',
+                           'Impedance, current, thermal performance and manufacturer approval are separate checks.']}
 
 
 @tool(ADDITIVE)
@@ -4554,7 +4659,9 @@ def get_datasheet_workflow(mpn: str = '', manufacturer_domain: str = '') -> dict
         'Check pin mapping with check_datasheet_pins; only record explicit named human reviews with record_pin_evidence_review.',
         'Create requirements JSON with conditions, candidate worst-case rating intervals, exact pads/nets and placement/routing limits. Numeric bounds inferred from qualitative text are assumptions.',
         'set_design_requirements binds an inspected file hash to the exact active PCB. plan_datasheet_placement proposes moves; move_parts/place_clusters/tidy preserve constraints.',
-        'Configure actual stackup first. route_trace/route_net/route_remaining use configured copper layers and bound net policies. Also use current/SI/pour/via checks.',
+        'Assess whether two layers meet datasheet layout, routing density/escape, continuous return planes, controlled impedance, noise isolation, current/temperature and mechanical requirements. Use the lowest adequate manufacturer-supported count: retain two when sufficient, move to four, six or more when evidence requires it; do not relax clearances or cross reference-plane splits to force two layers. Record the reason and any cost/thickness constraints.',
+        'Before routing, research the selected manufacturer stack and use list_design_rules to find a matching preset, or obtain a manufacturer .estackup/.edru. Use prepare_layer_stack with its source_url, a design-specific rationale and one layer_roles entry per physical copper layer. Preserve sourced copper weights/thickness, dielectric material/Er/spacing, total thickness and supported via spans; do not fabricate FR4 defaults. Assign signal/ground/power/mixed roles and adjacent reference planes. Ground/power intent still requires actual pours and connections. This workflow supports through vias only; HDI needs a separately supported manufacturer process.',
+        'Import the prepared .estackup using available UI automation in Layer Stack Manager > Layer Stack > Open Preset File, apply and save, then run check_layer_stack(plan_file). The stack-only preset preserves unrelated design rules. A pending_import result is not an applied stack; without UI access report the exact outstanding import step. Refuse routing on added layers until saved physical read-back and native/export mapping pass. After changing a routed board, review old copper/via assignments, rebind affected net layer policies, refill pours and rerun DRC, requirements and current/SI checks. route_trace/route_net/route_remaining use the verified configured layers and bound net policies.',
         'For datasheet-specified pours, inspect the layout drawing and record net, copper layer, IC-pad-relative boundary/coverage, exposed-pad tie, thermal relief versus direct connection, via pattern, ground joining point and copper exclusions under/near sensitive or switching nodes. Transform that geometry using actual IC pad locations, rotation and board side; numerical interpretations of qualitative drawings remain assumptions. Use explicit add_pour points_mm and thermals=false for required direct connections, plus required keepouts and separate nets. Do not replace a prescribed local pour with a board-wide default.',
         'Plan each pour by net, configured copper layer, boundary and integer rank 1 (highest) through 6 (lowest). Inspect list_pours first; use top/bottom/innerN with the actual stack, adding each layer separately. For different-net overlaps on the same layer, choose distinct ranks when one must clear the other (for example a rank-1 island inside a rank-6 plane). Equal ranks do not establish creation-order priority; inspect refill and DRC. Same-net pours can merge regardless of rank. Ranks do not compete across layers or establish interlayer connectivity; verify required vias/pads. Preserve existing pours and verify each new layer/rank by native read-back.',
         'Refill after placement/routing/pour changes, verify native pour outlines/settings, then inspect actual filled copper for IC-pad connections, islands, narrow necks, required coverage and return continuity. Record source-linked pour/keepout/thermal_vias checks and a pour_layout or return_path requirement for unsupported fill/topology checks. Missing fill evidence remains unverified; DRC or polygon existence alone cannot establish the specified IC-relative layout.',

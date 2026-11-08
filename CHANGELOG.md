@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Manufacturer-backed multilayer stacks (workflow.21)
+- Assess when two layers are insufficient and select the lowest adequate manufacturer stack.
+- Add `prepare_layer_stack` for validated, document-bound stack presets and per-layer reference
+  intent, plus `check_layer_stack` for saved native physical readback and export layer mapping.
+- Preserve unrelated rules by importing stack-only presets; explicitly distinguish preparation,
+  UI import and verification. Support even layer counts with through vias; refuse layer removal.
+
 ### Pour layers and priorities (workflow.20)
 - Plan each pour on its configured copper layer with explicit same-layer priorities; document
   equal-rank conflicts, same-net merging and independent layers.

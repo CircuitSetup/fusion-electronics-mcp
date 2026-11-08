@@ -193,6 +193,7 @@ class SessionTest(unittest.TestCase):
 EXPECTED_TOOLS = {
     "get_context", "list_designs", "open_design", "open_library", "new_design", "close_design",
     "get_board_summary", "list_parts", "get_part", "list_nets", "get_net", "get_layer_stack", "get_design_rules",
+    "prepare_layer_stack", "check_layer_stack",
     "run_drc", "run_erc", "review_schematic", "list_diff_pairs", "check_length_match", "check_impedance",
     "estimate_impedance", "export_bom", "export_cpl", "check_gerbers", "check_jlc_orientation", "add_part", "connect_pins", "rename_net", "label_nets",
     "new_sheet", "set_part_variant", "set_part_value", "move_part", "rotate_part", "add_via", "add_trace", "route_pair",

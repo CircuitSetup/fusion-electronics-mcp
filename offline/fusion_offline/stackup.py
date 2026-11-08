@@ -17,6 +17,7 @@ numbers (1, 2, 15, 16) by position.
 from __future__ import annotations
 
 import re
+import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
@@ -101,6 +102,78 @@ def parse_stackup(xml: bytes | str | ET.Element, source: str = "") -> Stackup | 
             df=_float(m.get("dissipation_factor_1g") or m.get("dissipation_factor")),
             material=" ".join(x for x in (m.get("oem"), m.get("oem_material"), m.get("description")) if x)))
     return st
+
+
+def validate_stackup(xml: bytes | str | ET.Element) -> dict:
+    """Physical import/read-back profile; this workflow supports through vias only."""
+    root = xml if isinstance(xml, ET.Element) else ET.fromstring(xml)
+    el = root if root.tag == 'layerstackup' else root.find('.//layerstackup')
+    st = parse_stackup(root)
+    if st is None or not 2 <= len(st.copper) <= 64 or len(st.copper) % 2:
+        raise ValueError('Stackup requires an even count of 2..64 copper layers')
+    numbers = [c.number for c in st.copper]
+    if any(type(n) is not int or not 1 <= n <= 304 for n in numbers) or numbers != sorted(set(numbers)):
+        raise ValueError('Copper layer IDs must be unique and ordered top to bottom')
+    defs = list(el.findall('layerdef'))
+    first = next(i for i, d in enumerate(defs) if d.get('type') == 'Signal')
+    last = max(i for i, d in enumerate(defs) if d.get('type') == 'Signal')
+    physical = defs[first:last + 1]
+    if len(physical) != 2 * len(numbers) - 1 or any(
+            d.get('type') not in (('Signal',) if i % 2 == 0 else ('Prepreg', 'Core'))
+            for i, d in enumerate(physical)):
+        raise ValueError('Stackup must alternate copper and dielectric from top to bottom')
+    layers = []
+    for d in physical:
+        m = d.find('material')
+        if m is None or not m.get('name'):
+            raise ValueError('Each physical layer needs a named material')
+        raw = m.get('thickness', '')
+        if not re.fullmatch(r'\s*\d+(?:\.\d+)?\s*(mm|mil|mic|um|in)\s*', raw):
+            raise ValueError('Every thickness needs a finite positive value and explicit length unit')
+        thickness = _mm(raw.strip())
+        er = _float(m.get('dielectric_constant_1g') or m.get('dielectric_constant'))
+        df = _float(m.get('dissipation_factor_1g') or m.get('dissipation_factor'))
+        if not math.isfinite(thickness) or thickness <= 0:
+            raise ValueError('Layer thickness must be finite and positive')
+        if d.get('type') != 'Signal' and (er is None or not math.isfinite(er) or er < 1):
+            raise ValueError('Each dielectric needs a finite dielectric constant (Er) of at least 1')
+        if any(k in m.attrib for k in ('dissipation_factor_1g', 'dissipation_factor')) and \
+                (df is None or not math.isfinite(df) or df < 0):
+            raise ValueError('Dissipation factor must be finite and nonnegative')
+        layers.append(dict(kind=d.get('type'), number=int(d.get('layer')) if d.get('type') == 'Signal' else None,
+                           thickness_mm=thickness, er=er, df=df,
+                           material={k: m.get(k, '') for k in ('name', 'oem', 'oem_material')}))
+    vias = []
+    for v in el.findall('viadef'):
+        span = [int(v.get('startlayer', '0')), int(v.get('stoplayer', '0'))]
+        if set(v.attrib) - {'name', 'id', 'startlayer', 'stoplayer', 'complement'} or \
+                span != [numbers[0], numbers[-1]] or v.get('complement', 'no') != 'no':
+            raise ValueError('Stack preparation supports through vias only; blind/buried/micro vias need a separate supported process')
+        vias.append(span)
+    if not vias:
+        raise ValueError('Stackup needs an explicit through-via definition')
+    return {'copper_layers': numbers, 'layers': layers, 'via_spans': sorted(vias),
+            'board_thickness_mm': round(sum(l['thickness_mm'] for l in layers), 6)}
+
+
+def validate_layer_roles(roles: list[dict], count: int) -> None:
+    """References are one-based physical copper positions, not native/export layer IDs."""
+    if not isinstance(roles, list) or len(roles) != count:
+        raise ValueError('Provide one layer role for every copper layer in top-to-bottom order')
+    for i, role in enumerate(roles, 1):
+        if not isinstance(role, dict) or role.get('role') not in ('signal', 'ground', 'power', 'mixed'):
+            raise ValueError('Layer role must be signal, ground, power or mixed')
+        if set(role) - {'role', 'net', 'references'}:
+            raise ValueError('Unknown layer-role field')
+        if role['role'] in ('ground', 'power') and not isinstance(role.get('net'), str):
+            raise ValueError('Ground/power planes need an explicit net')
+        if 'net' in role and (not isinstance(role['net'], str) or not role['net'].strip()):
+            raise ValueError('Plane net must be nonempty')
+        refs = role.get('references', [])
+        if not isinstance(refs, list) or any(type(r) is not int or not 1 <= r <= count or abs(r-i) != 1 for r in refs):
+            raise ValueError('Reference layers must be adjacent physical copper positions')
+        if any(not isinstance(roles[r-1], dict) or roles[r-1].get('role') not in ('ground', 'power') for r in refs):
+            raise ValueError('Reference layers must designate ground/power planes')
 
 
 @dataclass

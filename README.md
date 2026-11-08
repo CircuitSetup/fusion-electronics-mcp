@@ -81,6 +81,9 @@ GND stitched, silkscreen and 3D models checked.*
   dialog or Layer Stack Manager (`list_design_rules`). Rules meet JLCPCB's
   published minimums, with a 0.3 mm minimum drill (smaller costs more at JLC;
   lower it in the file if you need to).
+  `prepare_layer_stack` validates a manufacturer preset and records per-layer roles for
+  justified multilayer designs; `check_layer_stack` verifies saved physical readback after
+  UI import. See the [stackup workflow](docs/datasheet-workflow.md#choosing-and-preparing-a-multilayer-stack).
 - **JLCPCB**: BOM and CPL (pick and place) files; placement orientation checked
   against the footprint JLC places each part with (still check JLC's placement
   preview before ordering, see below); a check of your gerber zip

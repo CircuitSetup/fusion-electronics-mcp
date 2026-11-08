@@ -115,6 +115,10 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn('integer rank 1 (highest) through 6 (lowest)', steps)
         self.assertIn('use top/bottom/innerN with the actual stack', steps)
         self.assertIn('Same-net pours can merge regardless of rank', steps)
+        self.assertIn('retain two when sufficient, move to four, six or more', steps)
+        self.assertIn('prepare_layer_stack', steps)
+        self.assertIn('check_layer_stack(plan_file)', steps)
+        self.assertIn('A pending_import result is not an applied stack', steps)
         self.assertTrue(all('TEST-BUCK' in q for q in result['library_queries']))
 
     def test_native_autorouter_refuses_bound_constraints_before_commands(self):
