@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Selection, command and 3D geometry inspection (workflow.13 / add-in 0.14.15)
+- Inspect current native selections and active/searchable command definitions without
+  executing commands, dismissing dialogs or changing selection.
+- Inventory root-context BRep bodies in the active 3D design or verified linked 3D PCB.
+- Check actual overlap volumes and minimum clearances for bounded solid-body pairs;
+  report closest points, unsupported geometry and incomplete measurements explicitly.
+- Require the inspected document identity; retain read-only behavior and existing 3D
+  model-side checks. No auto-generation, synchronization, model repair or save.
+
 ### Lifecycle management (workflow.12 / add-in 0.14.14)
 - List and inspect native Fusion scripts/add-ins; run reviewed folder hashes or
   stop exact identities on explicit request, with MCP/helper targets protected.

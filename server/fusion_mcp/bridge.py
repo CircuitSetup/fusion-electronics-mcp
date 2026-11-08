@@ -48,7 +48,8 @@ class BridgeOpError(Exception):
 _BUILTIN = BuiltinClient()
 # operations the built-in server cannot do properly (see the module docstring)
 MANAGEMENT_OPS = {'list_scripts', 'inspect_script', 'control_script', 'events', 'reload_addin'}
-NEEDS_ADDIN = {"save", "push_3d", "run_registered_ulp"} | MANAGEMENT_OPS
+INSPECTION_OPS = {'selection', 'commands', 'geometry_bodies', 'geometry_clearance'}
+NEEDS_ADDIN = {"save", "push_3d", "run_registered_ulp"} | MANAGEMENT_OPS | INSPECTION_OPS
 
 
 def addin_running(info_path: str | None = None) -> bool:
@@ -127,6 +128,8 @@ class Bridge:
         Fusion notification toasts (its only error channel) are returned under
         "messages"."""
         mode = self.transport()
+        if mode == 'builtin' and op in INSPECTION_OPS:
+            raise BridgeOpError('needs_addin', 'Selection, command and geometry inspection requires add-in 0.14.15+')
         if mode == 'builtin' and op in MANAGEMENT_OPS:
             raise BridgeOpError('needs_addin', 'Lifecycle management requires the running add-in 0.14.14+')
         if mode == 'builtin' and op == 'run_registered_ulp':
@@ -144,7 +147,7 @@ class Bridge:
         self.last_dialogs = []
         pid = int(info.get("pid") or 0)
         unmanaged_ui = ((op == 'run_registered_ulp' and bool((args or {}).get('legacy_source_sha256')))
-                        or op in MANAGEMENT_OPS or op == 'ping')
+                        or op in MANAGEMENT_OPS or op in INSPECTION_OPS or op == 'ping')
         watch = self.watch_dialogs and not unmanaged_ui and dialogs.supported() and pid
         deadline = time.monotonic() + timeout + 20
         prev_fg = dialogs.foreground() if (self.keep_focus and pid and not unmanaged_ui) else 0

@@ -158,6 +158,51 @@ def get_context() -> dict:
 
 
 @tool(READ)
+def get_fusion_selection(limit: int = 25, offset: int = 0) -> dict:
+    """Inspect native active selections, object types, names and selection points in mm.
+    Does not select/deselect anything, run commands or dismiss dialogs. Includes document and
+    active-command identity. Electronics GROUP membership and command-input selections may
+    not appear in activeSelections; use run_bundled_ulp(probe) separately for Electronics groups.
+    Needs add-in 0.14.15+. Offsets apply to the current selection, which can change between calls."""
+    return session.bridge.call('selection', {'limit': limit, 'offset': offset})
+
+
+@tool(READ)
+def inspect_fusion_commands(query: str = '', command_id: str | None = None, limit: int = 25, offset: int = 0) -> dict:
+    """Inspect the active command plus a paged/searchable catalog of Fusion command definitions.
+    command_id optionally selects one exact definition; query matches ID/name. Reports native
+    status, tooltip and public enabled/visible control flags. Does not execute any command or
+    expose native dialog inputs. Control flags do not guarantee applicability in this editor.
+    Needs add-in 0.14.15+. Leaves dialogs and selection alone."""
+    return session.bridge.call('commands', dict(query=query, command_id=command_id, limit=limit, offset=offset))
+
+
+@tool(READ)
+def get_3d_bodies(limit: int = 25, offset: int = 0) -> dict:
+    """Inventory BRep bodies in the active 3D design, or the verified open linked 3D PCB.
+    Returns current body IDs, occurrence paths, solid/valid flags, document ID and unsupported
+    geometry. Includes hidden bodies; does not generate/sync a model or switch documents.
+    Use document.document_id and body_ids for check_3d_clearance. IDs are inventory positions;
+    refresh after model changes. Needs add-in 0.14.15+. Units in geometry checks are mm."""
+    return session.bridge.call('geometry_bodies', {'limit': limit, 'offset': offset})
+
+
+@tool(READ)
+def check_3d_clearance(expected_document_id: str, minimum_clearance_mm: float = 0.2,
+                       body_ids: list[str] | None = None) -> dict:
+    """Check actual solid geometry for interference and minimum clearance, using Fusion BRep APIs.
+    First get_3d_bodies; use its document_id and optionally 2..32 exact body IDs. By default checks
+    all loaded solids (max 32). Every selected pair is checked, including within one component.
+    Reports overlap volume (mm^3), distance/closest points (mm), contact and insufficient clearance.
+    Failed/unsupported or time-limited checks are incomplete, never a pass. Missing/outdated models
+    cannot be detected. Hidden solids are included. Intentional contacts/overlaps need interpretation.
+    No bodies are created, models synchronized, designs saved or history modes changed. Needs
+    add-in 0.14.15+. A native geometry call can outlast the between-pair 60-second budget."""
+    return session.bridge.call('geometry_clearance', dict(expected_document_id=expected_document_id,
+                               minimum_clearance_mm=minimum_clearance_mm, body_ids=body_ids), timeout=120)
+
+
+@tool(READ)
 def run_bundled_ulp(name: str = "probe", design: str | None = None) -> dict:
     """Run the bundled read-only 'probe' in the active board or schematic (no document switch).
     Reports live group membership, check status, variant, grid/layers and board pour-contour

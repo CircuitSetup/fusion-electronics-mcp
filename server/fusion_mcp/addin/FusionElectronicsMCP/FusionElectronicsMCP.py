@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.14"
+ADDIN_VERSION = "0.14.15"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -70,6 +70,7 @@ _stop = threading.Event()
 _jobs = {}
 _jobs_lock = threading.Lock()
 _management_module = None
+_inspection_module = None
 _events = None
 
 
@@ -595,6 +596,61 @@ def _management():
 
 def op_list_scripts(args):
     return _management().list_scripts(_app, args.get('query', ''), args.get('limit', 25), args.get('offset', 0))
+
+
+def _inspection():
+    global _inspection_module
+    if _inspection_module is None:
+        spec = importlib.util.spec_from_file_location('femcp_inspection', os.path.join(os.path.dirname(__file__), 'inspection.py'))
+        _inspection_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_inspection_module)
+    return _inspection_module
+
+
+def op_selection(args):
+    result = _inspection().selection(_ui, args.get('limit', 25), args.get('offset', 0))
+    result['document'] = _doc_info(_app.activeDocument) if _app.activeDocument else None
+    return result
+
+
+def op_commands(args):
+    return _inspection().commands(_ui, args.get('query', ''), args.get('command_id'),
+                                  args.get('limit', 25), args.get('offset', 0))
+
+
+def _inspection_design():
+    import adsk.fusion  # type: ignore
+    design = adsk.fusion.Design.cast(_app.activeProduct)
+    doc = _app.activeDocument
+    if design is None:
+        _, doc = _pcb3d_link()
+        design = _pcb3d_product(doc) if doc is not None else None
+    if design is None or doc is None:
+        raise BridgeError('not_found', 'Activate a 3D Fusion design or open the verified 3D PCB linked to the active electronics design; no model is generated automatically')
+    return design, doc
+
+
+def op_geometry_bodies(args):
+    helper = _inspection(); limit = args.get('limit', 25); offset = args.get('offset', 0)
+    helper.page(limit, offset)
+    design, doc = _inspection_design()
+    rows, native, unsupported = helper.bodies(design)
+    return {'document': _doc_info(doc), 'bodies': rows[offset:offset+limit], 'total': len(rows),
+            'solid_count': len(native), 'unsupported_geometry': unsupported,
+            'next_offset': offset+limit if offset+limit < len(rows) else None,
+            'coverage': 'Current root-context BRep bodies, including hidden bodies. Body IDs are inventory positions, not persistent edit handles; refresh after model changes. Missing or outdated models are not detected.'}
+
+
+def op_geometry_clearance(args):
+    design, doc = _inspection_design()
+    if not args.get('expected_document_id') or args['expected_document_id'] != _document_id(doc):
+        raise BridgeError('stale_document', 'Use expected_document_id from the current get_3d_bodies document')
+    modified = doc.isModified
+    result = _inspection().clearance(_app, design, adsk.core, args.get('minimum_clearance_mm', 0.2), args.get('body_ids'))
+    if doc.isModified != modified:
+        raise BridgeError('document_changed', 'Document modification state changed during geometry inspection; result cannot be verified')
+    result['document'] = _doc_info(doc)
+    return result
 
 
 def op_inspect_script(args):
@@ -1469,6 +1525,8 @@ def op_update_libraries(args):
 OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export": op_export,
        "list_scripts": op_list_scripts, "inspect_script": op_inspect_script, "control_script": op_control_script,
        "events": op_events, "reload_addin": op_reload_addin,
+       "selection": op_selection, "commands": op_commands,
+       "geometry_bodies": op_geometry_bodies, "geometry_clearance": op_geometry_clearance,
        "run": op_run, "run_script": op_run_script, "run_bundled_ulp": op_run_bundled_ulp,
        "run_registered_ulp": op_run_registered_ulp,
        "errors": op_errors, "save": op_save,

@@ -218,6 +218,42 @@ running it. Management operations leave dialogs and focus alone. Event reads use
 cached data without Fusion's UI queue, but still honor the shared MCP operation lock.
 The MCP add-in and its reload helper cannot be stopped/run through generic controls.
 
+## Selection, command and solid-geometry inspection
+
+Server `0.3.0+workflow.13` / add-in `0.14.15` provides four read-only tools:
+
+- `get_fusion_selection`: current native selections, entity types/names and pick
+  points in millimetres, with document and active-command identity.
+- `inspect_fusion_commands`: active command and paged command definitions, searchable
+  by ID/name or inspectable by exact ID, with public enabled/visible flags.
+- `get_3d_bodies`: inventory the active mechanical design or its verified open linked
+  3D PCB. Returns the document ID, occurrence paths and current body IDs.
+- `check_3d_clearance`: pass that document ID, a minimum clearance in mm, and optionally
+  2–32 body IDs. Checks every selected pair using Fusion's interference and minimum
+  distance APIs, with overlap volume in mm³ and closest points in mm. Root-context
+  body proxies preserve assembly placement, including nested component instances.
+
+Inspection does not execute commands, clear selection, dismiss dialogs, create
+analysis bodies, change modeling mode, synchronize models or save designs. Native
+selection does not necessarily include Electronics GROUP or command-input selections;
+the bundled ULP probe reports Electronics groups separately. Public command flags do
+not prove applicability, and active native dialog inputs are not exposed.
+
+Geometry checks include hidden solids and pairs within a component. Interpret intended
+contacts and overlaps accordingly. A contact meets a zero clearance threshold only if
+there is no overlapping volume. Missing/outdated component models cannot be detected;
+checks describe the currently loaded geometry. Meshes/non-solids are reported as
+unsupported; explicitly selected solid subsets only establish coverage of that subset.
+Any measurement failure, unsupported geometry in an all-body check, or exhausted
+60-second between-pair budget yields `complete: false` and no overall pass. One native
+geometry call cannot be interrupted. More than 32 solids requires explicit subsets;
+each subset checks pairs within itself, so include cross-subset pairs when needed.
+Body IDs are inventory positions: refresh after edits or a model update.
+
+API references: [active selections](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/core_UserInterface_activeSelections.htm),
+[interference inputs and root context](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/fusion_Design_createInterferenceInput.htm),
+[native distance measurement](https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/MeasureSample_Sample.htm).
+
 ## Libraries
 
 ### Find parts in Fusion libraries
