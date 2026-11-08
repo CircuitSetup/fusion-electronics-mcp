@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### IC library acquisition and live via correction (workflow.17)
+- Instruct the host to search local libraries, then online CAD sources and install suitable assets,
+  creating missing symbols, footprints and 3D representations only as a fallback.
+- Require source provenance, exact pin/package checks and 3D alignment verification; incomplete
+  or inaccessible assets remain explicit rather than being treated as approved.
+- Fix free-router through-via commands for Fusion's native Bottom=304 dialect: use command
+  span 1-64 and verify the exported extent. The TPS62160 live test exposed rejection of 1-304.
+
 ### Circuit connection verification (workflow.15 / add-in 0.14.17)
 - Verify requested pad connections on the linked PCB after `connect_pins`, including
   calls whose schematic pins are already connected; missing forward annotation is a failure.

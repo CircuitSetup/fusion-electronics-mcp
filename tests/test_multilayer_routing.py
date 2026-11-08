@@ -14,6 +14,14 @@ def board():
 
 
 class MultilayerTest(unittest.TestCase):
+    def test_fusion_through_via_command_uses_command_layer_numbers(self):
+        route = R.Route('S', vias=[(10, 5)], via_extent=(1, 16))
+        for native_bottom, command_bottom in [(304, 64), (16, 16), (64, 64)]:
+            with self.subTest(bottom=native_bottom), patch.object(S, '_write_layer',
+                    side_effect=lambda name: 1 if name == 'top' else native_bottom):
+                commands = S._route_vias('S', route)
+                self.assertIn(f'round 1-{command_bottom} (10 5)', commands[0])
+
     def test_route_on_inner_layer_and_preserve_commit(self):
         root = board()
         route = R.route(root, 'S', (5.03, 10.07), (2,), (35.11, 10.02), (2,), layers=(2,), vias=False, step=.254)

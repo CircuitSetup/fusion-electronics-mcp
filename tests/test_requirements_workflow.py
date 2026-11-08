@@ -99,6 +99,13 @@ class WorkflowTest(unittest.TestCase):
         result = S.get_datasheet_workflow('TEST-BUCK', 'vendor.example')
         self.assertIn('requirements', result['schema']['properties'])
         self.assertEqual(len(result['research_queries']), 4)
+        steps = ' '.join(result['steps'])
+        self.assertLess(steps.index('search_fusion_libraries'), steps.index('search the internet'))
+        self.assertLess(steps.index('search the internet'), steps.index('create the missing symbol'))
+        self.assertIn('download and install/import', steps)
+        self.assertIn('3D dimensions, units, origin, rotation, pin-1 and board seating', steps)
+        self.assertIn('assets remain incomplete', steps)
+        self.assertTrue(all('TEST-BUCK' in q for q in result['library_queries']))
 
     def test_native_autorouter_refuses_bound_constraints_before_commands(self):
         self.bind()
