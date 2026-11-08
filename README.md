@@ -37,8 +37,8 @@ GND stitched, silkscreen and 3D models checked.*
 - **Signal integrity**: differential pairs, length matching, and impedance
   estimates (IPC-2141 closed form) against the design's real layer stackup;
   same-layer pour too close to 50 ohm and USB traces (`check_pour_clearance`).
-- **Schematic capture**: place parts, connect pins (labels added
-  automatically), rename nets or single segments, add sheets with your frame.
+- **Schematic capture**: place parts in functional blocks and connect pins with
+  continuous right-angle wires, rename nets or single segments, add sheets with your frame.
   Draw a whole schematic from a KiCad board as reviewable blocks: each IC or
   connector with its passives wired to it, labels only where a net leaves the
   block, rails as power symbols, with a preview before anything is drawn.
@@ -513,6 +513,23 @@ production? [Get in touch](https://groundplanestudio.com/contact).
 MIT. See `LICENSE`.
 
 ### Reviewed schematic plans and project checks
+
+Arrange related parts before wiring: signal flow left to right, supplies above and ground
+below, IC support parts beside their pins, series components inline and shunt components on
+branches. Allow space for wires, values and labels. `connect_pins` and reviewed `connect`
+operations now draw continuous orthogonal wires on each sheet, routing around symbol bodies,
+other pins and other nets. They also join existing pieces of the same net. A blocked pin or
+overly dense drawing is refused before writing: space or reorient the parts first.
+
+`connect_pins(..., style="labels")` (or `"style":"labels"` in a connect operation) explicitly
+keeps the old separate labeled stubs for distant block ports. Use that choice sparingly;
+the KiCad `style="grid"` importer retains it, while the default block importer still places
+and wires local circuits together. The wiring tool preserves existing part positions and
+labels; it does not rearrange an existing schematic automatically. `labels=false` omits new
+labels in `connect_pins`; by default each sheet's connected drawing gets one if needed.
+Review the preview and run `review_schematic` and ERC after wiring. Read-back verification
+checks drawn wire geometry as well as pin-to-net membership and linked PCB pad connections.
+Old pending schematic plans must be previewed again with the updated server.
 
 The design-independent workflow adds six tools:
 

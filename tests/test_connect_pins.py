@@ -36,7 +36,7 @@ class ConnectPinsTest(unittest.TestCase):
             return after, detail
         session = SimpleNamespace(snapshot=lambda *args, **kwargs: before, verified_write=write)
         with patch.object(S, 'session', session), patch.object(S, 'get_net', return_value={}):
-            return S.connect_pins(name, ['R1.1', 'R1.2'], allow_merge=allow_merge)
+            return S.connect_pins(name, ['R1.1', 'R1.2'], allow_merge=allow_merge, style='labels')
 
     def test_missing_forward_annotation_cannot_report_success(self):
         before = snapshot()
@@ -90,3 +90,10 @@ class ConnectPinsTest(unittest.TestCase):
         after = snapshot([('R1', 'P$1'), ('R1', 'P$2'), ('R2', 'P$1')],
                          [('R1', '1'), ('R1', '2'), ('R2', '1')])
         self.assertTrue(self.connect(before, after, allow_merge=True)['ok'])
+
+    def test_merge_permission_does_not_allow_an_unrelated_net_to_move(self):
+        before = snapshot(extra=True)
+        after = snapshot([('R1','P$1'),('R1','P$2'),('R2','P$1')],
+                         [('R1','1'),('R1','2'),('R2','1')])
+        with self.assertRaisesRegex(ToolError,'other pins'):
+            self.connect(before,after,allow_merge=True)

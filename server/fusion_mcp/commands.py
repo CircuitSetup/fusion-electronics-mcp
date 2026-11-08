@@ -115,6 +115,18 @@ def net_wire(net: str, points: list[tuple[float, float]], sheet: int | None = No
     return f"{GRID} {sheet_prefix(sheet)} NET {q(net)} " + " ".join(pt(x, y) for x, y in points) + ";"
 
 
+def schematic_wiring(net: str, wiring: dict) -> str:
+    cmds = []
+    for sheet, path in wiring['paths']:
+        # NET stops on meeting an existing wire; draw each leg separately at branches.
+        cmds.extend(net_wire(net, [a, b], sheet) for a, b in zip(path, path[1:]) if a != b)
+    for sheet, at in wiring['junctions']:
+        cmds.append(f'{GRID} {sheet_prefix(sheet)} JUNCTION {pt(*at)};')
+    for sheet, pick, at in wiring['labels']:
+        cmds.append(f'{GRID} {sheet_prefix(sheet)} CHANGE SIZE 1.27; LABEL {pt(*pick)} {pt(*at)};')
+    return ' '.join(['SET WIRE_BEND 2;', *cmds, 'SET WIRE_BEND 1;']) if cmds else ''
+
+
 def rename_net_at(new_name: str, x: float, y: float, sheet: int | None = None) -> str:
     return f"{GRID} {sheet_prefix(sheet)} NAME {q(new_name)} {pt(x, y)};"
 

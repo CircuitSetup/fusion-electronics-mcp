@@ -8,6 +8,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import asdict
 from . import design as D
+from . import sch_wiring as W
 
 
 def digest(value):
@@ -69,7 +70,8 @@ def simulate(xml, operations, sources=None):
     sources=sources or {}
     for op in operations:
         kind=op.get('op')
-        if kind not in FIELDS or set(op)!=FIELDS[kind]: raise ValueError(f'Invalid fields for operation {kind!r}')
+        optional = {'style'} if kind == 'connect' else set()
+        if kind not in FIELDS or set(op)-optional!=FIELDS[kind]: raise ValueError(f'Invalid fields for operation {kind!r}')
         sch=D.parse_schematic_design(root); base=root.find('./drawing/schematic'); sheets=base.find('sheets')
         sheet=op.get('sheet')
         if sheet is not None and (type(sheet)!=int or not 1<=sheet<=sch.sheets+(kind=='add_sheet')): raise ValueError('Invalid sheet')
@@ -114,17 +116,9 @@ def simulate(xml, operations, sources=None):
             net=name(op['net']).upper()
             if not isinstance(op['pins'],list) or not op['pins']: raise ValueError('Explicit pins required')
             if len({tuple(sorted(p.items())) for p in op['pins']})!=len(op['pins']): raise ValueError('Duplicate pins')
-            for target in op['pins']:
-                p=pin(sch,target); current=net_of(sch,p)
-                if current and current!=net: raise ValueError('Implicit net merge refused')
-                if current==net: continue
-                ns=sheets[p.sheet-1].find('nets')
-                n=next((n for n in ns if n.get('name')==net),None)
-                if n is None: n=ET.SubElement(ns,'net',name=net,**{'class':'0'})
-                seg=ET.SubElement(n,'segment'); ET.SubElement(seg,'pinref',**target)
-                ex,ey=p.x+p.outward[0]*5.08,p.y+p.outward[1]*5.08
-                ET.SubElement(seg,'wire',x1=str(p.x),y1=str(p.y),x2=str(ex),y2=str(ey),width='0',layer='91')
-                ET.SubElement(seg,'label',x=str(ex),y=str(ey),size='1.27',layer='95')
+            targets=[pin(sch,target) for target in op['pins']]
+            wiring=W.plan(root,net,targets,op.get('style','wired'))
+            W.simulate(root,net,targets,wiring)
         elif kind=='label_net':
             net=name(op['net']).upper(); found=False
             for n in sheets[sheet-1].findall('./nets/net'):
@@ -151,7 +145,7 @@ def electrical(xml):
             'units': sorted((i.part,i.gate,i.sheet,i.x,i.y,i.angle,i.mirror) for i in sch.instances),
             'pins': sorted((p.part,p.gate,p.pin,p.pad,p.direction) for p in sch.pins),
             'nets':{n:sorted((p.part,p.gate,p.pin) for p in net.pins) for n,net in sch.nets.items()},
-            'sheets':sch.sheets, 'descriptions':sch.descriptions,
+            'sheets':sch.sheets, 'descriptions':sch.descriptions, 'wires':W.wire_signature(root),
             'labels':{n:sum(s.labels for s in net.segments) for n,net in sch.nets.items()}}
 
 

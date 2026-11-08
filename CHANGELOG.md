@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Connected schematic wiring (workflow.22)
+- Draw continuous orthogonal nets by default in `connect_pins` and reviewed schematic plans,
+  joining existing same-sheet pieces while avoiding symbols, other pins and other nets.
+- Keep labeled stubs as an explicit `style="labels"` option for distant block ports and the
+  legacy grid importer; verify wire geometry as well as schematic and linked PCB net membership.
+- Require functional schematic organization in design guidance: signal flow, local support parts,
+  inline series parts, branch components and readable spacing before wiring.
+
 ### Manufacturer-backed multilayer stacks (workflow.21)
 - Assess when two layers are insufficient and select the lowest adequate manufacturer stack.
 - Add `prepare_layer_stack` for validated, document-bound stack presets and per-layer reference

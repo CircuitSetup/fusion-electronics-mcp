@@ -84,7 +84,8 @@ class PlanTest(unittest.TestCase):
                     root=ET.fromstring(XML); nets=root.find('./drawing/schematic/sheets/sheet/nets')
                     net=ET.SubElement(nets,'net',name='INPUT',**{'class':'0'}); seg=ET.SubElement(net,'segment')
                     ET.SubElement(seg,'pinref',part='U1',gate='G$1',pin='VIN')
-                    ET.SubElement(seg,'label',x='52.7',y='0',size='1.27',layer='95')
+                    ET.SubElement(seg,'wire',x1='47.62',y1='0',x2='50.16',y2='0',width='0',layer='91')
+                    ET.SubElement(seg,'label',x='50.16',y='0',size='1.27',layer='95')
                     session.xml=ET.tostring(root,encoding='unicode')
                 return {'dialogs':[{'expected':False,'title':'Unexpected'}]} if mode=='unexpected_dialog' else {}
             session.call=run

@@ -61,8 +61,9 @@ def compile_operation(xml,op):
     if kind=='add_part': return C.add_part(op['deviceset']+op['device'],op['library'],op['ref'],op['x'],op['y'],op['rotation'],op['sheet'])
     if kind=='place_unit': return C.invoke_unit(op['part'],op['gate'],op['x'],op['y'],op['rotation'],op['sheet'])
     if kind=='connect':
+        from fusion_offline import sch_wiring as W
         pins=[P.pin(sch,p) for p in op['pins']]
-        return ' '.join(C.net_stub(op['net'],p.x,p.y,p.outward,sheet=p.sheet) for p in pins if P.net_of(sch,p)!=op['net'])
+        return C.schematic_wiring(op['net'],W.plan(P.D.read_xml(xml.encode()),op['net'],pins,op.get('style','wired')))
     if kind=='label_net':
         commands=[]
         for seg in sch.nets[op['net']].segments:

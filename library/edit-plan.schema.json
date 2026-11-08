@@ -46,6 +46,11 @@
               "op": {
                 "const": "connect"
               },
+              "style": {
+                "type": "string",
+                "enum": ["wired", "labels"],
+                "default": "wired"
+              },
               "pins": {
                 "type": "array",
                 "items": {
