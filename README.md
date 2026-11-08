@@ -359,6 +359,11 @@ component library folder and builds them into a Fusion library of yours:
 Footprints keep plated slots (`(drill oval ...)` becomes a Fusion slot pad)
 and unplated slots (milled on layer 46). `>NAME` / `>VALUE` are 0.8128 mm,
 vector, ratio 8 %, bottom-left, above the footprint's top-left corner.
+Conversion refuses repeated physical pad identifiers, standalone paste/mask
+apertures, SMD layer selections other than top copper/paste/mask, and embedded
+zones/keepouts or rule areas. These features require a compatible library or a
+converter that preserves them; silently dropping them is unsafe. Existing cached
+parts with duplicate copper pad names are also refused before native insertion.
 Fusion 2706.1.14 crashes in Create 3D Package, so `attach_3d_model` refuses
 on that build unless `accept_crash_risk=true`: save the library first.
 
@@ -393,6 +398,11 @@ library symbols; it does not mark a pin mapping or footprint as reviewed. KiCad
 footprints are still required. Multi-unit automatic block placement is not yet
 supported; use Fusion's unit placement controls. Keep pin names unique across
 units so existing schematic tools can address them unambiguously.
+
+Pin-evidence comparisons treat native package, device, gate, pin and pad identifiers
+as case-insensitive because Fusion uppercases library names. Approved evidence
+files are never normalized or rewritten: their content and review hashes remain
+exact, as do MPN and local part IDs. Real package or mapping differences still fail.
 
 ## Using it
 

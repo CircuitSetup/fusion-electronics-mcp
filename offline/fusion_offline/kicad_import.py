@@ -61,6 +61,18 @@ def _oval_drill(drill) -> tuple[float, float] | None:
     return None
 
 
+def validate_pad_names(package: dict) -> None:
+    """Fusion needs one unique identifier per physical copper pad, including reused packages."""
+    seen = set()
+    for pad in package.get("smds", []) + package.get("pads", []):
+        name = pad.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Unsupported unnamed physical pad")
+        if name.casefold() in seen:
+            raise ValueError(f"Unsupported duplicate physical pad name {name!r}; separate pads and explicitly map every connection")
+        seen.add(name.casefold())
+
+
 def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, device: str = "",
                       pin_names: dict[str, str] | None = None, attributes: dict[str, str] | None = None,
                       jlc_native: bool = False, source: str = "", description: str = "",
@@ -68,6 +80,8 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
     """Returns (part, renames). pin_names maps pad -> symbol pin name (default:
     the pad name); pads sharing a pin name are connected to that one pin."""
     fp = sexp(text)
+    if _find(fp, "zone") or _find(fp, "rule_area"):
+        raise ValueError("Unsupported KiCad zone/keepout or rule area; conversion would omit its copper restrictions")
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(fp[1]).split(":")[-1])
     smds, pads, holes, slots, silk = [], [], [], [], []
     used: set[str] = set()
@@ -78,6 +92,9 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
     nxt = (max(numeric) if numeric else 0) + 1
     for p in raw:
         num, kind, shape = str(p[1]), p[2], p[3]
+        layers = _one(p, "layers")
+        if kind == "smd" and (not num or layers and set(layers[1:]) != {"F.Cu", "F.Paste", "F.Mask"}):
+            raise ValueError("Unsupported SMD paste/mask aperture or layer selection; explicit copper, paste and mask geometry is required")
         at = _one(p, "at")
         x, y = float(at[1]), -float(at[2])
         rot = (-float(at[3])) % 360 if len(at) > 3 else 0.0
@@ -100,8 +117,6 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
             holes.append({"x": _r(x), "y": _r(y), "drill": dval or w})
             continue
         if not num:
-            if kind == "smd":
-                continue
             # unnamed plated pads are mounting/locating pegs: keep them as
             # unconnected pads (no symbol pin) so the hole is not lost
             mt = 1
@@ -194,4 +209,5 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
         "metadata": {"source": source or f"kicad:{fp[1]}", "maintainer": "", "verified": False,
                      "notes": f"converted from KiCad footprint {fp[1]}"},
     }
+    validate_pad_names(part["package"])
     return part, renames

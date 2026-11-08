@@ -2,6 +2,11 @@
 from .edit_plan import digest
 
 
+def _identifier(value):
+    """Compare native library identifiers without rewriting reviewed source content."""
+    return value.casefold() if isinstance(value,str) else value
+
+
 def finding(rule, status, observed=None, expected=None, refs=None, evidence=None):
     return {'rule_id':rule,'severity':'error' if status in ('fail','unknown') else 'info','status':status,
             'refs':refs or [],'observed':observed,'expected':expected,'evidence':evidence or []}
@@ -24,7 +29,8 @@ def review_status(evidence):
 
 
 def part_mapping(part):
-    return {(p.get('unit','G$1'),p['name']): (set(str(p.get('pad','')).split()),p.get('direction','pas')) for p in part['symbol']['pins']}
+    return {(_identifier(p.get('unit','G$1')),_identifier(p['name'])):
+            ({_identifier(pad) for pad in str(p.get('pad','')).split()},p.get('direction','pas')) for p in part['symbol']['pins']}
 
 
 def validate_pin_evidence(part, evidence, actual_sha256=None):
@@ -35,16 +41,17 @@ def validate_pin_evidence(part, evidence, actual_sha256=None):
     add('evidence_review','pass' if status=='approved' else 'fail' if status=='rejected' else 'unknown',status,'approved')
     for field,want in [('part_id',part.get('id')),('package',part.get('package',{}).get('name')),('mpn',(part.get('attributes',{}).get('MPN') or part.get('attributes',{}).get('MP')))]:
         got=e.get(field)
-        add(field,'unknown' if not want or not got else 'pass' if want==got else 'fail',got,want)
+        matches=_identifier(want)==_identifier(got) if field=='package' else want==got
+        add(field,'unknown' if not want or not got else 'pass' if matches else 'fail',got,want)
     pages=e.get('pages')
     provenance=bool(e.get('source') and e.get('revision') and isinstance(pages,list) and pages and all(type(p)==int and p>0 for p in pages))
     add('source_reference','pass' if provenance else 'unknown')
     add('datasheet_hash','unknown' if not actual_sha256 else 'pass' if actual_sha256==e.get('sha256') else 'fail',actual_sha256,e.get('sha256'))
     rows=e.get('pins',[]); mapping=part_mapping(part)
-    pads={str(p['name']) for kind in ('pads','smds') for p in part.get('package',{}).get(kind,[])}
+    pads={_identifier(str(p['name'])) for kind in ('pads','smds') for p in part.get('package',{}).get(kind,[])}
     seen=set()
     for row in rows:
-        pad=row.get('pad'); key=(row.get('gate'),row.get('pin')); actual=mapping.get(key)
+        pad=_identifier(row.get('pad')); key=(_identifier(row.get('gate')),_identifier(row.get('pin'))); actual=mapping.get(key)
         if pad in seen: add('duplicate_pad','fail',pad)
         seen.add(pad)
         intent=row.get('intent')
@@ -57,7 +64,7 @@ def validate_pin_evidence(part, evidence, actual_sha256=None):
         else:
             add('pin_mapping','pass' if pad in actual[0] and row.get('direction')==actual[1] else 'fail',{'pad':pad,'gate':key[0],'pin':key[1]},sorted(actual[0]))
     add('package_pad_coverage','pass' if seen==pads else 'fail',sorted(seen,key=str),sorted(pads))
-    declared={(r.get('gate'),r.get('pin'),r.get('pad')) for r in rows}
+    declared={tuple(_identifier(r.get(k)) for k in ('gate','pin','pad')) for r in rows}
     expected={(g,p,pad) for (g,p),(pads,_) in mapping.items() for pad in pads}
     add('symbol_pin_coverage','pass' if expected<=declared else 'fail',sorted(expected-declared))
     return out
@@ -69,22 +76,24 @@ def compare_pin_evidence(schematic, parts, evidence, references=None):
         e=evidence.get(part_id)
         if not e:
             out.append(finding('missing_evidence','unknown',refs=[part_id])); continue
-        matches=[p for p in schematic.parts.values() if p.deviceset==part['deviceset'] and p.device==part.get('device','') and (references is None or p.name in references.get(part_id,[]))]
+        matches=[p for p in schematic.parts.values() if _identifier(p.deviceset)==_identifier(part['deviceset']) and _identifier(p.device)==_identifier(part.get('device','')) and (references is None or p.name in references.get(part_id,[]))]
         if not matches: out.append(finding('part_not_placed','unknown',refs=[part_id]))
         for placed in matches:
-            out.append(finding('active_package','pass' if placed.package==e['package'] else 'fail',placed.package,e['package'],[placed.name]))
+            out.append(finding('active_package','pass' if _identifier(placed.package)==_identifier(e['package']) else 'fail',placed.package,e['package'],[placed.name]))
             out.append(finding('active_mpn','unknown' if not (placed.attributes.get('MPN') or placed.attributes.get('MP')) else 'pass' if (placed.attributes.get('MPN') or placed.attributes.get('MP'))==e['mpn'] else 'fail',(placed.attributes.get('MPN') or placed.attributes.get('MP')),e['mpn'],[placed.name]))
-            expected = {(row['gate'], row['pin'], row['pad']) for row in e['pins'] if row.get('pin') is not None}
+            expected = {tuple(_identifier(row[k]) for k in ('gate','pin','pad')) for row in e['pins'] if row.get('pin') is not None}
             active = placed.connects if placed.connects is not None else {
                 (p.gate, p.pin, pad) for p in schematic.pins if p.part == placed.name
                 for pad in (p.pad or '').split()}
+            active = {tuple(_identifier(v) for v in connection) for connection in active}
+            pins = {(_identifier(p.gate),_identifier(p.pin)):p for p in schematic.pins if p.part==placed.name}
             for gate, pin_name, pad in sorted(active - expected):
                 out.append(finding('active_pin_mapping', 'fail', pad, None, [placed.name, gate, pin_name],
                                    [{'source': e['source']}]))
             for row in e['pins']:
                 if row.get('pin') is None: continue
-                p=schematic.pin(placed.name,row['pin'],row['gate']); refs=[placed.name,row['gate'],row['pin']]
-                ok=p is not None and row['pad'] in (p.pad or '').split() and p.direction==row['direction']
+                p=pins.get((_identifier(row['gate']),_identifier(row['pin']))); refs=[placed.name,row['gate'],row['pin']]
+                ok=p is not None and _identifier(row['pad']) in {_identifier(pad) for pad in (p.pad or '').split()} and p.direction==row['direction']
                 out.append(finding('active_pin_mapping','pass' if ok else 'fail',p.pad if p else None,row['pad'],refs,[{'pages':row['pages'],'source':e['source']}]))
                 if p is None: continue
                 net=schematic.net_of(p.part,p.pin,p.gate)
@@ -97,17 +106,17 @@ def compare_pin_evidence(schematic, parts, evidence, references=None):
 
 def library_part(root,deviceset,device,part_id):
     """Read every gate/pad mapping from cached Fusion XML, including uninvoked units."""
-    ds=next((d for d in root.iter('deviceset') if d.get('name')==deviceset),None)
+    ds=next((d for d in root.iter('deviceset') if _identifier(d.get('name'))==_identifier(deviceset)),None)
     if ds is None: raise ValueError('Unknown deviceset')
-    dv=next((d for d in ds.findall('./devices/device') if d.get('name','')==device),None)
+    dv=next((d for d in ds.findall('./devices/device') if _identifier(d.get('name',''))==_identifier(device)),None)
     if dv is None: raise ValueError('Unknown device variant')
-    package=next((p for p in root.iter('package') if p.get('name')==dv.get('package')),None)
+    package=next((p for p in root.iter('package') if _identifier(p.get('name'))==_identifier(dv.get('package'))),None)
     if package is None: raise ValueError('Package geometry unavailable')
-    symbols={s.get('name'):s for s in root.iter('symbol')}; pins=[]
+    symbols={_identifier(s.get('name')):s for s in root.iter('symbol')}; pins=[]
     for gate in ds.findall('./gates/gate'):
-        sym=symbols[gate.get('symbol')]
+        sym=symbols[_identifier(gate.get('symbol'))]
         for pin in sym.findall('pin'):
-            cs=[c for c in dv.findall('./connects/connect') if c.get('gate')==gate.get('name') and c.get('pin')==pin.get('name')]
+            cs=[c for c in dv.findall('./connects/connect') if _identifier(c.get('gate'))==_identifier(gate.get('name')) and _identifier(c.get('pin'))==_identifier(pin.get('name'))]
             pins.append({'unit':gate.get('name'),'name':pin.get('name'),'pad':' '.join(c.get('pad','') for c in cs),'direction':pin.get('direction','io')})
     attrs={a.get('name'):a.get('value') for a in dv.findall('./technologies/technology/attribute')}
     return {'id':part_id,'deviceset':deviceset,'device':device,'attributes':attrs,'symbol':{'pins':pins},

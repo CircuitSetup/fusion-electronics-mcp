@@ -160,16 +160,21 @@ class PlanTest(unittest.TestCase):
         import hashlib
         from fusion_offline import pin_evidence as E
         root=ET.fromstring(XML); lib=root.find('.//library'); lib.attrib={'name':'TESTLIB'}
-        packages=ET.SubElement(lib,'packages'); pkg=ET.SubElement(packages,'package',name='SOT23')
+        packages=ET.SubElement(lib,'packages'); pkg=ET.SubElement(packages,'package',name='SOT23_2X2MM')
         for n in range(1,5): ET.SubElement(pkg,'smd',name=str(n),x=str(n),y='0',dx='1',dy='1',layer='1')
         device=lib.find('.//deviceset[@name="LDO"]/devices/device')
+        device.set('package','SOT23_2X2MM')
         tech=device.find('./technologies/technology'); ET.SubElement(tech,'attribute',name='MP',value='SYNTHETIC')
-        e={'version':1,'part_id':'synthetic','mpn':'SYNTHETIC','package':'SOT23','source':'fixture.pdf','revision':'A','sha256':'a'*64,'pages':[1], 'reviews':[],
+        e={'version':1,'part_id':'synthetic','mpn':'SYNTHETIC','package':'SOT23_2x2mm','source':'fixture.pdf','revision':'A','sha256':'a'*64,'pages':[1], 'reviews':[],
            'pins':[{'pad':str(n),'gate':'G$1','pin':label,'datasheet_name':label,'direction':direction,'intent':'dnc' if label=='NC' else 'signal','net': 'VIN_EXPECTED' if label=='VIN' else None,'domain':None,'alternate_function':None,'pages':[1],'uncertain':False} for n,label,direction in [(1,'VIN','pwr'),(2,'VOUT','out'),(3,'EN','in'),(4,'NC','pas')]]}
         e['reviews']=[{'status':'approved','reviewer':'Synthetic fixture author','reviewed_at':'2026-11-05','content_sha256':E.content_hash(e)}]
         sources={'library':{'content':ET.tostring(lib,encoding='unicode'),'sha256':'fixture'},'evidence':{'content':__import__('json').dumps(e),'sha256':'fixture'},'datasheet:evidence':{'sha256':'a'*64}}
         base=snapshot();base['sch_xml']=ET.tostring(root,encoding='unicode');base['sources']=sources
         add={'op':'add_part','ref':'U2','library_path':'library','library':'TESTLIB','deviceset':'LDO','device':'','gate':'G$1','sheet':1,'x':100,'y':100,'rotation':0,'evidence_path':'evidence'}
+        plan=P.build_plan(base,[add],{})
+        self.assertEqual([f['status'] for f in plan['findings'] if f['rule_id']=='active_package'],['pass'])
+        self.assertTrue(all(f['status']=='pass' for f in plan['findings'] if f['rule_id']=='active_pin_mapping'))
+        self.assertEqual(E.review_status(e),'approved')
         for target in ('NC','VIN'):
             plan=P.build_plan(base,[add,{'op':'connect','net':'GND','pins':[{'part':'U2','gate':'G$1','pin':target}]}],{})
             self.assertTrue(any(f['status']=='fail' for f in plan['findings']))

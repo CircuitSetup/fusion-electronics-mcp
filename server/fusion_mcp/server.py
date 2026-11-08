@@ -32,7 +32,7 @@ from . import staleness
 from . import dialogs
 from .bridge import BridgeOpError, BridgeUnavailable
 from .fusion_lock import FusionBusy
-from .library import Library, build_script, same_package
+from .library import Library, build_script, same_package, validate_pad_names
 from .session import Session, Snapshot, WriteFailed
 
 mcp = MCPServer(
@@ -4368,7 +4368,9 @@ def create_library_part(footprint_path: str, part_id: str, deviceset: str, prefi
     Groups separate pins visually; units create separate symbols/gates in one device. pin_sides
     optionally maps pin names to left/right. datasheet requires source (URL or local file), revision,
     pages (1-based PDF pages), and optional sha256; local files are hashed, not uploaded. Evidence
-    does not mark a part verified. Multi-unit automatic block placement is not supported."""
+    does not mark a part verified. Multi-unit automatic block placement is not supported.
+    Rejects duplicate physical pad identifiers, standalone paste/mask apertures, unsupported SMD
+    layer selections, and embedded zones/keepouts or rule areas instead of dropping them."""
     from fusion_offline.kicad_import import footprint_to_part
     from . import easyeda
     with open(footprint_path, encoding="utf-8") as f:
@@ -4428,6 +4430,7 @@ def insert_library_part(part_id: str, library_directory: str | None = None) -> d
     its own symbol, or name a style ("res", "cap", "cap_pol", "inductor", "ferrite", "fuse",
     "crystal", "diode", "schottky", "zener", "led", "tvs", "tvs_bidir")."""
     part = (Library(library_directory) if library_directory else library).get(part_id)
+    validate_pad_names(part.data["package"])
     session.activate("library")
     from fusion_offline import design as D0
     existing = D0.read_xml(session.export("library"))
@@ -4500,6 +4503,7 @@ def add_library_variant(part_id: str, deviceset: str, variant: str, pin_map: dic
     saved (call save_design when it looks right)."""
     from .library import deviceset_info, variant_script
     part = (Library(library_directory) if library_directory else library).get(part_id)
+    validate_pad_names(part.data["package"])
     session.activate("library")
     root = D.read_xml(session.export("library"))
     info = deviceset_info(root, deviceset)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Library evidence and conversion guards (workflow.25)
+- Compare native library identifiers without case sensitivity while preserving
+  reviewed evidence, content hashes, exact MPNs and electrical mapping checks.
+- Reject duplicate physical pad names, unsupported SMD paste/mask layer selections,
+  apertures, zones and keepouts instead of silently producing incomplete footprints.
+- Reject cached parts with duplicate pad names before any native insertion call.
+
 ### Native library workflow (workflow.24 / add-in 0.14.18)
 - Add `new_library` to create a native Electronics library and optionally save it
   in the active project with verified document and cloud-file identity.

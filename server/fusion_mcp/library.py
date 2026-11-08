@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 
 from .commands import n, q
+from fusion_offline.kicad_import import validate_pad_names
 
 from . import data_dir
 
@@ -184,6 +185,7 @@ def build_script(part: Part, reuse_package: bool = False) -> str:
     device are drawn and the device uses the existing package."""
     d = part.data
     pkg, sym = d["package"], d["symbol"]
+    validate_pad_names(pkg)
     L = ["GRID MM;"]
     if not reuse_package:
         L += _package_commands(pkg)
@@ -288,6 +290,7 @@ def variant_script(part: Part, deviceset: str, variant: str, connects: dict[str,
     variant made by PACKAGE an empty PACKAGE attribute in every technology; it is deleted unless
     asked for (ATTRIBUTE <name> DELETE)."""
     pkg = part.data["package"]
+    validate_pad_names(pkg)
     L = ["GRID MM;"]
     if not reuse_package:
         L += _package_commands(pkg)

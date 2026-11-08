@@ -11,6 +11,54 @@ def evidence():
 class EvidenceTest(unittest.TestCase):
     def test_valid_multi_pad_multi_unit(self):
         self.assertTrue(all(f['status']=='pass' for f in E.validate_pin_evidence(PART,evidence(),actual_sha256='a'*64)))
+
+    def test_native_package_case_preserves_approved_evidence_and_hash_checks(self):
+        e=evidence()
+        e['package']='WSON-8-1EP_2x2mm_P0.5mm_EP0.9x1.6mm'
+        e['reviews'][-1]['content_sha256']=E.content_hash(e)
+        original=copy.deepcopy(e)
+        part=copy.deepcopy(PART); part['package']['name']=e['package'].upper()
+        self.assertTrue(all(f['status']=='pass' for f in E.validate_pin_evidence(part,e,'a'*64)))
+        self.assertEqual(e,original)
+        self.assertEqual(E.review_status(e),'approved')
+        bad_hash=E.validate_pin_evidence(part,e,'b'*64)
+        self.assertEqual(next(f['status'] for f in bad_hash if f['rule_id']=='datasheet_hash'),'fail')
+        e['package']=e['package'].upper()
+        self.assertEqual(E.review_status(e),'unreviewed')
+
+    def test_active_native_package_case_does_not_hide_real_mismatch(self):
+        from fusion_offline.design import SchematicDesign, SchPart, SchPin
+        e=evidence(); e['package']='Wson_2x2mm'
+        placed=SchPart('U1','LIB','TEST','','','TEST','WSON_2X2MM',False,{'MPN':'PART-1'})
+        pins=[SchPin('U1','A','IN','1','in',0,0,1),SchPin('U1','B','IN','2 3','in',0,0,1)]
+        schematic=SchematicDesign({'U1':placed},{},pins,1,{})
+        self.assertEqual(E.report(E.compare_pin_evidence(schematic,{'test':PART},{'test':e}))['status'],'pass')
+        placed.package='WSON_3X3MM'
+        self.assertEqual(E.report(E.compare_pin_evidence(schematic,{'test':PART},{'test':e}))['status'],'fail')
+
+    def test_native_pin_and_gate_case_preserves_all_physical_mappings(self):
+        from fusion_offline.design import SchematicDesign, SchPart, SchPin
+        part=copy.deepcopy(PART)
+        for pad,name in zip(part['package']['smds'],('A1','B2','C3')): pad['name']=name
+        part['symbol']['pins'][0]['pad']='A1'; part['symbol']['pins'][1]['pad']='B2 C3'
+        e=evidence()
+        for row,pad in zip(e['pins'],('a1','b2','c3')):
+            row.update(pad=pad,gate=row['gate'].lower(),pin='in')
+        e['reviews'][-1]['content_sha256']=E.content_hash(e)
+        self.assertTrue(all(f['status']=='pass' for f in E.validate_pin_evidence(part,e,'a'*64)))
+        placed=SchPart('U1','LIB','test','','','TEST','QFN',False,{'MPN':'PART-1'})
+        pins=[SchPin('U1','A','IN','A1','in',0,0,1),SchPin('U1','B','IN','B2 C3','in',0,0,1)]
+        schematic=SchematicDesign({'U1':placed},{},pins,1,{})
+        self.assertEqual(E.report(E.compare_pin_evidence(schematic,{'test':part},{'test':e}))['status'],'pass')
+        placed.connects={('A','IN','A1'),('B','IN','B2'),('B','IN','C3'),('UNUSED','EXTRA','D4')}
+        self.assertEqual(E.report(E.compare_pin_evidence(schematic,{'test':part},{'test':e}))['status'],'fail')
+
+    def test_part_id_and_mpn_remain_case_sensitive(self):
+        for field in ('part_id','mpn'):
+            e=evidence(); e[field]=e[field].swapcase()
+            e['reviews'][-1]['content_sha256']=E.content_hash(e)
+            findings=E.validate_pin_evidence(PART,e,'a'*64)
+            self.assertEqual(next(f['status'] for f in findings if f['rule_id']==field),'fail')
     def test_swapped_missing_unknown_and_variant_do_not_pass(self):
         for mutation in ('swap','missing','ocr','package','mpn','hash','review'):
             e=evidence()
