@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 
 from .design import transform
 from .symbols import Geo, solve
+from . import sch_wiring as W
 
 G = 2.54           # grid
 GAP = 2.54         # minimum clear space between drawn things
@@ -721,7 +722,7 @@ def layout_block(ctx: Ctx) -> Drawing:
             sub.wires.append((ctx.pin_net(ref, lo_p), [(lx, ly), (lx, ly - G)]))
             put_supply(ctx, sub, ctx.pin_net(ref, lo_p), (lx, ly - G), (0, -1))
         else:
-            ctx.notes.append(f"{ref}: not reached from {a}; drawn with labels on each pin")
+            ctx.notes.append(f"{ref}: placed below {a}; signal wires completed after placement")
             pp = put_part(ctx, sub, ref, pins[0], (0.0, 0.0), (-1, 0)) if pins else {}
             for q, ((px, py), (fx, fy)) in pp.items():
                 nq = ctx.pin_net(ref, q)
@@ -742,10 +743,7 @@ def layout_block(ctx: Ctx) -> Drawing:
 
 
 def _heal(ctx: Ctx, d: Drawing) -> None:
-    """Last pass: a pin the rules left unwired gets a stub and a label (or power symbol), and a
-    piece of a net joined to the rest only by name gets a label, so the drawing is always
-    complete (a series chain ending on a second pin of the main part, a pull-up hanging off a
-    net whose label sits elsewhere)."""
+    """Complete pin escapes, then join signal pieces within the block with actual wires."""
     ends = {(round(px, 2), round(py, 2)) for _, pts in d.wires for px, py in pts}
     for ref, (x, y, rot, mir) in list(d.parts.items()):
         for name, p in ctx.geo[ref].pins.items():
@@ -764,9 +762,43 @@ def _heal(ctx: Ctx, d: Drawing) -> None:
                 d.labels.append((n, stub[0], stub[1], dirn))
                 d.boxes.append(label_box(n, stub[0], stub[1], dirn))
             ends.add((round(px, 2), round(py, 2)))
+    _join_signals(ctx, d)
     for net, (lx, ly) in _unlinked_points(d):
-        d.labels.append((net, lx, ly, 1))
-        d.boxes.append(label_box(net, lx, ly, 1))
+        if ctx.is_rail(net):
+            put_supply(ctx, d, net, (lx, ly), (0, -1 if net in ctx.ground else 1))
+
+
+def _join_signals(ctx: Ctx, d: Drawing) -> None:
+    """Reuse the orthogonal router; a label must never hide an unroutable local circuit."""
+    ports = {}
+    for label in d.labels:
+        if label[0] in ctx.external:
+            ports.setdefault(label[0], label)
+    d.labels = list(ports.values())
+    d.boxes = [b for b in d.boxes if not b[4].startswith('label:')]
+    d.boxes += [label_box(*label) for label in d.labels]
+    pins = [(ctx.pin_net(ref, name), W.point(*transform(p.x, p.y, x, y, rot, mir)))
+            for ref, (x, y, rot, mir) in d.parts.items() for name, p in ctx.geo[ref].pins.items()]
+    for net in sorted({n for n, _ in pins if n and not ctx.is_rail(n)}):
+        lines = [(W.point(*a), W.point(*b)) for n, pts in d.wires if n == net
+                 for a, b in zip(pts, pts[1:])]
+        groups = W.components(lines, [p for n, p in pins if n == net])
+        obstacles = []
+        for x0, y0, x1, y1, owner in d.boxes:
+            margin = GAP/2 if ':' not in owner else 0
+            obstacles.append((x0-margin, y0-margin, x1+margin, y1+margin))
+        obstacles += [(x-.25, y-.25, x+.25, y+.25) for n, (x, y) in pins if n != net]
+        obstacles += [(min(a[0], b[0])-.25, min(a[1], b[1])-.25,
+                       max(a[0], b[0])+.25, max(a[1], b[1])+.25)
+                      for n, pts in d.wires if n != net for a, b in zip(pts, pts[1:])]
+        while len(groups) > 1:
+            try:
+                path = W.cut_at_wires(W.route(groups[1], groups[0], obstacles), lines)
+            except ValueError as exc:
+                raise ValueError(f'{ctx.anchor}: cannot draw local net {net}: {exc}') from exc
+            d.wires.append((net, path))
+            lines.extend(zip(path, path[1:]))
+            groups = W.components(lines, [p for n, p in pins if n == net])
 
 
 # ---------------------------------------------------------------------------

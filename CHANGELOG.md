@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Functional schematic blocks (workflow.23)
+- Complete local feedback paths and repeated-pin connections with continuous orthogonal wires;
+  keep one named signal port per external block net and retain local power/ground symbols.
+- Refuse blocked local layouts and verify imported wire geometry against the preview.
+- Document functional grouping and signal-port boundaries with published schematic guidance.
+
 ### Connected schematic wiring (workflow.22)
 - Draw continuous orthogonal nets by default in `connect_pins` and reviewed schematic plans,
   joining existing same-sheet pieces while avoiding symbols, other pins and other nets.

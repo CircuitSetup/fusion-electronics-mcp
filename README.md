@@ -514,17 +514,26 @@ MIT. See `LICENSE`.
 
 ### Reviewed schematic plans and project checks
 
-Arrange related parts before wiring: signal flow left to right, supplies above and ground
-below, IC support parts beside their pins, series components inline and shunt components on
-branches. Allow space for wires, values and labels. `connect_pins` and reviewed `connect`
+Group complete circuits by function (power, control, sensing, communications) before wiring:
+signal flow left to right, supplies above and ground below, IC support parts beside their
+pins, series components inline and shunt components on branches. Draw the signal connections
+within each block, including feedback paths and repeated IC pins; reserve named signal
+stubs/ports for connections between blocks or sheets. Power and ground symbols can be used
+locally. Allow space for wires, values and labels. These conventions follow
+[Altium's schematic organization guidelines](https://resources.altium.com/p/getting-started-altium-designer-schematic)
+and its explanation of the [readability tradeoffs of wires and net labels](https://www.altium.com/documentation/altium-designer/schematic/creating-circuit-connectivity).
+`connect_pins` and reviewed `connect`
 operations now draw continuous orthogonal wires on each sheet, routing around symbol bodies,
 other pins and other nets. They also join existing pieces of the same net. A blocked pin or
 overly dense drawing is refused before writing: space or reorient the parts first.
 
 `connect_pins(..., style="labels")` (or `"style":"labels"` in a connect operation) explicitly
-keeps the old separate labeled stubs for distant block ports. Use that choice sparingly;
+keeps separate labeled stubs for signal connections between functional blocks or sheets;
 the KiCad `style="grid"` importer retains it, while the default block importer still places
-and wires local circuits together. The wiring tool preserves existing part positions and
+and wires local circuits together, joining local feedback paths and repeated pins instead
+of hiding them behind labels. Block layouts with no clear local wire path are refused.
+Block-import readback checks that the previewed wires were actually drawn, even when net
+names and pin membership match. The wiring tool preserves existing part positions and
 labels; it does not rearrange an existing schematic automatically. `labels=false` omits new
 labels in `connect_pins`; by default each sheet's connected drawing gets one if needed.
 Review the preview and run `review_schematic` and ERC after wiring. Read-back verification

@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import re
 
-from fusion_offline import design as D, sch_layout as L, sch_plan as SP, sch_render as R, symbols as S
+from fusion_offline import design as D, sch_layout as L, sch_plan as SP, sch_render as R, sch_wiring as W, symbols as S
 
 from . import commands as C
 
@@ -230,8 +230,9 @@ class BlockSchematic:
         return out
 
     # -- step 5 ------------------------------------------------------------
-    def verify(self, sch) -> dict:
-        wrong, missing = [], []
+    def verify(self, root, sheets: dict) -> dict:
+        sch = D.parse_schematic_design(root)
+        wrong, missing, wire_mismatch = [], [], []
         for (r, pad), want in self.pad_net.items():
             pin = next((p for p in sch.pins if p.part == r and p.pad and pad in p.pad.split()), None)
             if pin is None:
@@ -240,7 +241,14 @@ class BlockSchematic:
             got = sch.net_of(r, pin.pin, pin.gate)
             if got != want:
                 wrong.append(f"{r}.{pin.pin}: {got or 'unconnected'} (want {want})")
-        return {"ok": not wrong and not missing, "wrong": wrong[:40], "missing": missing[:40],
+        actual = root.findall('./drawing/schematic/sheets/sheet')
+        for sh, drawing in sorted(sheets.items()):
+            nets = {n.get('name'): W.edges(n) for n in actual[sh-1].findall('./nets/net')} if sh <= len(actual) else {}
+            for net, points in _snap_to_pins(drawing, self.geo):
+                if any(not W.covered(a, b, nets.get(net, [])) for a, b in zip(points, points[1:])):
+                    wire_mismatch.append(f'sheet {sh}: {net} wire geometry differs from the preview')
+        return {"ok": not wrong and not missing and not wire_mismatch,
+                "wrong": wrong[:40], "missing": missing[:40], "wire_mismatch": wire_mismatch[:40],
                 "pins_checked": len(self.pad_net)}
 
 
@@ -264,12 +272,11 @@ def _snap_to_pins(d: L.Drawing, geo: dict, tol: float = 0.002) -> list:
 
 
 def split_at_ends(wires: list) -> list:
-    """Cut every segment where another wire of the same net ends on it, so each joint is a
-    wire end (Fusion's ERC flags a wire that ends part-way along another as not visibly
-    connected, code 115)."""
+    """Split at same-net vertices, including routed crossings, so every joint is a wire end
+    and receives a visible junction (Fusion ERC code 115)."""
     ends: dict = {}
     for net, pts in wires:
-        for p in (pts[0], pts[-1]):
+        for p in pts:
             ends.setdefault(net, set()).add((round(p[0], 4), round(p[1], 4)))
     out = []
     for net, pts in wires:
