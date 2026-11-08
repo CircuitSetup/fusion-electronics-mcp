@@ -50,6 +50,10 @@ mcp = MCPServer(
         "Use the exact part's datasheet pinout and recommended land pattern as the authority. Reuse a "
         "compatible standard footprint even when the part-specific symbol/device is missing; create a "
         "new footprint only for unique geometry or when no existing footprint meets the datasheet. "
+        "Follow datasheet copper-pour geometry relative to the IC's actual pads and orientation: "
+        "net/layer, exposed-pad connections, thermal reliefs, return paths and copper exclusions. "
+        "Do not substitute a board-wide ground pour for a specified local layout; inspect actual fill "
+        "and leave unsupported pour-layout/continuity checks unverified. "
         "Only if no suitable library is available, create the missing assets from manufacturer drawings; "
         "verify pin mapping, footprint dimensions and 3D alignment, and report incomplete assets explicitly. Acquire "
         "manufacturer datasheets, applicable application notes, errata and reference-board layouts. "
@@ -2876,7 +2880,7 @@ def _poly_cmd(pts) -> str:
 @tool(ADDITIVE)
 def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | None = None,
              inset_mm: float = 0.0, isolate_mm: float = 0.25, width_mm: float = 0.25,
-             thermal_width_mm: float = 0.3, rank: int = 1) -> dict:
+             thermal_width_mm: float = 0.3, rank: int = 1, thermals: bool = True) -> dict:
     """Add a copper pour (polygon) on a net, e.g. a GND plane. Without points it follows the board
     outline (inset_mm = 0): the copper-to-edge distance then comes from the design rule for board
     edge clearance, as EAGLE intends. Note the outline wire is width_mm wide and centred on the
@@ -2885,11 +2889,24 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
     pads to the pour (Fusion's default is a thin 0.1524 mm; the gap comes from the design rule
     slThermalIsolate). rank sets priority where pours of different nets overlap on a layer: rank 1
     wins and is cut out of higher ranks (e.g. output islands rank 1 inside a rank 3 GND plane).
-    Respects keepouts (add_keepout); filled immediately."""
+    thermals=false requests direct pad connections when the datasheet requires them.
+    For IC-specific pours, derive explicit points_mm from the cited layout and actual pad positions,
+    rotation and board side; do not use a board-wide default in place of a prescribed local pour.
+    Apply specified copper exclusions/keepouts, net separation and via connections first.
+    Respects keepouts (add_keepout); requests refill immediately. Verifies the native outline and
+    settings, not actual filled-copper coverage, exposed-pad attachment or return-path continuity.
+    Inspect those after refill; unavailable fill evidence remains unverified."""
     if not 1 <= int(rank) <= 6:
         raise ValueError("rank is 1 (highest priority) to 6")
+    if type(thermals) is not bool:
+        raise ValueError('thermals must be boolean')
+    if not all(math.isfinite(v) for v in (inset_mm, isolate_mm, width_mm, thermal_width_mm)) or \
+            isolate_mm < 0 or width_mm <= 0 or thermal_width_mm <= 0:
+        raise ValueError('Pour dimensions must be finite; widths positive and clearance nonnegative')
     wl = _write_layer(layer)
-    if points_mm:
+    if points_mm is not None:
+        if any(len(p) != 2 for p in points_mm):
+            raise ValueError('Pour outline points must have two coordinates')
         pts = [(float(p[0]), float(p[1])) for p in points_mm]
     else:
         o = _snap(schematic=False).fab().outline
@@ -2898,23 +2915,56 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
         x0, y0, x1, y1 = o
         pts = [(x0 + inset_mm, y0 + inset_mm), (x1 - inset_mm, y0 + inset_mm),
                (x1 - inset_mm, y1 - inset_mm), (x0 + inset_mm, y1 - inset_mm)]
+        if x0 + inset_mm >= x1 - inset_mm or y0 + inset_mm >= y1 - inset_mm:
+            raise ValueError('Pour inset leaves no area inside the board')
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts.pop()
+    if len(set(pts)) < 3 or not all(math.isfinite(v) for p in pts for v in p) or \
+            abs(sum(a[0]*b[1] - b[0]*a[1] for a, b in zip(pts, pts[1:] + pts[:1]))) < 1e-8:
+        raise ValueError('Pour outline needs at least three finite vertices enclosing nonzero area')
     # straight bends: a diagonal edge would otherwise be drawn as a 45-degree jog
     cmd = (f"GRID MM; CHANGE POUR SOLID; CHANGE ISOLATE {C.n(isolate_mm)}; CHANGE ORPHANS OFF; "
-           f"CHANGE THERMALS ON; CHANGE THERMALWIDTH {C.n(thermal_width_mm)}; CHANGE RANK {int(rank)}; "
+           f"CHANGE THERMALS {'ON' if thermals else 'OFF'}; CHANGE THERMALWIDTH {C.n(thermal_width_mm)}; CHANGE RANK {int(rank)}; "
            f"LAYER {wl}; SET WIRE_BEND 2; POLYGON {C.q(net)} {C.n(width_mm)} {_poly_cmd(pts)}; "
            f"SET WIRE_BEND 1; RATSNEST;")
 
-    def count(sn):
-        root = D.read_xml(sn.board_xml)
-        sig = next((x for x in root.iterfind(".//signals/signal") if x.get("name") == net), None)
-        return 0 if sig is None else len(sig.findall("polygon"))
+    def close(a, b):
+        return isinstance(a, (int, float)) and math.isclose(a, b, abs_tol=.001)
+
+    def same_outline(actual):
+        if not isinstance(actual, list) or len(actual) != len(pts) or any(len(p) != 2 for p in actual):
+            return False
+        return any(all(close(p[0], q[0]) and close(p[1], q[1])
+                       for p, q in zip(order[i:] + order[:i], pts))
+                   for order in (actual, actual[::-1]) for i in range(len(pts)))
 
     def verify(before, after):
-        n0, n1 = count(before), count(after)
-        return n1 == n0 + 1, f"{net} pours {n0} -> {n1} on layer {wl}"
+        remaining = list(session.bridge.call('pours', timeout=60)['pours'])
+        for old in existing:
+            if old not in remaining:
+                return False, 'An existing pour changed or disappeared'
+            remaining.remove(old)
+        if len(remaining) != 1:
+            return False, 'Expected exactly one new pour'
+        p = remaining[0]
+        expected = dict(net=net, layer=wl, thermals=thermals, rank=int(rank), orphans=False, hatched=False)
+        bad = [k for k, v in expected.items() if p.get(k) != v]
+        dimensions = dict(isolate_mm=isolate_mm, width_mm=width_mm)
+        if thermals:
+            dimensions['thermal_width_mm'] = thermal_width_mm
+        bad += [k for k, v in dimensions.items() if not close(p.get(k), v)]
+        if not same_outline(p.get('outline')):
+            bad.append('outline')
+        return not bad, ('Pour read-back mismatch: ' + ', '.join(bad) if bad else
+                         f'{net} pour outline and settings verified on layer {wl}')
 
-    after, detail = session.verified_write("board", cmd, verify, schematic=False)
-    return {"ok": True, "detail": detail, "outline": pts}
+    with session.bridge.lock.hold('add pour'):
+        # Native outlines retain the requested boundary; legacy XML offsets its centreline.
+        existing = session.bridge.call('pours', timeout=60)['pours']
+        after, detail = session.verified_write("board", cmd, verify, schematic=False)
+    return {"ok": True, "detail": detail, "outline": pts,
+            "verification": {"outline_and_settings": "verified", "filled_copper": "unverified",
+                             "notice": "Inspect actual fill and IC pad/return connections; outline/settings alone do not prove datasheet compliance."}}
 
 
 @tool(READ)
@@ -4496,6 +4546,8 @@ def get_datasheet_workflow(mpn: str = '', manufacturer_domain: str = '') -> dict
         'Create requirements JSON with conditions, candidate worst-case rating intervals, exact pads/nets and placement/routing limits. Numeric bounds inferred from qualitative text are assumptions.',
         'set_design_requirements binds an inspected file hash to the exact active PCB. plan_datasheet_placement proposes moves; move_parts/place_clusters/tidy preserve constraints.',
         'Configure actual stackup first. route_trace/route_net/route_remaining use configured copper layers and bound net policies. Also use current/SI/pour/via checks.',
+        'For datasheet-specified pours, inspect the layout drawing and record net, copper layer, IC-pad-relative boundary/coverage, exposed-pad tie, thermal relief versus direct connection, via pattern, ground joining point and copper exclusions under/near sensitive or switching nodes. Transform that geometry using actual IC pad locations, rotation and board side; numerical interpretations of qualitative drawings remain assumptions. Use explicit add_pour points_mm and thermals=false for required direct connections, plus required keepouts and separate nets. Do not replace a prescribed local pour with a board-wide default.',
+        'Refill after placement/routing/pour changes, verify native pour outlines/settings, then inspect actual filled copper for IC-pad connections, islands, narrow necks, required coverage and return continuity. Record source-linked pour/keepout/thermal_vias checks and a pour_layout or return_path requirement for unsupported fill/topology checks. Missing fill evidence remains unverified; DRC or polygon existence alone cannot establish the specified IC-relative layout.',
         'check_design_requirements verifies actual exported geometry and source hashes. Resolve fail/unverified findings; DRC/ERC alone is not datasheet compliance.'],
         'research_queries': [f'{mpn} {kind} site:{manufacturer_domain}' for kind in ('datasheet', 'application note', 'errata', 'evaluation board layout')],
         'library_queries': [f'{mpn} {kind}' for kind in ('symbol footprint library download', 'EAGLE KiCad library', 'STEP 3D CAD model')],

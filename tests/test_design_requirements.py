@@ -43,6 +43,19 @@ def req(kind, **kw):
 
 
 class RequirementsTest(unittest.TestCase):
+    def test_solid_pour_requires_solid_fill_and_direct_connection(self):
+        root, spec, evidence = fixture()
+        polygon = ET.SubElement(root.find(".//signal[@name='GND']"), 'polygon',
+                                layer='1', isolate='.25', pour='solid', thermals='no')
+        spec['requirements'] = [req('pour', net='GND', layer=1, clearance_mm=.2, solid=True)]
+        self.assertEqual(R.check(root, spec, evidence)['status'], 'pass')
+        polygon.set('pour', 'hatch')
+        self.assertEqual(R.check(root, spec, evidence)['status'], 'fail')
+        polygon.set('pour', 'solid'); polygon.set('thermals', 'yes')
+        self.assertEqual(R.check(root, spec, evidence)['status'], 'fail')
+        spec['requirements'] = [req('pour_layout', net='GND', required_pads=['U1.EP'])]
+        self.assertEqual(R.check(root, spec, evidence)['status'], 'unverified')
+
     def test_pin_distance_and_actual_path(self):
         root, spec, evidence = fixture()
         spec['requirements'] = [req('distance', pads=['U1.VIN', 'C1.1'], net='VIN', max_mm=2.5, same_side=True),

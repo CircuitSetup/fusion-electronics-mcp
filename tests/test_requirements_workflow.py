@@ -109,6 +109,9 @@ class WorkflowTest(unittest.TestCase):
         self.assertIn('Reuse a compatible standard footprint even when no part-specific symbol/device exists', steps)
         self.assertIn('create a new footprint only for unique geometry or when no existing footprint meets the datasheet', steps)
         self.assertIn('pinout/land-pattern pages', steps)
+        self.assertIn('actual IC pad locations, rotation and board side', steps)
+        self.assertIn('thermals=false for required direct connections', steps)
+        self.assertIn('Missing fill evidence remains unverified', steps)
         self.assertTrue(all('TEST-BUCK' in q for q in result['library_queries']))
 
     def test_native_autorouter_refuses_bound_constraints_before_commands(self):

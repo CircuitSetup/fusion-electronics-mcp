@@ -24,7 +24,7 @@
       "required": ["id", "type", "device", "origin", "statement", "source", "pages", "conditions"],
       "properties": {
         "id": {"type": "string", "minLength": 1}, "device": {"type": "string"},
-        "type": {"type": "string", "description": "distance, separation, path_length, loop, keepout, selection, routing, thermal_vias, pour. Other types (return_path, thermal_analysis, soa, missing_document) report unverified."},
+        "type": {"type": "string", "description": "distance, separation, path_length, loop, keepout, selection, routing, thermal_vias, pour. Other types (pour_layout, return_path, thermal_analysis, soa, missing_document) report unverified."},
         "origin": {"enum": ["manufacturer", "assumption"]},
         "statement": {"type": "string", "minLength": 1}, "rationale": {"type": "string"},
         "source": {"type": "string"}, "pages": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}},
@@ -43,7 +43,7 @@
         "region_mm": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
         "allowed_nets": {"type": "array", "items": {"type": "string"}},
         "segments": {"type": "array", "minItems": 2, "description": "Loop wire paths: each {pads:[REF.PAD,REF.PAD],net}; component internal paths are excluded."},
-        "solid": {"type": "boolean"}, "qualitative": {"type": "boolean"}
+        "solid": {"type": "boolean", "description": "For pour requirements, require solid fill and direct pad connections (thermal relief disabled); does not verify actual filled geometry."}, "qualitative": {"type": "boolean"}
       },
       "allOf": [{"if": {"properties": {"origin": {"const": "assumption"}}}, "then": {"required": ["rationale"]}}]
     }

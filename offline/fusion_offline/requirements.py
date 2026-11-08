@@ -251,7 +251,7 @@ def _evaluate(root, r, spec, evidence):
             ps = [p for p in sig.findall('polygon') if int(p.get('layer')) == r['layer']]
             if not ps: return 'unverified', 'Required pour missing'
             valid = all(float(p.get('isolate', '0')) >= r.get('clearance_mm', 0)
-                        and (not r.get('solid') or p.get('thermals') == 'no') for p in ps)
+                        and (not r.get('solid') or (p.get('pour', 'solid') == 'solid' and p.get('thermals') == 'no')) for p in ps)
             return ('pass' if valid else 'fail', 'Polygon attributes only; actual fill/return continuity is not certified')
         layers = D.parse_board_design(root).copper_layers
         concrete = {'layers', 'min_width_mm', 'clearance_mm', 'min_drill_mm', 'min_diameter_mm', 'allow_vias', 'via_spans'}

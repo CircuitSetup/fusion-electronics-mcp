@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Datasheet-guided pours (workflow.19)
+- Require source-linked pour boundaries and connections relative to actual IC pads, orientation,
+  keepouts and ground topology; leave unsupported filled-copper checks explicitly unverified.
+- Add `add_pour(thermals=false)` for direct connections and verify live native outlines/settings,
+  preserving existing pours instead of accepting an increased polygon count alone.
+
 ### Datasheet reference and footprint reuse (workflow.18)
 - Make the exact part's datasheet pinout and recommended land pattern authoritative during library creation.
 - Reuse compatible standard footprints independently of part-specific symbols/devices; create a new

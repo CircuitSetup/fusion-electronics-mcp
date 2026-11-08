@@ -80,10 +80,21 @@ Use separate requirements for value/tolerance, voltage/current/power stress, cap
 | `keepout` | `region_mm:[x0,y0,x1,y1]`, `layers`, `allowed_nets`; conservative obstacle bounds. Intersecting unresolved pours are unverified. |
 | `thermal_vias` | `pad`, `net`, `radius_mm`, `min_count`, optional `min_drill_mm`/`min_diameter_mm`; through-via pattern plus supported copper connection, not thermal performance/solder attachment. |
 | `routing` | `net`, export `layers`, `min_width_mm`, `clearance_mm`, `min_drill_mm`, `min_diameter_mm`, `allow_vias`, `via_technology`, `via_spans`, `priority`. |
-| `pour` | `net`, `layer`, `clearance_mm`, optional `solid`; polygon attributes, not actual fill continuity. |
+| `pour` | `net`, `layer`, `clearance_mm`, optional `solid` (solid fill with direct pad connections); polygon attributes, not actual fill continuity. |
+| `pour_layout` | Source-linked IC-relative coverage, exclusions and pad connections that require actual filled-copper evidence; explicitly unverified by the current checker. |
 | `return_path` | Record required reference net/layer and continuity analysis; explicitly unverified. |
 
 Decoupling, feedback/sense, crystal load networks and switching loops use their **specific pads/nets**, with separate path, proximity, separation and keepout requirements. IC-centre proximity is insufficient. Missing quantitative bounds remain unverified. A chosen bound requires `origin:"assumption"` and a rationale; `qualitative:true` with a numeric manufacturer bound is rejected.
+
+### Datasheet-specified copper pours
+
+Read the layout figures and notes before adding pours. Record each pour's net and copper layer, required extent relative to specific IC pads, exposed-pad connection, direct connection versus thermal relief, via pattern, ground joining point and copper exclusions. Preserve separate grounds and their specified joining point where required; a shared net name or an arbitrary board-wide GND pour does not demonstrate the intended topology.
+
+Translate the cited layout into explicit `add_pour(points_mm=...)` boundaries using the actual pad coordinates, IC rotation and board side. Apply required keepouts first, including restrictions under or near switch nodes, feedback/sense traces or other sensitive pins when specified. Use `thermals=false` when direct pad connections are required; the default remains thermal relief. Do not enlarge a switching-node island or bridge a required ground separation merely to fill unused board area. Bounds inferred from a qualitative illustration must remain labeled engineering assumptions.
+
+`add_pour` requests a refill and checks the live native polygon boundary, net, layer, clearance, outline width, rank, orphan/solid-fill settings and thermal-relief selection (plus spoke width when enabled). It rejects mismatches and preserves existing pours through the verified-write path. Native outlines are used because legacy XML may offset polygon vertices by half the outline width.
+
+After placement, routing or pour changes, refill and inspect **actual filled copper** for required coverage, IC/exposed-pad connections, disconnected islands, narrow necks and ground return continuity. Use source-linked `pour`, `keepout` and `thermal_vias` checks for supported properties, and explicit `pour_layout`/`return_path` requirements for unsupported fill/topology checks. The current checker does not certify IC-relative filled geometry: missing evidence stays **unverified**, even when the polygon settings and DRC pass. Neither polygon existence nor a nominal outline proves pad attachment or datasheet compliance.
 
 `plan_datasheet_placement` tries supporting-part rotations/positions for distance requirements, checks pad/courtyard collisions and reports unresolved candidates. `dry_run=false` applies through `move_parts`. Move, rotate, inline, tidy and cluster tools preserve requirements and reject regressions.
 

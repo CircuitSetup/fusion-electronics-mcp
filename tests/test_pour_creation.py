@@ -1,0 +1,102 @@
+import contextlib
+import copy
+import unittest
+import xml.etree.ElementTree as ET
+from unittest.mock import patch
+
+from fusion_mcp import server as S
+from fusion_mcp.session import Snapshot, WriteFailed
+
+
+POINTS = [[8., 8.], [14., 8.], [14., 12.], [8., 12.]]
+
+
+def pour():
+    return dict(net='GND', layer=304, thermals=True, thermal_width_mm=.3,
+                isolate_mm=.25, width_mm=.25, rank=1, orphans=False,
+                hatched=False, outline=copy.deepcopy(POINTS))
+
+
+def snapshot(pours):
+    root = ET.fromstring('<eagle><drawing><board><signals/></board></drawing></eagle>')
+    signals = root.find('.//signals')
+    for row in pours:
+        signal = signals.find(f"signal[@name='{row['net']}']")
+        if signal is None:
+            signal = ET.SubElement(signals, 'signal', name=row['net'])
+        polygon = ET.SubElement(signal, 'polygon', layer=str(16 if row['layer'] == 304 else row['layer']), width=str(row['width_mm']))
+        for x, y in row['outline']:
+            ET.SubElement(polygon, 'vertex', x=str(x), y=str(y))
+    return Snapshot(board_xml=ET.tostring(root))
+
+
+class FakeSession:
+    def __init__(self, before, after):
+        self.before, self.after = before, after
+        self.last_requirements = None
+        self.commands = []
+        self.bridge = self
+        self.lock = self
+
+    def hold(self, label):
+        return contextlib.nullcontext()
+
+    def call(self, op, *args, **kwargs):
+        assert op == 'pours', op
+        return {'pours': copy.deepcopy(self.after if self.commands else self.before)}
+
+    def verified_write(self, editor, commands, verify, **kwargs):
+        self.commands.append(commands)
+        ok, detail = verify(snapshot(self.before), snapshot(self.after))
+        if not ok:
+            raise WriteFailed(detail)
+        return None, detail
+
+
+class PourCreationTest(unittest.TestCase):
+    def run_pour(self, after, before=None, **kwargs):
+        fake = FakeSession(before or [], after)
+        with patch.object(S, 'session', fake), patch.object(S, '_write_layer', return_value=304):
+            result = S.add_pour('GND', 'bottom', points_mm=POINTS, **kwargs)
+        return fake, result
+
+    def test_direct_connection_and_live_native_outline(self):
+        actual = pour(); actual['thermals'] = False
+        fake, result = self.run_pour([actual], thermals=False)
+        self.assertIn('CHANGE THERMALS OFF;', fake.commands[0])
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['verification']['filled_copper'], 'unverified')
+
+    def test_default_relief_and_cyclic_reversed_outline(self):
+        actual = pour(); actual['outline'] = list(reversed(POINTS[2:] + POINTS[:2]))
+        fake, _ = self.run_pour([actual])
+        self.assertIn('CHANGE THERMALS ON;', fake.commands[0])
+
+    def test_wrong_geometry_or_settings_cannot_pass_by_count(self):
+        for field, value in [('net', 'VOUT'), ('layer', 1), ('thermals', False),
+                             ('thermal_width_mm', .1), ('isolate_mm', .1), ('width_mm', .1),
+                             ('rank', 2), ('orphans', True), ('hatched', True),
+                             ('outline', [[9, 8], *POINTS[1:]])]:
+            actual = pour(); actual[field] = value
+            with self.subTest(field=field), self.assertRaises(Exception):
+                self.run_pour([actual])
+
+    def test_existing_pour_must_be_preserved(self):
+        old = pour(); old['net'] = 'VOUT'
+        changed = copy.deepcopy(old); changed['isolate_mm'] = .1
+        with self.assertRaisesRegex(Exception, 'existing pour'):
+            self.run_pour([changed, pour()], before=[old])
+
+    def test_invalid_outline_refused_before_write(self):
+        for points in [[], [[0, 0], [1, 1]], [[0, 0], [1, 1], [2, 2]],
+                       [[0, 0], [float('nan'), 1], [2, 0]]]:
+            fake = FakeSession([], [])
+            with self.subTest(points=points), patch.object(S, 'session', fake), \
+                    patch.object(S, '_write_layer', return_value=304):
+                with self.assertRaises(Exception):
+                    S.add_pour('GND', points_mm=points)
+                self.assertFalse(fake.commands)
+
+
+if __name__ == '__main__':
+    unittest.main()
