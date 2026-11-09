@@ -91,6 +91,12 @@ def _dist_field(o: Obstacle, XX, YY):
         ly = dx * math.sin(a) + dy * math.cos(a)
         ox, oy = np.abs(lx) - hw, np.abs(ly) - hh
         return np.hypot(np.maximum(ox, 0), np.maximum(oy, 0)) + np.minimum(np.maximum(ox, oy), 0)
+    if o.kind == 'polygon':
+        points, half = d[2:]
+        distance = np.full(np.shape(XX), np.inf)
+        for a, b in zip(points, points[1:]+points[:1]):
+            distance = np.minimum(distance, _dist_field(Obstacle('seg', None, False, (*a, *b, 0)), XX, YY))
+        return np.where(_in_poly(points, XX, YY), -distance, distance) - half
     x1, y1, x2, y2, half = d
     vx, vy = x2 - x1, y2 - y1
     L2 = vx * vx + vy * vy
@@ -264,15 +270,7 @@ class Grid:
         return (int(round((x - self.x0) / self.step)), int(round((y - self.y0) / self.step)))
 
     def _mark(self, grid, o: Obstacle, margin: float):
-        d = o.data
-        if o.kind == "circle":
-            bx0, by0, bx1, by1 = d[0] - d[2], d[1] - d[2], d[0] + d[2], d[1] + d[2]
-        elif o.kind == "rect":
-            r = math.hypot(d[2], d[3])
-            bx0, by0, bx1, by1 = d[0] - r, d[1] - r, d[0] + r, d[1] + r
-        else:
-            bx0, bx1 = min(d[0], d[2]) - d[4], max(d[0], d[2]) + d[4]
-            by0, by1 = min(d[1], d[3]) - d[4], max(d[1], d[3]) + d[4]
+        bx0, by0, bx1, by1 = o.bounds
         i0, j0 = self.ij(bx0 - margin, by0 - margin)
         i1, j1 = self.ij(bx1 + margin, by1 + margin)
         i0, j0, i1, j1 = max(i0, 0), max(j0, 0), min(i1, self.nx - 1), min(j1, self.ny - 1)
@@ -310,14 +308,8 @@ def G_via_clear(G, o: Obstacle) -> float:
 
 
 def _obs_near(o: Obstacle, x0, y0, x1, y1) -> bool:
-    d = o.data
-    if o.kind == "circle":
-        return x0 - d[2] <= d[0] <= x1 + d[2] and y0 - d[2] <= d[1] <= y1 + d[2]
-    if o.kind == "rect":
-        r = math.hypot(d[2], d[3])
-        return x0 - r <= d[0] <= x1 + r and y0 - r <= d[1] <= y1 + r
-    return not (max(d[0], d[2]) + d[4] < x0 or min(d[0], d[2]) - d[4] > x1 or
-                max(d[1], d[3]) + d[4] < y0 or min(d[1], d[3]) - d[4] > y1)
+    a, b, c, d = o.bounds
+    return not (c < x0 or a > x1 or d < y0 or b > y1)
 
 
 def _seg_dist(x, y, s):

@@ -61,6 +61,9 @@ def render(root: ET.Element, out_path: str, highlight: str | None = None, traces
     for a, b, c, d in outline:
         ax.plot([a, c], [b, d], "k-", lw=1.5)
     for o in obs:
+        if o.kind == 'polygon':
+            ax.add_patch(Polygon(o.data[2], fc='none', ec='r', ls='--', lw=.6))
+            continue
         if not o.is_pad and o.kind == "circle" and o.net is None:
             continue
         if not o.is_pad and o.kind in ("seg", "circle"):

@@ -214,15 +214,10 @@ def _evaluate(root, r, spec, evidence):
         # Conservative obstacle bounding boxes; a false collision is safer than an untested crossing.
         bad = []
         for o in stitch.board_obstacles(root)[0]:
+            if o.restrict_layer is not None: continue
             if o.net in r.get('allowed_nets', []): continue
             if o.layers is not None and not set(o.layers) & set(r['layers']): continue
-            if o.kind == 'seg':
-                x, y, xx, yy, radius = o.data
-                ob = (min(x, xx)-radius, min(y, yy)-radius, max(x, xx)+radius, max(y, yy)+radius)
-            else:
-                x, y = o.data[:2]
-                radius = o.data[2] if o.kind == 'circle' else math.hypot(*o.data[2:4])
-                ob = (x-radius, y-radius, x+radius, y+radius)
+            ob = o.bounds
             if ob[0] < box[2] and ob[2] > box[0] and ob[1] < box[3] and ob[3] > box[1]: bad.append(o.net or 'hole')
         if bad: return 'fail', bad
         for sg in root.findall('.//board/signals/signal'):
@@ -283,7 +278,16 @@ def _evaluate(root, r, spec, evidence):
             for own in (o for o in obstacles if o.net == r['net']):
                 for o in obstacles:
                     if o.net == r['net'] or (o.layers is not None and own.layers is not None and not o.layers & own.layers): continue
-                    if FP.gap(shape(own), shape(o)) < r['clearance_mm'] - 1e-6: bad.append('copper clearance')
+                    if o.kind == 'polygon':
+                        a, b = shape(own), o.data[2]
+                        ae, be = list(zip(a, a[1:]+a[:1])), list(zip(b, b[1:]+b[:1]))
+                        overlap = (any(stitch._inside_poly(b, *p) for p in a)
+                                   or any(stitch._inside_poly(a, *p) for p in b)
+                                   or any(stitch.segments_intersect(*u, *v) for u in ae for v in be))
+                        gap = -o.data[3] if overlap else min(FP._seg_dist(*u, *v) for u in ae for v in be)-o.data[3]
+                    else:
+                        gap = FP.gap(shape(own), shape(o))
+                    if gap < r['clearance_mm'] - 1e-6: bad.append('copper clearance')
             if not bad and root.find('.//board/signals/signal/polygon') is not None:
                 return 'unverified', 'Wire/pad/via clearance checked; actual poured copper geometry unavailable'
         if not bad and not wires: return 'unverified', 'Via constraints checked; no routed wires on required net'

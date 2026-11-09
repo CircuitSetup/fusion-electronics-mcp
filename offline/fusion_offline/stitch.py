@@ -21,7 +21,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-from .eagle import parse_rot, Pad as LibraryPad
+from .eagle import parse_rot, Pad as LibraryPad, UnverifiedGeometry
 
 
 def _f(el, k, d=0.0):
@@ -41,12 +41,28 @@ def _mm(v: str | None, default: float) -> float:
 
 @dataclass
 class Obstacle:
-    kind: str        # circle | rect | seg
+    kind: str        # circle | rect | seg | polygon
     net: str | None  # None = no net (holes, keepouts, unconnected pads)
     is_pad: bool
     data: tuple
     layers: frozenset | None = None   # export copper layers it occupies; None = all (THT pads, vias, holes)
     tag: str | None = None            # route_all's connection id on traces/vias it laid (rip-up)
+    restrict_layer: int | None = None
+    source_ref: str | None = None
+
+    @property
+    def bounds(self):
+        d = self.data
+        if self.kind == 'polygon':
+            points, half = d[2:]
+            return (min(p[0] for p in points)-half, min(p[1] for p in points)-half,
+                    max(p[0] for p in points)+half, max(p[1] for p in points)+half)
+        if self.kind == 'circle':
+            return d[0]-d[2], d[1]-d[2], d[0]+d[2], d[1]+d[2]
+        if self.kind == 'rect':
+            radius = math.hypot(d[2], d[3])
+            return d[0]-radius, d[1]-radius, d[0]+radius, d[1]+radius
+        return min(d[0], d[2])-d[4], min(d[1], d[3])-d[4], max(d[0], d[2])+d[4], max(d[1], d[3])+d[4]
 
     def distance(self, x: float, y: float) -> float:
         """Distance from (x, y) to the obstacle's copper/edge (<= 0 inside)."""
@@ -60,6 +76,11 @@ class Obstacle:
             lx, ly = dx * math.cos(a) - dy * math.sin(a), dx * math.sin(a) + dy * math.cos(a)
             ox, oy = abs(lx) - hw, abs(ly) - hh
             return math.hypot(max(ox, 0), max(oy, 0)) + min(max(ox, oy), 0)
+        if self.kind == 'polygon':
+            points, half = self.data[2:]
+            distance = min(Obstacle('seg', None, False, (*a, *b, 0)).distance(x, y)
+                           for a, b in zip(points, points[1:] + points[:1]))
+            return (-distance if _inside_poly(points, x, y) else distance) - half
         x1, y1, x2, y2, half = self.data
         vx, vy = x2 - x1, y2 - y1
         L2 = vx * vx + vy * vy
@@ -95,6 +116,46 @@ def _xf(px, py, x, y, angle, mirror):
     if mirror:
         rx = -rx
     return x + rx, y + ry
+
+
+def segments_intersect(a, b, c, d):
+    def cross(p, q, r):
+        return (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])
+    if (max(a[0], b[0]) < min(c[0], d[0])-1e-10 or max(c[0], d[0]) < min(a[0], b[0])-1e-10
+            or max(a[1], b[1]) < min(c[1], d[1])-1e-10 or max(c[1], d[1]) < min(a[1], b[1])-1e-10):
+        return False
+    return cross(a, b, c)*cross(a, b, d) <= 1e-20 and cross(c, d, a)*cross(c, d, b) <= 1e-20
+
+
+def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False):
+    try:
+        points = tuple(transform(float(v.attrib['x']), float(v.attrib['y'])) for v in polygon.findall('vertex'))
+        half = float(polygon.get('width', '0')) / 2
+        if any(float(v.get('curve', '0')) != 0 for v in polygon.findall('vertex')):
+            raise ValueError('curved restrict polygons are not supported')
+        if points and points[0] == points[-1]:
+            points = points[:-1]
+        if (len(points) < 3 or len(set(points)) != len(points) or half < 0
+                or not all(math.isfinite(n) for p in points for n in p) or not math.isfinite(half)):
+            raise ValueError('invalid restrict vertices or width')
+        area2 = sum(a[0]*b[1]-b[0]*a[1] for a, b in zip(points, points[1:]+points[:1]))
+        if abs(area2) < 1e-10:
+            raise ValueError('restrict polygon has no area')
+        edges = list(zip(points, points[1:]+points[:1]))
+        for i, (a, b) in enumerate(edges):
+            for j in range(i+2, len(edges)):
+                if i == 0 and j == len(edges)-1:
+                    continue
+                if segments_intersect(a, b, *edges[j]):
+                    raise ValueError('restrict polygon intersects itself')
+        layer = int(polygon.attrib['layer'])
+    except (ValueError, KeyError, TypeError) as error:
+        raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None
+    # An empty trace-layer set marks vRestrict: vias still check every obstacle.
+    layers = frozenset() if layer == 43 else frozenset({stack[0] if (layer == 41) != mirror else stack[-1]})
+    center = tuple(sum(p[i] for p in points)/len(points) for i in (0, 1))
+    return Obstacle('polygon', None, False, (*center, points, half), layers,
+                    restrict_layer=layer, source_ref=source_ref)
 
 
 def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[float, float, float, float]]]:
@@ -164,6 +225,10 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
         for h in pk.iterfind("hole"):
             cx, cy = _xf(_f(h, "x"), _f(h, "y"), ex, ey, ang, mir)
             obs.append(Obstacle("circle", None, True, (cx, cy, _f(h, "drill") / 2)))
+        for polygon in pk.findall('polygon'):
+            if polygon.get('layer') in ('41', '42', '43'):
+                obs.append(_restrict_polygon(polygon, stack, el.get('name'),
+                           lambda x, y: _xf(x, y, ex, ey, ang, mir), mir))
     outline = []
     for w in board.iterfind("./plain/wire"):
         if w.get("layer") == "20":
@@ -172,7 +237,11 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
         obs.append(Obstacle("circle", None, True, (_f(h, "x"), _f(h, "y"), _f(h, "drill") / 2)))
     for c in board.iterfind("./plain/circle"):
         if c.get("layer") in ("41", "42", "43") and _f(c, "width") == 0:
-            obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius"))))
+            obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius")),
+                                restrict_layer=int(c.get('layer'))))
+    for polygon in board.findall('./plain/polygon'):
+        if polygon.get('layer') in ('41', '42', '43'):
+            obs.append(_restrict_polygon(polygon, stack))
     return obs, rules, outline
 
 
