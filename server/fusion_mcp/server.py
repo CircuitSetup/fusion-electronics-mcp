@@ -122,15 +122,18 @@ def _snap(board=True, schematic=True) -> Snapshot:
     return session.snapshot(board, schematic)
 
 
-def _planning_snapshot():
+def _planning_snapshot(pin_document=False):
     from . import design_requirements as DR
     import hashlib
     constraints = DR.bound(session)
-    document = (session.context().get('active_document') or {}).get('document_id') if constraints else None
+    active = (session.context().get('active_document') or {}) if constraints or pin_document else {}
+    document = active.get('document_id')
+    if pin_document and (not document or active.get('kind') != 'board'):
+        raise WriteFailed('Keepout exception needs an exact active board document identity')
     snapshot = _snap(schematic=False)
-    if constraints and (session.context().get('active_document') or {}).get('document_id') != document:
+    if document and (session.context().get('active_document') or {}).get('document_id') != document:
         raise WriteFailed('Constrained document changed while reading the board')
-    guard = {'expected_document_id': document, 'expected_board_sha256': hashlib.sha256(snapshot.board_xml).hexdigest()} if constraints else {}
+    guard = {'expected_document_id': document, 'expected_board_sha256': hashlib.sha256(snapshot.board_xml).hexdigest()} if document else {}
     return snapshot, constraints, guard
 
 
@@ -2266,7 +2269,8 @@ def route_pair(p_net: str, n_net: str, centreline_mm: list[list[float]], width_m
 @tool(ADDITIVE)
 def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer: str = "any",
                 allow_vias: bool = True, clearance_mm: float | None = None, via_drill_mm: float | None = None,
-                via_diameter_mm: float | None = None, grid_mm: float = 0.127, dry_run: bool = True) -> dict:
+                via_diameter_mm: float | None = None, grid_mm: float = 0.127, dry_run: bool = True,
+                keepout_exception: dict | None = None) -> dict:
     """Route one connection between two pads (PART.PAD, e.g. 'J1.A19' to 'J9.5') the way a person
     would: straight runs, 45-degree corners (no 90s), around other nets' copper with the design's
     clearance (or clearance_mm), keepouts and the board edge, ending exactly on the pad centres.
@@ -2275,10 +2279,14 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     writing; run again with dry_run=false to draw it (checked against the board afterwards).
     width_mm: when left out, the width the net's saved current needs (set_net_current; IPC-2221 on
     all configured layers), else 0.25 mm. Via drill/diameter default to the board's minimums
-    and annular-ring policy; undersized overrides are refused. Vias follow its tenting limit."""
+    and annular-ring policy; undersized overrides are refused. Vias follow its tenting limit.
+    keepout_exception optionally pins a source package/element, declared header references,
+    exact pad-pair corridors and a protected central rectangle. It relaxes only that connection's
+    selected trace restrictions inside its corridor; all vias and the central exclusion remain
+    blocked. It does not edit native keepouts or waive DRC/datasheet requirements. See README."""
     from fusion_offline import router as RT
     from fusion_offline.render import render
-    snap, constraints, write_guard = _planning_snapshot()
+    snap, constraints, write_guard = _planning_snapshot(pin_document=True) if keepout_exception is not None else _planning_snapshot()
     root = D.read_xml(snap.board_xml)
     a_ref, _, a_pad = from_pad.partition(".")
     b_ref, _, b_pad = to_pad.partition(".")
@@ -2293,6 +2301,10 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     from . import design_requirements as DR
     width_mm, options = DR.route_options(constraints, an, width_mm, clearance=clearance_mm,
         prefer_layer=pref, vias=allow_vias, via_drill=via_drill_mm, via_d=via_diameter_mm, step=grid_mm)
+    exception_scope = None
+    if keepout_exception is not None:
+        from fusion_offline.keepouts import header_connection_obstacles
+        options['cache'], exception_scope = header_connection_obstacles(root, keepout_exception, from_pad, to_pad)
     r = RT.route(root, an, (ax, ay), al, (bx, by), bl, width=width_mm, **options)
     plan = {"p": {"net": an, "traces": [{"layer": l, "points": [list(q) for q in pts]} for l, pts in r.legs],
                   "vias": [list(v) for v in r.vias]}, "n": {"net": "", "traces": [], "vias": []}}
@@ -2302,6 +2314,8 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     RA._commit(proposed, RA.Conn('preview', an, (), (), (), (), width_mm), r)
     out = {"route": r.as_dict(), "written": False, "width_mm": width_mm,
            "datasheet_requirements": DR.report(session, proposed, constraints)}
+    if exception_scope is not None:
+        out['keepout_exception'] = exception_scope
     if width_note:
         out["width_from"] = width_note
     xs = [q[0] for _, pts in r.legs for q in pts] + [ax, bx]

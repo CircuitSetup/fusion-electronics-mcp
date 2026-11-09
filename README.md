@@ -480,6 +480,38 @@ exact, as do MPN and local part IDs. Real package or mapping differences still f
 
 ## Using it
 
+### Package restrictions and header corridors
+
+Offline routing, pair/bus checks, via stitching and previews include straight, simple
+package and board polygons on tRestrict/bRestrict/vRestrict (41/42/43). Element rotation
+and mirroring are applied; vRestrict blocks vias without blocking traces. Concave
+interiors are preserved. Curved, nonfinite, degenerate or self-intersecting restrict
+polygons are rejected as unverified geometry. SLOT qualification remains separate.
+
+`route_trace(..., keepout_exception=...)` supports an explicitly authorized header
+connection corridor. It changes only that connection's offline planning obstacles;
+native library geometry, DRC findings and bound datasheet checks remain unchanged.
+Supply all of these fields:
+
+- `source_ref`, `package_sha256`, `source_element_sha256`: pin the source package,
+  placement and element identity. Offline `fusion_offline.keepouts.identity(root, "U1")`
+  reports the required hashes from an actual board export. Hashes use SHA-256 of
+  ElementTree canonical XML with `strip_text=True`, encoded as UTF-8.
+- `header_refs`: exact permitted references, such as `["J2", "J3"]`.
+- `protected_region_mm`: the central exclusion `[x0, y0, x1, y1]` in board coordinates.
+  It must lie in the source restriction and remains blocked on all copper layers and for vias.
+- `layers`: the source trace-restrict copper layer IDs to relax, in export coordinates.
+- `connections`: objects containing `pads: ["HEADER.PAD", "OTHER.PAD"]` and
+  `corridor_mm: [x0, y0, x1, y1]`. Each pair must share an actual net and include
+  a declared header pad inside its corridor. Corridors must not touch the protected region.
+- `reason`: the explicit authorization and scope of this exception.
+
+Only the requested pad pair receives its declared corridor, including on a shared net.
+Trace width and clearance must fit inside the opening; all vias and other restrictions
+remain blocked. The exact active PCB and board hash are checked before an exception write.
+The result reports `keepout_exception` with its scope and `native_drc_waived=false`.
+Use measured, reviewed coordinates; the tool does not infer RF clearance or human approval.
+
 Open a design in Fusion, then ask your agent things like:
 
 - "Review the schematic and list anything that looks wrong."

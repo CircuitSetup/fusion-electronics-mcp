@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import heapq
 import math
+from dataclasses import replace
 import re
 from array import array
 import xml.etree.ElementTree as ET
@@ -96,7 +97,10 @@ def _dist_field(o: Obstacle, XX, YY):
         distance = np.full(np.shape(XX), np.inf)
         for a, b in zip(points, points[1:]+points[:1]):
             distance = np.minimum(distance, _dist_field(Obstacle('seg', None, False, (*a, *b, 0)), XX, YY))
-        return np.where(_in_poly(points, XX, YY), -distance, distance) - half
+        distance = np.where(_in_poly(points, XX, YY), -distance, distance) - half
+        for hole in o.trace_holes:
+            distance = np.maximum(distance, -_dist_field(hole, XX, YY))
+        return distance
     x1, y1, x2, y2, half = d
     vx, vy = x2 - x1, y2 - y1
     L2 = vx * vx + vy * vy
@@ -128,6 +132,7 @@ class Grid:
                  soft_tags: set | None = None, rip_cost: float = 15.0, necks=(), neck_width: float | None = None,
                  hug: float = 0.0):
         obs, rules, outline = cache if cache else board_obstacles(root)
+        obs = [replace(o, trace_holes=()) if o.trace_holes and o.trace_holes_for[0] != net else o for o in obs]
         self.rules, self.outline, self.net, self.step = rules, outline, net, step
         self.clear = clearance if clearance is not None else _mm(rules.get("mdWireWire"), 0.2)
         self.edge = _mm(rules.get("mdCopperDimension"), 0.3)
@@ -363,6 +368,9 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     m = margin_mm if margin_mm is not None else max(6.0, 0.6 * span)
     window = (min(start[0], goal[0]) - m, min(start[1], goal[1]) - m, max(start[0], goal[0]) + m, max(start[1], goal[1]) + m)
     obs_all = cache if cache else board_obstacles(root)
+    scope = (net, tuple(sorted((tuple(start), tuple(goal)))))
+    obs_all = ([replace(o, trace_holes=()) if o.trace_holes and o.trace_holes_for != scope else o
+                for o in obs_all[0]], obs_all[1], obs_all[2])
     from . import annular
     rules = obs_all[1]
     minimum_drill = _mm(rules.get('msDrill'), 0.0)

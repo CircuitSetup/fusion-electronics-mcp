@@ -49,6 +49,8 @@ class Obstacle:
     tag: str | None = None            # route_all's connection id on traces/vias it laid (rip-up)
     restrict_layer: int | None = None
     source_ref: str | None = None
+    trace_holes: tuple = ()
+    trace_holes_for: tuple | None = None
 
     @property
     def bounds(self):
@@ -80,7 +82,9 @@ class Obstacle:
             points, half = self.data[2:]
             distance = min(Obstacle('seg', None, False, (*a, *b, 0)).distance(x, y)
                            for a, b in zip(points, points[1:] + points[:1]))
-            return (-distance if _inside_poly(points, x, y) else distance) - half
+            distance = (-distance if _inside_poly(points, x, y) else distance) - half
+            # Intersection with the complement of each corridor is conservative at corners.
+            return max([distance] + [-hole.distance(x, y) for hole in self.trace_holes])
         x1, y1, x2, y2, half = self.data
         vx, vy = x2 - x1, y2 - y1
         L2 = vx * vx + vy * vy
