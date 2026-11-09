@@ -9,6 +9,7 @@ from unittest import mock
 from fusion_mcp import server as S
 from fusion_mcp.session import Session, WriteFailed
 from fusion_offline import placement_check as PC
+from fusion_offline.eagle import UnverifiedGeometry
 
 from test_placement_check import board, el  # noqa: F401  (NOCY package comes with board)
 
@@ -69,6 +70,17 @@ def parts_root():
     return board(el("R1", 5, 5) + el("R2", 5, 7) + el("R3", 10, 10) + el("C1", 20, 20))
 
 
+def parts_with_slot():
+    from test_slot_geometry import SLOT
+    root=parts_root()
+    library=root.find('./drawing/board/libraries/library')
+    package=ET.SubElement(library.find('packages'),'package',name='USB')
+    package.append(ET.fromstring(SLOT))
+    ET.SubElement(root.find('./drawing/board/elements'),'element',name='J4',library=library.get('name'),
+                  package='USB',x='40',y='40',rot='MR0')
+    return root
+
+
 class MoveToolsTest(unittest.TestCase):
     def setUp(self):
         S._PREVIEWED_ON.clear()
@@ -85,6 +97,7 @@ class MoveToolsTest(unittest.TestCase):
                                                   {"ref": "R3", "x_mm": 12, "y_mm": 12, "angle": 180, "bottom": True}],
                             False)
         self.assertTrue(res["written"])
+        self.assertEqual(res['placement_status'],'checked')
         writes = [c for c in fake.ran if c.strip() != "UNDO;"]
         self.assertEqual(len(writes), 1)                        # one run = one undo step in the add-in
         self.assertIn("MOVE 'R1' (8 5);", writes[0])
@@ -140,6 +153,34 @@ class MoveToolsTest(unittest.TestCase):
         res = self.run_tool(fake, S.rotate_part, "R1", 90)
         self.assertTrue(res["written"])
         self.assertIn("ROTATE =R90 'R1';", fake.ran[-1])
+
+    def test_verified_move_on_slot_board_reports_unknown_placement_without_error_or_retry(self):
+        fake=FakeFusion(parts_with_slot())
+        result=self.run_tool(fake,S._move_parts,[{'ref':'R1','x_mm':8}],False)
+        self.assertTrue(result['written'])
+        self.assertEqual(result['placement_status'],'unverified')
+        self.assertIn('J4.S1',result['unverified_geometry'][0])
+        self.assertTrue(all(result[k] is None for k in ('introduced','cleared','unchanged')))
+        self.assertEqual(len(fake.ran),1)
+        self.assertEqual(fake._els(ET.fromstring(fake.xml))['R1'].get('x'),'8')
+        self.assertEqual(fake._els(ET.fromstring(fake.xml))['J4'].get('x'),'40')
+        with self.assertRaises(UnverifiedGeometry): PC.move_effects(parts_with_slot(),parts_with_slot(),['R1'])
+
+    def test_slot_dry_run_reports_unknown_geometry_without_misleading_preview(self):
+        fake=FakeFusion(parts_with_slot())
+        with mock.patch.object(S,'session',Session(fake)),mock.patch.object(S,'_move_picture') as picture:
+            result=json.loads(S._move_parts([{'ref':'R1','x_mm':8}],True)[-1])
+        self.assertFalse(result['written'])
+        self.assertEqual(result['placement_status'],'unverified')
+        self.assertEqual(fake.ran,[])
+        picture.assert_not_called()
+
+    def test_slot_reporting_does_not_hide_pose_failure_or_rollback(self):
+        fake=FakeFusion(parts_with_slot(),push='C1')
+        before=fake.xml
+        with self.assertRaises(WriteFailed): self.run_tool(fake,S._move_parts,[{'ref':'R1','x_mm':8}],False)
+        self.assertEqual(fake.ran[-1],'UNDO;')
+        self.assertEqual(fake.xml,before)
 
 
 class DesignGuardTest(unittest.TestCase):

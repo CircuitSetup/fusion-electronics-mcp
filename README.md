@@ -424,6 +424,11 @@ Native SLOT copper/drill extents and routed Excellon cuts are currently
 placement/CAM reports return `status: unverified`. Package reuse compares the
 declared slot parameters; matching them does not certify native import or CAM
 dimensions. Those require actual import/read-back and cut inspection.
+Move/rotation tools verify requested poses independently. When optional placement
+reporting encounters unsupported geometry, they retain the verified write result and
+return `placement_status: unverified`, the geometry reason, and null `introduced`,
+`cleared` and `unchanged` lists. Dry runs omit the unsupported picture. Constrained
+placement planners and routing/CAM guards continue to refuse unsupported geometry.
 Conversion refuses repeated physical pad identifiers, standalone paste/mask
 apertures, SMD layer selections other than top copper/paste/mask, and embedded
 zones/keepouts or rule areas. These features require a compatible library or a

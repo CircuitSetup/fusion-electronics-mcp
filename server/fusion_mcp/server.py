@@ -1822,8 +1822,9 @@ class _IgnoreViolators:
 @tool(CHANGE)
 def move_part(ref: str, x_mm: float, y_mm: float, dry_run: bool = False, design: str | None = None) -> list:
     """Move a board part so its origin is at (x, y) mm. dry_run=true writes nothing and returns
-    a picture of the part at its new place with courtyards, plus the problems the move would
-    introduce or clear. design: the design you mean (as get_context names it); the write is
+    a picture when placement geometry is supported, plus the problems the move would introduce
+    or clear. Unsupported geometry is explicitly unverified, separately from pose read-back.
+    design: the design you mean (as get_context names it); the write is
     refused if Fusion's active design is another one. To move several parts as one undo step,
     use move_parts."""
     return _move_parts([{"ref": ref, "x_mm": x_mm, "y_mm": y_mm}], dry_run, design)
@@ -1848,7 +1849,9 @@ def move_parts(moves: list[dict], dry_run: bool = False, design: str | None = No
     dry_run=true writes nothing: it returns a picture of the parts at their new places with
     courtyards drawn, and what the moves would introduce or clear: courtyard overlaps (derived
     ones marked, for parts without a library courtyard), pad gaps under the rules, and silkscreen
-    on a neighbour's pads. The same report comes back after a real write. Traces stay put in
+    on a neighbour's pads. The same report comes back after a real write. Unsupported geometry
+    reports placement_status=unverified with null effect lists; it does not turn a verified
+    pose write into a failure or approve clearance. Its dry-run picture is omitted. Traces stay put in
     the preview; in Fusion, trace ends on a moved part's pads follow it.
     design: the design you mean (as get_context or the dry run's reply names it). The write is
     refused if Fusion's active design is another one, checked again immediately before writing.
@@ -1960,11 +1963,12 @@ def _move_parts(moves: list[dict], dry_run: bool, design: str | None = None,
         if active:
             _PREVIEWED_ON.update({r: active for r in refs})
         proposed = PC.apply_moves(root, plan)
-        effects = PC.move_effects(root, proposed, refs)
+        effects = _move_effects(root, proposed, refs)
         out = {"written": False, "design": active, "moves": listing, **effects,
                "datasheet_requirements": proposed_requirements}
         result = [json.dumps(out)]
-        picture = _move_picture(proposed, plan, f"proposed: {len(todo)} part(s) moved (nothing written)")
+        picture = (_move_picture(proposed, plan, f"proposed: {len(todo)} part(s) moved (nothing written)")
+                   if effects['placement_status'] == 'checked' else None)
         return ([picture] if picture else []) + result
     elsewhere = sorted({_PREVIEWED_ON[r] for r in refs if _PREVIEWED_ON.get(r) not in (None, active)})
     if elsewhere and not design:
@@ -2002,9 +2006,20 @@ def _move_parts(moves: list[dict], dry_run: bool, design: str | None = None,
                                                timeout=max(60.0, 2.0 * len(todo)), design=design or active, **write_guard)
     for r in refs:
         _PREVIEWED_ON.pop(r, None)
-    effects = PC.move_effects(root, D.read_xml(after.board_xml), refs)
+    effects = _move_effects(root, D.read_xml(after.board_xml), refs)
     return [json.dumps({"written": True, "design": active, "detail": detail, "moves": listing, **effects,
                         "datasheet_requirements": session.last_requirements})]
+
+
+def _move_effects(before, after, refs):
+    """Optional placement reporting must not obscure an independently verified pose write."""
+    from fusion_offline import placement_check as PC
+    from fusion_offline.eagle import UnverifiedGeometry
+    try:
+        return {'placement_status': 'checked', **PC.move_effects(before, after, refs)}
+    except UnverifiedGeometry as ex:
+        return {'placement_status': 'unverified', 'unverified_geometry': [str(ex)],
+                'introduced': None, 'cleared': None, 'unchanged': None}
 
 
 def _move_picture(root, plan, title):

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Verified moves with unsupported placement reporting (workflow.33)
+
+- Preserve a verified move/rotation result when optional placement reporting encounters
+  unsupported SLOT geometry. Report `placement_status=unverified` and null effect lists;
+  do not claim that unknown clearances passed or retry a successful mutation.
+- Return the same explicit limitation for dry runs and omit their unsupported picture.
+  Pose/side verification, bystander rollback, constrained planners and SLOT guards remain strict.
+
 ### Imported family first save (workflow.32 / add-in 0.14.23)
 
 - Verify the unique imported child documents and complete source signatures before
