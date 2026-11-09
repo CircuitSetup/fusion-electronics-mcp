@@ -833,13 +833,13 @@ def pad_target(root: ET.Element, ref: str, pad: str) -> tuple[float, float, tupl
         for p in pk.iterfind("pad"):
             if p.get("name") == pad:
                 x, y = _xf(_f(p, "x"), _f(p, "y"), _f(el, "x"), _f(el, "y"), ang, mir)
-                return round(x, 4), round(y, 4), copper_layers(root), net
+                return x, y, copper_layers(root), net
         for p in pk.iterfind("smd"):
             if p.get("name") == pad:
                 x, y = _xf(_f(p, "x"), _f(p, "y"), _f(el, "x"), _f(el, "y"), ang, mir)
                 stack = copper_layers(root)
                 side = stack[-1] if (int(p.get("layer")) == stack[0]) == mir else stack[0]
-                return round(x, 4), round(y, 4), (side,), net
+                return x, y, (side,), net
         raise KeyError(f"{ref} has no pad {pad!r}")
     raise KeyError(f"no part {ref!r} on the board")
 

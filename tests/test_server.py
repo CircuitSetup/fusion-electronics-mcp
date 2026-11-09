@@ -36,7 +36,7 @@ class CommandsTest(unittest.TestCase):
     def test_names_are_quoted_and_grid_first(self):
         self.assertEqual(C.rotate_part("R1", 90, False), "GRID MM; ROTATE =R90 'R1';")
         self.assertEqual(C.rotate_part("R2", 270, True), "GRID MM; ROTATE =MR270 'R2';")
-        self.assertTrue(C.move_part("R1", 1.23456, 2).startswith("GRID MM; MOVE 'R1' (1.2346 2)"))
+        self.assertTrue(C.move_part("R1", 1.23456, 2).startswith("GRID MM; MOVE 'R1' (1.23456 2)"))
 
     def test_rejects_injection(self):
         with self.assertRaises(C.InvalidInput):

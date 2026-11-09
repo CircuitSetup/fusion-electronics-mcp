@@ -30,9 +30,8 @@ def q(s: str) -> str:
 
 
 def n(v: float) -> str:
-    """A number for a command, to 0.1 um. (Not :g: it keeps 6 significant digits, so 235.5175 mm
-    went out as 235.518.)"""
-    s = f"{round(float(v), 4):.4f}".rstrip("0").rstrip(".")
+    """Preserve native eight-decimal coordinates without scientific notation."""
+    s = f"{float(v):.8f}".rstrip("0").rstrip(".")
     return "0" if s in ("-0", "") else s
 
 
