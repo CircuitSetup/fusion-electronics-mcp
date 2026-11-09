@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.20"
+ADDIN_VERSION = "0.14.21"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -76,6 +76,8 @@ _pair_import_module = None
 _pair_import_records = {}
 _pair_import_lock = threading.RLock()
 _PAIR_PENDING = frozenset(('queued','awaiting_file_selection','verifying','state_unknown'))
+_PAIR_RETAINED_ATTR = '_fusion_electronics_mcp_not_started_imports'
+_pair_dispatch_probe = {}
 
 
 class BridgeError(Exception):
@@ -321,7 +323,7 @@ def _settle(n=10):
 
 def op_ping(args):
     return {"addin_version": ADDIN_VERSION, "protocol": PROTOCOL, "fusion_version": _app.version,
-            "pid": os.getpid()}
+            "pid": os.getpid(), "import_dispatch_probe": dict(_pair_dispatch_probe)}
 
 
 def op_context(args):
@@ -990,6 +992,14 @@ def _pair_import_pending():
 
 def op_eagle_pair_import_status(args):
     rid = _pair_support().request_id(args.get('request_id'))
+    record = _pair_import_records.get(rid)
+    if record and record['public']['status'] == 'queued' and time.monotonic() > record.get('dispatch_deadline',float('inf')):
+        jid = record.get('dispatch_job')
+        with _jobs_lock:
+            job = _jobs.get(jid)
+            if job and job['state'] == 'queued':
+                job['state'] = 'cancelled'; _jobs.pop(jid,None)
+                _import_update(record, status='not_started', error='Deferred import was not acknowledged before its deadline; queued job cancelled, so a late event cannot launch it')
     with _pair_import_lock:
         if rid not in _pair_import_records:
             raise ValueError('Unknown import request in this add-in session; inspect documents before any retry')
@@ -1028,7 +1038,21 @@ def _import_destination(args):
 def op_start_eagle_pair_import(args):
     support = _pair_support(); rid = support.request_id(args.get('request_id'))
     if rid in _pair_import_records:
-        if _pair_import_records[rid]['args'] != args: raise ValueError('Import request ID cannot be rebound')
+        record = _pair_import_records[rid]
+        if record['args'] != args: raise ValueError('Import request ID cannot be rebound')
+        if record['public']['status'] == 'not_started':
+            if _pair_import_pending(): raise ValueError('Another import is pending; this request was not requeued')
+            current = _import_document_state()
+            stable = lambda rows:[{k:v for k,v in row.items() if k!='document_id'} for row in rows]
+            if stable(current) != stable(record['before']):
+                raise ValueError('Protected original documents changed since the known-not-started attempt')
+            destination = _import_destination(args)
+            if destination.id != record['folder'].id: raise ValueError('Destination folder identity changed')
+            _import_source(record)
+            record['before'] = current; record['folder'] = destination
+            record.pop('dispatch_job',None); record.pop('dispatch_deadline',None)
+            _import_update(record, status='queued', session_id=_events.session_id,
+                           error=None, dispatch_acknowledged=False, dispatch_return=None)
         return op_eagle_pair_import_status({'request_id':rid})
     if _pair_import_pending():
         raise ValueError('An import is pending; inspect its status and finish it before starting another')
@@ -1053,16 +1077,31 @@ def op_start_eagle_pair_import(args):
                                        'folder':args.get('folder',''), 'name':args['name']},
                         'next_action':'Select the staged schematic, then board, in Fusion native import dialogs; then call finish_eagle_pair_import. Command start is not import completion.'}}
     with _pair_import_lock: _pair_import_records[rid] = record
-    # Return the ticket before the importer can block Fusion's main thread in a file dialog.
-    def schedule():
-        try:
-            if _app.fireCustomEvent(EVENT_ID, 'eagle-pair:'+rid) is False:
-                raise ValueError('Fusion did not accept the deferred import event')
-        except Exception as ex:
-            _import_update(record, status='not_started', error=str(ex))
-    timer = threading.Timer(0.5, schedule)
-    timer.daemon = True; timer.start()
     return op_eagle_pair_import_status({'request_id':rid})
+
+
+def _queue_eagle_pair_dispatch(rid=None):
+    """Use the normal bridge worker/UUID job channel, only after replying to the caller."""
+    record = _pair_import_records.get(rid) if rid else None
+    jid = uuid.uuid4().hex
+    job = {'state':'queued', 'pair_import':rid, 'dispatch_deadline':time.monotonic()+10}
+    with _pair_import_lock:
+        if rid and (record is None or record['public']['status']!='queued' or record.get('dispatch_job')):
+            return
+        if record:
+            record['dispatch_job'] = jid; record['dispatch_deadline'] = job['dispatch_deadline']
+            _import_update(record, dispatch_acknowledged=False)
+    if not record:
+        _pair_dispatch_probe.clear(); _pair_dispatch_probe.update(status='queued',job_id=jid,event_id=EVENT_ID)
+    with _jobs_lock: _jobs[jid] = job
+    try:
+        returned = _app.fireCustomEvent(EVENT_ID,jid)
+        values = {'dispatch_return':returned if returned is None or isinstance(returned,bool) else repr(returned)}
+    except Exception as ex:
+        values = {'dispatch_error':str(ex)}
+    # The handler acknowledgement is authoritative; a queue return is not execution proof.
+    if record: _import_update(record, **values)
+    else: _pair_dispatch_probe.update(values)
 
 
 def _launch_eagle_pair_import(rid):
@@ -1787,14 +1826,28 @@ OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export"
 class _Handler(adsk.core.CustomEventHandler):
     def notify(self, args):
         jid = args.additionalInfo
-        if jid.startswith('eagle-pair:'):
-            _launch_eagle_pair_import(jid[len('eagle-pair:'):])
-            return
         with _jobs_lock:
             job = _jobs.get(jid)
             if job is None or job["state"] != "queued":
                 return
             job["state"] = "running"
+        if 'pair_import' in job:
+            rid = job['pair_import']
+            try:
+                if time.monotonic() > job['dispatch_deadline']:
+                    if rid:
+                        _import_update(_pair_import_records[rid],status='not_started',error='Deferred import expired before acknowledgement; no command was started')
+                    else: _pair_dispatch_probe.update(status='expired')
+                elif rid:
+                    record = _pair_import_records[rid]
+                    if record.get('dispatch_job') != jid: return
+                    _import_update(record,dispatch_acknowledged=True)
+                    _launch_eagle_pair_import(rid)
+                else:
+                    _pair_dispatch_probe.update(status='acknowledged',dispatch_acknowledged=True)
+            finally:
+                with _jobs_lock: _jobs.pop(jid,None)
+            return
         try:
             if (_pair_import_pending()
                     and job['op'] not in ('ping','events','start_eagle_pair_import','finish_eagle_pair_import')):
@@ -1835,13 +1888,15 @@ def _serve_conn(conn):
         if op not in OPS:
             _reply(conn, {"v": PROTOCOL, "id": rid, "ok": False, "error": {"code": "unknown_op", "message": f"unknown op {op!r}"}})
             return
-        if op == 'start_eagle_pair_import' and (req.get('args') or {}).get('request_id') in _pair_import_records:
+        if (op == 'start_eagle_pair_import' and (req.get('args') or {}).get('request_id') in _pair_import_records
+                and _pair_import_records[req['args']['request_id']]['public']['status']!='not_started'):
             # A retry must stay available while the original launch is blocked in a file picker.
             values = req['args']; record = _pair_import_records[values['request_id']]
             if record['args'] != values:
                 _reply(conn, {'v':PROTOCOL, 'id':rid, 'ok':False, 'error':{'code':'bad_args','message':'Import request ID cannot be rebound'}})
             else:
                 _reply(conn, {'v':PROTOCOL, 'id':rid, 'ok':True, 'result':op_eagle_pair_import_status(values)})
+                _queue_eagle_pair_dispatch(values['request_id'])
             return
         if _pair_import_pending() and op not in ('events','eagle_pair_import_status','finish_eagle_pair_import','ping'):
             _reply(conn, {'v':PROTOCOL, 'id':rid, 'ok':False, 'error':{'code':'import_pending',
@@ -1875,6 +1930,10 @@ def _serve_conn(conn):
             _jobs.pop(jid, None)
         res.update({"v": PROTOCOL, "id": rid})
         _reply(conn, res)
+        if res.get('ok'):
+            if op == 'start_eagle_pair_import': _queue_eagle_pair_dispatch(req['args']['request_id'])
+            elif op == 'ping' and (req.get('args') or {}).get('probe_import_dispatch') is True:
+                _queue_eagle_pair_dispatch()
     except Exception:
         with contextlib.suppress(Exception):
             _reply(conn, {"v": PROTOCOL, "ok": False, "error": {"code": "bridge_error", "message": traceback.format_exc()[-800:]}})
@@ -1907,7 +1966,7 @@ def _other_copy():
 
 
 def run(context):
-    global _app, _ui, _event, _handler, _server, _token, _events
+    global _app, _ui, _event, _handler, _server, _token, _events, _pair_import_records
     reload_ticket = _management().claim_reload(adsk.core, os.path.dirname(__file__))
     _app = adsk.core.Application.get()
     _ui = _app.userInterface
@@ -1921,6 +1980,7 @@ def run(context):
         if _events: _events.close()
         _events = _management().EventLog()
         _events.start(_app, adsk.core)
+        _pair_import_records = getattr(adsk.core,_PAIR_RETAINED_ATTR,{})
         _events.append('bridge_started', addin_version=ADDIN_VERSION)
         with contextlib.suppress(Exception):
             _app.unregisterCustomEvent(EVENT_ID)
@@ -1951,6 +2011,9 @@ def stop(context):
     if _other_copy() or _server is None:      # not the running copy: leave the other one alone
         return
     _stop.set()
+    # Keep only proven not-started tickets across a controlled reload; never auto-resume them.
+    setattr(adsk.core,_PAIR_RETAINED_ATTR,{rid:r for rid,r in _pair_import_records.items()
+                                       if r['public']['status']=='not_started'})
     if _events:
         _events.append('bridge_stopping')
         _events.close()

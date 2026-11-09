@@ -119,7 +119,7 @@ class PairImportTest(unittest.TestCase):
     def test_request_id_is_idempotent_and_cannot_be_rebound(self):
         first = self.start()
         self.assertEqual(self.start(), first)
-        self.assertEqual(len(self.timers), 1)
+        self.assertEqual(len(self.timers), 0)
         with self.assertRaises(ValueError): self.a.op_start_eagle_pair_import(dict(self.args, name='Other'))
         with self.assertRaises(ValueError): self.a.op_start_eagle_pair_import(dict(self.args, request_id='b'*32))
 
@@ -214,6 +214,72 @@ class PairImportTest(unittest.TestCase):
         Path(result['staged']['board']).write_text(BRD.replace('GND','VCC'))
         self.a._launch_eagle_pair_import(self.args['request_id'])
         self.assertEqual(self.starts,[])
+
+    def test_dispatch_uses_bridge_job_and_acknowledgement_not_return_value(self):
+        self.start()
+        fired=[]
+        def fire(event_id,job_id):
+            fired.append(job_id)
+            self.a._Handler().notify(types.SimpleNamespace(additionalInfo=job_id))
+            return False
+        self.a._app.fireCustomEvent=fire
+        self.a._queue_eagle_pair_dispatch(self.args['request_id'])
+        status=self.a.op_eagle_pair_import_status({'request_id':self.args['request_id']})
+        self.assertEqual(status['status'],'awaiting_file_selection')
+        self.assertTrue(status['dispatch_acknowledged'])
+        self.assertIs(status['dispatch_return'],False)
+        self.assertEqual(self.starts,['start'])
+        self.a._queue_eagle_pair_dispatch(self.args['request_id'])
+        self.assertEqual(len(fired),1)
+
+    def test_unacknowledged_dispatch_is_cancelled_before_known_not_started_retry(self):
+        first=self.start()
+        self.a._app.fireCustomEvent=lambda *args: None
+        self.a._queue_eagle_pair_dispatch(self.args['request_id'])
+        record=self.a._pair_import_records[self.args['request_id']]
+        stale_job=record['dispatch_job']
+        self.assertEqual(self.a.op_eagle_pair_import_status({'request_id':self.args['request_id']})['status'],'queued')
+        record['dispatch_deadline']=0
+        self.assertEqual(self.a.op_eagle_pair_import_status({'request_id':self.args['request_id']})['status'],'not_started')
+        self.a._Handler().notify(types.SimpleNamespace(additionalInfo=stale_job))
+        self.assertEqual(self.starts,[])
+        self.a._events.session_id='new-session'
+        old_info=self.a._doc_info
+        self.a._doc_info=lambda d: dict(old_info(d),document_id='new-'+str(id(d)))
+        resumed=self.start()
+        self.assertEqual(resumed['status'],'queued')
+        self.assertEqual(resumed['session_id'],'new-session')
+        self.assertEqual(resumed['staged'],first['staged'])
+        self.assertEqual(self.starts,[])
+
+    def test_read_only_probe_uses_same_dispatch_and_never_launches_import(self):
+        def fire(event_id,job_id):
+            self.a._Handler().notify(types.SimpleNamespace(additionalInfo=job_id))
+            return None
+        self.a._app.fireCustomEvent=fire
+        self.a._queue_eagle_pair_dispatch()
+        self.assertEqual(self.a._pair_dispatch_probe['status'],'acknowledged')
+        self.assertIsNone(self.a._pair_dispatch_probe['dispatch_return'])
+        self.assertEqual(self.starts,[])
+
+    def test_controlled_stop_retains_only_known_not_started_tickets(self):
+        self.start()
+        self.a._pair_import_records[self.args['request_id']]['public']['status']='not_started'
+        self.a._pair_import_records['b'*32]={'public':{'status':'state_unknown'}}
+        self.a._events=None
+        self.a._server=types.SimpleNamespace(close=lambda: None)
+        self.a.INFO_PATH=str(self.root/'absent-bridge.json')
+        self.a.stop(None)
+        retained=getattr(self.a.adsk.core,self.a._PAIR_RETAINED_ATTR)
+        self.assertEqual(list(retained),[self.args['request_id']])
+        self.assertEqual(self.starts,[])
+
+    def test_known_not_started_retry_refuses_another_pending_import(self):
+        self.start()
+        self.a._pair_import_records[self.args['request_id']]['public']['status']='not_started'
+        self.a._pair_import_records['b'*32]={'public':{'status':'queued'}}
+        with self.assertRaisesRegex(ValueError,'pending'): self.start()
+        self.assertEqual(self.a._pair_import_records[self.args['request_id']]['public']['status'],'not_started')
 
 
 if __name__ == '__main__': unittest.main()

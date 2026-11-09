@@ -330,9 +330,15 @@ Use `start_eagle_pair_import` with a fresh 32-character lowercase hex `request_i
 absolute same-directory/same-basename `.sch` and `.brd` paths, their exact
 `schematic_sha256` and `board_sha256`, an explicit active `project_id`, an existing
 project-relative `folder` (empty for the root), and a new product `name`.
-Every open document must already be saved and unmodified. Requires add-in 0.14.20+.
+Every open document must already be saved and unmodified. Requires add-in 0.14.21+.
 
-Start stages pinned copies and launches Fusion's native paired importer asynchronously.
+Start stages pinned copies and launches Fusion's native paired importer asynchronously,
+through the normal bridge worker after its response has been sent. Main-thread acknowledgement
+is recorded separately from the SDK queue return. An unacknowledged job expires after ten
+seconds and is cancelled before `not_started` is reported, so late delivery cannot launch it.
+Only a confirmed `not_started` request can be explicitly retried with the same ID/arguments;
+the original staged copies and document/destination guards are retained. Starting with a new
+ID remains prohibited for an uncertain import.
 It returns **pending**, with the two staged paths to select in the schematic and board
 file dialogs. The agent can operate these native dialogs through available computer-use
 tools; this API does not fill or dismiss them. `get_eagle_pair_import_status(request_id)`

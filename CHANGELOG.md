@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Deferred import dispatch (workflow.29 / add-in 0.14.21)
+
+- Dispatch the native importer after replying, using the existing bridge worker
+  and UUID job channel instead of a timer/prefixed event. Record handler acknowledgement
+  independently of the SDK queue return; a read-only native probe uses the same path.
+- Cancel unacknowledged queued jobs before reporting `not_started`. Explicit retries
+  reuse that request and its staged copies after rechecking every guard; uncertain
+  imports stay blocked. Controlled reloads retain known-not-started tickets.
+
 ### Native destination lookup fix (workflow.28 / add-in 0.14.20)
 
 - Check new-product name collisions through supported `DataFiles.count/item`,
