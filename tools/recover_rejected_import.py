@@ -17,18 +17,34 @@ def _hash(path):
 
 def _original_exports(live, before_ids, expected):
     docs=[doc for doc in live._docs() if live._doc_info(doc)['document_id'] in before_ids]
-    products={kind:[live._document_product(d,kind) for d in docs if live._kind_of(d)==kind]
-              for kind in ('design','schematic','board')}
-    if any(len(products[k])!=1 for k in products):
+    families={kind:[d for d in docs if live._kind_of(d)==kind] for kind in ('design','schematic','board')}
+    if any(len(families[k])!=1 for k in families):
         raise ValueError('Cannot identify the single protected original Electronics family')
-    design,sch,brd=(products[k][0] for k in ('design','schematic','board'))
-    if (design.schematic!=sch or design.board!=brd or sch.parentDesign!=design
-            or brd.parentDesign!=design or sch.linkedBoard!=brd or brd.linkedSchematic!=sch):
-        raise ValueError('Protected original family links changed')
-    exports={kind:live._export_product(products[kind][0],kind)['path'] for kind in ('schematic','board')}
+    products={kind:live._document_product(families[kind][0],kind) for kind in families}
+    design,sch,brd=(products[k] for k in ('design','schematic','board'))
+    for parent in (design,sch.parentDesign,brd.parentDesign):
+        if parent is None or not live._same_document(parent.parentDocument,families['design'][0]):
+            raise ValueError('Protected original family parent identity changed')
+    exports={kind:live._export_product(products[kind],kind)['path'] for kind in ('schematic','board')}
     if {kind:_hash(path) for kind,path in exports.items()}!=expected:
         raise ValueError('Protected original export hash differs from the approved recovery baseline')
+    # Electronics adapters can compare unequal; verify linked exports and saved parent identity instead.
+    for label,product,kind in (('design.schematic',design.schematic,'schematic'),('design.board',design.board,'board'),
+                               ('schematic.linkedBoard',sch.linkedBoard,'board'),('board.linkedSchematic',brd.linkedSchematic,'schematic')):
+        if (product is None or product.parentDesign is None
+                or not live._same_document(product.parentDesign.parentDocument,families['design'][0])):
+            raise ValueError('Protected original family linked parent identity changed')
+        exports[label]=live._export_product(product,kind)['path']
+        if _hash(exports[label])!=expected[kind]:
+            raise ValueError('Protected original family linked export hash changed')
     return exports
+
+
+def _empty_parent_link(design,name):
+    try: return getattr(design,name)
+    except RuntimeError as ex:
+        if str(ex)=='2 : InternalValidationError : '+name+'Link': return None
+        raise
 
 
 def reconcile(live, config):
@@ -71,10 +87,16 @@ def reconcile(live, config):
     parent=next(d for d in created if live._kind_of(d)=='design')
     child=next(d for d in created if live._kind_of(d)=='schematic')
     design=live._document_product(parent,'design'); sch=live._document_product(child,'schematic')
-    if (design.board is not None or design.schematic not in (None,sch)
-            or sch.parentDesign not in (None,design) or sch.linkedBoard is not None):
+    parent_sch=_empty_parent_link(design,'schematic')
+    if (not live._same_document(design.parentDocument,parent) or _empty_parent_link(design,'board') is not None
+            or (sch.parentDesign is not None and not live._same_document(sch.parentDesign.parentDocument,parent))
+            or sch.linkedBoard is not None):
         raise ValueError('Rejected import has an original or foreign family link')
     exported=live._export_product(sch,'schematic')['path']
+    if parent_sch is not None:
+        if (parent_sch.parentDesign is None or not live._same_document(parent_sch.parentDesign.parentDocument,parent)
+                or _hash(live._export_product(parent_sch,'schematic')['path'])!=_hash(exported)):
+            raise ValueError('Rejected import parent has a foreign schematic link')
     root=ET.parse(exported).getroot(); schematic=root.find('./drawing/schematic')
     if schematic is None: raise ValueError('Cannot verify an empty schematic export')
     containers=['./plain','./parts','./modules','./sheets/sheet/plain','./sheets/sheet/instances',

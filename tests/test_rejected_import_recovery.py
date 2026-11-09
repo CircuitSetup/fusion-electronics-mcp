@@ -13,6 +13,18 @@ from fusion_mcp.addin.FusionElectronicsMCP.management import EventLog
 SCRIPT=Path(__file__).resolve().parents[1]/'tools/recover_rejected_import.py'
 
 
+class NativeProduct:
+    def __init__(self, wrapped, documents, missing_links=False):
+        self.wrapped=wrapped; self.documents=documents; self.missing_links=missing_links
+    def __eq__(self, other): return False
+    def __getattr__(self, name):
+        if name=='parentDocument': return self.documents[id(self.wrapped)]
+        if self.missing_links and name in ('schematic','board'):
+            raise RuntimeError('2 : InternalValidationError : '+name+'Link')
+        value=getattr(self.wrapped,name)
+        return NativeProduct(value,self.documents) if id(value) in self.documents else value
+
+
 class RejectedRecoveryTest(unittest.TestCase):
     def setUp(self):
         spec=importlib.util.spec_from_file_location('rejected_import_recovery',SCRIPT)
@@ -31,9 +43,13 @@ class RejectedRecoveryTest(unittest.TestCase):
         for d in (self.parent,self.sch): d.name='Untitled'; d.isSaved=False; d.isModified=True
         self.fx.docs.extend((self.parent,self.sch))
         self.a._docs=lambda:[d for d in self.fx.docs if not d.closed]
+        original_product=self.a._document_product
+        self.product_docs={id(original_product(d,d.kind)):d for d in self.fx.docs}
+        self.a._document_product=lambda d,k:NativeProduct(original_product(d,k),self.product_docs)
         self.empty=self.fx.root/'empty.sch'
         self.empty.write_text('<eagle><drawing><schematic><parts/><sheets><sheet><plain/><instances/><nets/><busses/></sheet></sheets></schematic></drawing></eagle>')
         def export(product,kind):
+            product=getattr(product,'wrapped',product)
             return {'path':str(self.empty if product is self.sch.schematic else self.fx.sch if kind=='schematic' else self.fx.brd)}
         self.a._export_product=export
         self.config={'request_id':self.fx.args['request_id'],'session_id':'session','apply':True,
@@ -63,6 +79,38 @@ class RejectedRecoveryTest(unittest.TestCase):
         self.assertEqual(result['status'],'recovery_preflight_passed')
         self.assertFalse(self.parent.closed or self.sch.closed)
         self.assertNotIn('recovery_attempted',self.a._pair_import_records[self.fx.args['request_id']])
+
+    def test_native_empty_parent_missing_links_and_unlinked_child(self):
+        product=self.a._document_product
+        self.a._document_product=lambda d,k:NativeProduct(product(d,k).wrapped,self.product_docs,d is self.parent)
+        self.sch.schematic.parentDesign=None
+        result=self.module.reconcile(self.a,dict(self.config,apply=False))
+        self.assertEqual(result['status'],'recovery_preflight_passed')
+        self.assertFalse(self.parent.closed or self.sch.closed)
+
+    def test_foreign_original_parent_document_refuses_before_close(self):
+        self.product_docs[id(self.fx.originals[0].ecadDesign)]=self.parent
+        with self.assertRaisesRegex(ValueError,'original.*parent'):
+            self.module.reconcile(self.a,self.config)
+        self.assertFalse(self.parent.closed or self.sch.closed)
+
+    def test_linked_export_mismatch_refuses_even_with_same_parent(self):
+        export=self.a._export_product
+        calls=[]
+        def changed_link(product,kind):
+            calls.append(kind)
+            return {'path':str(self.empty)} if len(calls)==3 else export(product,kind)
+        self.a._export_product=changed_link
+        with self.assertRaisesRegex(ValueError,'linked export hash'):
+            self.module.reconcile(self.a,self.config)
+        self.assertFalse(self.parent.closed or self.sch.closed)
+
+    def test_unexpected_native_link_error_is_not_missing_link(self):
+        class Unexpected:
+            @property
+            def schematic(self): raise RuntimeError('different adapter failure')
+        with self.assertRaisesRegex(RuntimeError,'different adapter'):
+            self.module._empty_parent_link(Unexpected(),'schematic')
 
     def test_wrong_session_unacknowledged_rejection_or_changed_original_refuses(self):
         for changes in ({'session_id':'other'},{'rejection_acknowledged':False},{'schematic_sha256':'0'*64}):
