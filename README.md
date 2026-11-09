@@ -341,7 +341,18 @@ the original staged copies and document/destination guards are retained. Startin
 ID remains prohibited for an uncertain import.
 It returns **pending**, with the two staged paths to select in the schematic and board
 file dialogs. The agent can operate these native dialogs through available computer-use
-tools; this API does not fill or dismiss them. `get_eagle_pair_import_status(request_id)`
+tools, or on Windows call `select_eagle_pair_import_file` with `request_id`,
+`kind="schematic"`, `expected_session_id`, both original SHA-256 hashes, and the exact
+ticket destination `project_id`, `folder_id`, and `name`. It uses only that ticket's
+staged path and owned native Open controls; no caller-supplied path is accepted.
+Inspect status for native errors before repeating with `kind="board"` after the first
+picker changes or closes. Each file-selection attempt is consumed before Open is posted;
+uncertain submissions require inspection rather than another click. This helper is
+server-only and works with the running add-in 0.14.21 without reloading it. It requires
+the original source/session journal written by this server's `start_eagle_pair_import`
+and complete cached events proving that importer is still active; older untracked tickets
+cannot use automated selection.
+`get_eagle_pair_import_status(request_id)`
 reads cached state and observed dialog controls even while the native UI is busy.
 
 After file selection, call `finish_eagle_pair_import(request_id)`. It requires exactly
@@ -352,6 +363,14 @@ explicitly unsupported by this verifier. `state_unknown` is never permission to 
 another import: inspect the dialogs/documents and resume the same request. A successful
 result includes saved native IDs and EAGLE export paths for independent geometry review
 and reopening. It does not certify footprint geometry or manufacturing readiness.
+
+For a confirmed native file rejection, `tools/recover_rejected_import.py` is a fixed
+native-console recovery helper. Its pinned manifest binds the live bridge/session,
+rejected source hashes, acknowledged error and original export hashes. It defaults to
+read-only preflight. Explicit `apply=true` additionally requires only the new empty
+Untitled parent/schematic, closes those without saving, verifies every original and
+its exports again, and marks that exact ticket cancelled. It does not reload the add-in
+or start another import; partial recovery refuses automatic retry.
 
 ### Your own parts library
 

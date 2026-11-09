@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Guarded native file selection (workflow.30; server only)
+
+- Add `select_eagle_pair_import_file` to select only the pending import's pinned
+  staged schematic or board through its owned Windows Open picker, with session,
+  process, destination, source-hash and native-control checks and one-time receipts.
+  Journal original start arguments and require complete still-active importer events
+  before filename entry and submission; untracked tickets cannot use this helper.
+- Keep selection separate from linked-family read-back/save. Unknown UI states or
+  uncertain posts do not trigger repeated clicks. No add-in reload is required.
+- Include a default-read-only native recovery script for confirmed rejected imports;
+  closure requires empty new documents, unchanged original metadata/links/exports,
+  exact source/session binding and an explicit apply manifest.
+
 ### Deferred import dispatch (workflow.29 / add-in 0.14.21)
 
 - Dispatch the native importer after replying, using the existing bridge worker

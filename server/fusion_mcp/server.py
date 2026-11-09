@@ -421,10 +421,13 @@ def start_eagle_pair_import(request_id: str, schematic_path: str, board_path: st
     finish_eagle_pair_import to verify the new linked family and save to the pinned destination.
     Needs add-in 0.14.21+. A confirmed not_started request can be explicitly retried with
     this same ID/arguments; its queued callback is cancelled before retry becomes possible.
-    Never start a second import to recover an uncertain first attempt."""
-    return session.bridge.call('start_eagle_pair_import', dict(request_id=request_id,
+    Never start a second import to recover an uncertain first attempt. Journals the original
+    source pins and event cursor for select_eagle_pair_import_file; older untracked tickets
+    cannot use automated selection."""
+    from .eagle_pair_picker import begin
+    return begin(session.bridge, dict(request_id=request_id,
         schematic_path=schematic_path, board_path=board_path, schematic_sha256=schematic_sha256,
-        board_sha256=board_sha256, project_id=project_id, name=name, folder=folder), timeout=30)
+        board_sha256=board_sha256, project_id=project_id, name=name, folder=folder))
 
 
 @tool(READ)
@@ -437,6 +440,26 @@ def get_eagle_pair_import_status(request_id: str) -> dict:
     result['native_dialogs'] = [dict(hwnd=w.hwnd, title=w.title, controls=dialogs.read(w))
                                 for w in dialogs.windows(pid)[:2]] if pid else []
     return result
+
+
+@tool(ADDITIVE)
+def select_eagle_pair_import_file(request_id: str, kind: str, expected_session_id: str,
+                                  schematic_sha256: str, board_sha256: str,
+                                  project_id: str, folder_id: str, name: str) -> dict:
+    """Select exactly one pinned staged file in this pending import's owned Windows Open
+    dialog. kind is schematic or board; caller supplies the ticket's exact session and
+    destination IDs/name and both approved source SHA-256 hashes. No arbitrary file paths
+    or UI commands are accepted. Verifies process/session, staged hashes, native controls,
+    full filename read-back and one-time attempt receipt before posting Open. Select the
+    schematic first, inspect get_eagle_pair_import_status for native errors, then select
+    the board only after the first picker has visibly changed or closed. An uncertain
+    submission is consumed and must be inspected, never retried. Returns submitted/pending,
+    never import success. Then finish_eagle_pair_import verifies and saves the new family.
+    Requires this server's original start journal and complete still-active importer event
+    history. Windows only; works with add-in 0.14.21+ without reloading it."""
+    from .eagle_pair_picker import select_file
+    return select_file(session.bridge, request_id, kind, expected_session_id,
+                       schematic_sha256, board_sha256, project_id, folder_id, name)
 
 
 @tool(ADDITIVE)
