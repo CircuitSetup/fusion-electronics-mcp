@@ -324,6 +324,29 @@ FUSION_MCP_POWER_SYMBOL=12V@GPLIB_SCHEMATIC
 
 Any library works: these settings only name the devices to use.
 
+### Import a local EAGLE schematic and board
+
+Use `start_eagle_pair_import` with a fresh 32-character lowercase hex `request_id`,
+absolute same-directory/same-basename `.sch` and `.brd` paths, their exact
+`schematic_sha256` and `board_sha256`, an explicit active `project_id`, an existing
+project-relative `folder` (empty for the root), and a new product `name`.
+Every open document must already be saved and unmodified. Requires add-in 0.14.19+.
+
+Start stages pinned copies and launches Fusion's native paired importer asynchronously.
+It returns **pending**, with the two staged paths to select in the schematic and board
+file dialogs. The agent can operate these native dialogs through available computer-use
+tools; this API does not fill or dismiss them. `get_eagle_pair_import_status(request_id)`
+reads cached state and observed dialog controls even while the native UI is busy.
+
+After file selection, call `finish_eagle_pair_import(request_id)`. It requires exactly
+one new reciprocal Electronics Design/schematic/board family, unchanged original
+documents, and matching part names/counts, sheets and every physical net/contact mapping
+before saving that new family to the pinned destination. Hierarchical modules are
+explicitly unsupported by this verifier. `state_unknown` is never permission to start
+another import: inspect the dialogs/documents and resume the same request. A successful
+result includes saved native IDs and EAGLE export paths for independent geometry review
+and reopening. It does not certify footprint geometry or manufacturing readiness.
+
 ### Your own parts library
 
 For parts no library has, the server keeps part definitions (JSON files) in its

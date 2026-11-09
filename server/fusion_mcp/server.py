@@ -408,6 +408,47 @@ def new_library(name: str | None = None, folder: str | None = None) -> dict:
 
 
 @tool(ADDITIVE)
+def start_eagle_pair_import(request_id: str, schematic_path: str, board_path: str,
+                           schematic_sha256: str, board_sha256: str, project_id: str,
+                           name: str, folder: str = '') -> dict:
+    """Start native paired-EAGLE import into a NEW product in an explicit existing active
+    project/folder. Requires same-basename local .sch/.brd files, both exact SHA-256 hashes,
+    and every open document saved/unmodified. request_id is a fresh 32-character lowercase
+    hex ID; reuse it after an uncertain response. Stages immutable copies and asynchronously
+    launches only ImportSCHAndBRDCmd. Returns pending, never completed: fill Fusion's native
+    schematic then board dialogs using the returned staged paths. No files/folders are saved
+    or overwritten at start. Call get_eagle_pair_import_status while dialogs are open, then
+    finish_eagle_pair_import to verify the new linked family and save to the pinned destination.
+    Needs add-in 0.14.19+. Never start a second import to recover an uncertain first attempt."""
+    return session.bridge.call('start_eagle_pair_import', dict(request_id=request_id,
+        schematic_path=schematic_path, board_path=board_path, schematic_sha256=schematic_sha256,
+        board_sha256=board_sha256, project_id=project_id, name=name, folder=folder), timeout=30)
+
+
+@tool(READ)
+def get_eagle_pair_import_status(request_id: str) -> dict:
+    """Read the cached import ticket even while Fusion is blocked by a native file dialog.
+    Reports observed owned windows/controls when available; never fills or dismisses them.
+    Pending command state is not import success. Tickets belong to the running add-in session."""
+    result = session.bridge.call('eagle_pair_import_status', {'request_id':request_id}, timeout=10)
+    pid = int(session.bridge._info().get('pid') or 0)
+    result['native_dialogs'] = [dict(hwnd=w.hwnd, title=w.title, controls=dialogs.read(w))
+                                for w in dialogs.windows(pid)[:2]] if pid else []
+    return result
+
+
+@tool(ADDITIVE)
+def finish_eagle_pair_import(request_id: str) -> dict:
+    """After both native file selections finish, verify exactly one NEW linked Electronics
+    family, pinned part/sheet/contact read-back, and unchanged original documents. Only then
+    save that new family in the start request's existing project/folder under its new name.
+    Returns saved_linked only with saved native identities. state_unknown requires inspection;
+    resume this same request instead of reimporting. Does not certify footprint geometry or
+    manufacturing readiness. Independently review exports and reopen the returned saved IDs."""
+    return session.bridge.call('finish_eagle_pair_import', {'request_id':request_id}, timeout=90)
+
+
+@tool(ADDITIVE)
 def new_design(name: str | None = None, folder: str | None = None) -> dict:
     """Create a new electronics design with a schematic and a board. With `name`, it is saved right
     away into the active project (optionally inside `folder`, created if missing).

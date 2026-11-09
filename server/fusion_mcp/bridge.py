@@ -49,7 +49,8 @@ _BUILTIN = BuiltinClient()
 # operations the built-in server cannot do properly (see the module docstring)
 MANAGEMENT_OPS = {'list_scripts', 'inspect_script', 'control_script', 'events', 'reload_addin'}
 INSPECTION_OPS = {'selection', 'commands', 'geometry_bodies', 'geometry_clearance'}
-NEEDS_ADDIN = {"save", "new_library", "push_3d", "run_registered_ulp"} | MANAGEMENT_OPS | INSPECTION_OPS
+PAIR_IMPORT_OPS = {'start_eagle_pair_import', 'eagle_pair_import_status', 'finish_eagle_pair_import'}
+NEEDS_ADDIN = {"save", "new_library", "push_3d", "run_registered_ulp"} | MANAGEMENT_OPS | INSPECTION_OPS | PAIR_IMPORT_OPS
 
 
 def addin_running(info_path: str | None = None) -> bool:
@@ -141,6 +142,13 @@ class Bridge:
                                 "are cancelled). Install it with `fusion-electronics-mcp install-addin` and run it "
                                 "from Utilities > Add-Ins.")
         info = self._info()
+        if mode == 'addin' and op in PAIR_IMPORT_OPS:
+            try:
+                version = tuple(int(part) for part in info.get('addin_version','').split('.'))
+            except ValueError:
+                version = ()
+            if version < (0,14,19):
+                raise BridgeOpError('needs_addin', 'Guarded paired-EAGLE import requires add-in 0.14.19+')
         if mode == 'addin' and op in ('new_library', 'list_designs'):
             try:
                 version = tuple(int(part) for part in info.get('addin_version', '').split('.'))
@@ -161,7 +169,7 @@ class Bridge:
         self.last_dialogs = []
         pid = int(info.get("pid") or 0)
         unmanaged_ui = ((op == 'run_registered_ulp' and bool((args or {}).get('legacy_source_sha256')))
-                        or op in MANAGEMENT_OPS or op in INSPECTION_OPS or op == 'ping')
+                        or op in MANAGEMENT_OPS or op in INSPECTION_OPS or op in PAIR_IMPORT_OPS or op == 'ping')
         watch = self.watch_dialogs and not unmanaged_ui and dialogs.supported() and pid
         deadline = time.monotonic() + timeout + 20
         prev_fg = dialogs.foreground() if (self.keep_focus and pid and not unmanaged_ui) else 0

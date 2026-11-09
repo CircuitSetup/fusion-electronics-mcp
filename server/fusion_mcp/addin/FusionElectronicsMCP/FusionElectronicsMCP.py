@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.18"
+ADDIN_VERSION = "0.14.19"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -72,6 +72,10 @@ _jobs_lock = threading.Lock()
 _management_module = None
 _inspection_module = None
 _events = None
+_pair_import_module = None
+_pair_import_records = {}
+_pair_import_lock = threading.RLock()
+_PAIR_PENDING = frozenset(('queued','awaiting_file_selection','verifying','state_unknown'))
 
 
 class BridgeError(Exception):
@@ -404,6 +408,13 @@ def op_export(args):
         raise BridgeError("bad_args", "kind must be board, schematic or library")
     if prod is None:
         raise BridgeError("not_linked", f"no {kind} is linked to the active document")
+    return _export_product(prod, kind)
+
+
+def _export_product(prod, kind):
+    fn, ext = {'board': ('createEagleBrdExportOptions','.brd'),
+               'schematic': ('createEagleSchExportOptions','.sch'),
+               'library': ('createEagleLbrExportOptions','.lbr')}[kind]
     os.makedirs(WORK_DIR, exist_ok=True)
     path = os.path.join(WORK_DIR, f"export-{uuid.uuid4().hex}{ext}")
     t0 = time.perf_counter()
@@ -938,6 +949,179 @@ def op_new_design(args):
             raise BridgeError("save_failed", "Fusion did not save the new Electronics design")
         _settle(40)
     return op_context({})
+
+
+def _pair_support():
+    global _pair_import_module
+    if _pair_import_module is None:
+        spec = importlib.util.spec_from_file_location('femcp_eagle_import', os.path.join(os.path.dirname(__file__), 'eagle_import.py'))
+        _pair_import_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_pair_import_module)
+    return _pair_import_module
+
+
+def _import_document_state():
+    return [{k:v for k,v in _doc_info(doc).items() if k != 'active'} for doc in _docs()]
+
+
+def _import_preserved(record):
+    before_ids = {row['document_id'] for row in record['before']}
+    if [row for row in _import_document_state() if row['document_id'] in before_ids] != record['before']:
+        raise ValueError('Protected original documents changed; import save is not verified')
+    return before_ids
+
+
+def _import_source(record):
+    support = _pair_support()
+    support.read_pair(record['args'])
+    support.read_pair(dict(record['args'], schematic_path=record['public']['staged']['schematic'],
+                           board_path=record['public']['staged']['board']))
+
+
+def _import_update(record, **values):
+    with _pair_import_lock:
+        record['public'].update(values)
+
+
+def _pair_import_pending():
+    with _pair_import_lock:
+        return any(r['public']['status'] in _PAIR_PENDING for r in _pair_import_records.values())
+
+
+def op_eagle_pair_import_status(args):
+    rid = _pair_support().request_id(args.get('request_id'))
+    with _pair_import_lock:
+        if rid not in _pair_import_records:
+            raise ValueError('Unknown import request in this add-in session; inspect documents before any retry')
+        return json.loads(json.dumps(_pair_import_records[rid]['public']))
+
+
+def _import_destination(args):
+    project = _app.data.activeProject
+    if project is None or not args.get('project_id') or project.id != args['project_id']:
+        raise ValueError('The explicit destination project must be the active existing project')
+    folder = project.rootFolder
+    path = args.get('folder','')
+    if not isinstance(path,str) or '\\' in path or (path and any(p in ('','.', '..') for p in path.split('/'))):
+        raise ValueError('Use an existing project-relative folder path without traversal')
+    for segment in path.split('/') if path else []:
+        folder = folder.dataFolders.itemByName(segment)
+        if folder is None: raise ValueError('Destination folder does not exist; no folders are created')
+    name = args.get('name')
+    if (not isinstance(name,str) or not name.strip() or len(name)>128
+            or any(c in name for c in '/\\') or any(ord(c)<32 for c in name)):
+        raise ValueError('Use an explicit new product name without separators or control characters')
+    if folder.dataFiles.itemByName(name) or folder.dataFiles.itemByName(name+'.fprj'):
+        raise ValueError('Destination product name already exists; choose a new target')
+    return folder
+
+
+def op_start_eagle_pair_import(args):
+    support = _pair_support(); rid = support.request_id(args.get('request_id'))
+    if rid in _pair_import_records:
+        if _pair_import_records[rid]['args'] != args: raise ValueError('Import request ID cannot be rebound')
+        return op_eagle_pair_import_status({'request_id':rid})
+    if _pair_import_pending():
+        raise ValueError('An import is pending; inspect its status and finish it before starting another')
+    before = _import_document_state()
+    if any(not row['saved'] or row['modified'] for row in before):
+        raise ValueError('All open documents must be saved and unmodified before import')
+    folder = _import_destination(args)
+    command = _ui.commandDefinitions.itemById('ImportSCHAndBRDCmd')
+    if command is None or not command.controlDefinition.isEnabled:
+        raise ValueError('Native paired-EAGLE importer is unavailable in this context')
+    raw, expected = support.read_pair(args)
+    os.makedirs(WORK_DIR, exist_ok=True)
+    staged = tempfile.mkdtemp(prefix='eagle-pair-', dir=WORK_DIR)
+    paths = {kind:os.path.join(staged, os.path.basename(args[key]))
+             for kind,key in (('schematic','schematic_path'),('board','board_path'))}
+    for path,data in zip(paths.values(),raw):
+        with open(path,'xb') as stream: stream.write(data)
+    record = {'args':dict(args), 'before':before, 'expected':expected, 'folder':folder,
+              'public':{'request_id':rid, 'session_id':_events.session_id, 'status':'queued',
+                        'staged':paths, 'expected':support.summary(expected),
+                        'destination':{'project_id':args['project_id'], 'folder_id':folder.id,
+                                       'folder':args.get('folder',''), 'name':args['name']},
+                        'next_action':'Select the staged schematic, then board, in Fusion native import dialogs; then call finish_eagle_pair_import. Command start is not import completion.'}}
+    with _pair_import_lock: _pair_import_records[rid] = record
+    # Return the ticket before the importer can block Fusion's main thread in a file dialog.
+    def schedule():
+        try:
+            if _app.fireCustomEvent(EVENT_ID, 'eagle-pair:'+rid) is False:
+                raise ValueError('Fusion did not accept the deferred import event')
+        except Exception as ex:
+            _import_update(record, status='not_started', error=str(ex))
+    timer = threading.Timer(0.5, schedule)
+    timer.daemon = True; timer.start()
+    return op_eagle_pair_import_status({'request_id':rid})
+
+
+def _launch_eagle_pair_import(rid):
+    record = _pair_import_records.get(rid)
+    if record is None or record['public']['status'] != 'queued': return
+    attempted = False
+    try:
+        if _import_document_state() != record['before']:
+            raise ValueError('Protected document state changed before import; command was not started')
+        _import_destination(record['args'])
+        _import_source(record)
+        _import_update(record, status='awaiting_file_selection')
+        command = _ui.commandDefinitions.itemById('ImportSCHAndBRDCmd')
+        attempted = True
+        if command is None or command.execute() is False:
+            raise ValueError('Fusion refused to start the native paired importer')
+    except Exception as ex:
+        _import_update(record, status='state_unknown' if attempted else 'not_started', error=str(ex))
+
+
+def op_finish_eagle_pair_import(args):
+    rid = _pair_support().request_id(args.get('request_id'))
+    status = op_eagle_pair_import_status(args)
+    if status['status'] in ('saved_linked','not_started'): return status
+    record = _pair_import_records[rid]
+    if status['status'] == 'queued': return status
+    try:
+        _import_update(record, status='verifying')
+        _import_source(record)
+        before_ids = _import_preserved(record)
+        created = [d for d in _docs() if _doc_info(d)['document_id'] not in before_ids]
+        designs = [d for d in created if _kind_of(d)=='design']
+        if len(designs)!=1 or len([d for d in created if _kind_of(d) in _DESIGN_PRODUCTS])!=3:
+            raise ValueError('Expected exactly one new Electronics Design, schematic and board; import is not verified')
+        doc = designs[0]; design = _document_product(doc,'design')
+        sch,brd = design.schematic,design.board
+        sch_doc = _product_document(sch,'schematic',created); brd_doc = _product_document(brd,'board',created)
+        if (sch is None or brd is None or sch_doc is None or brd_doc is None
+                or sch.parentDesign != design or brd.parentDesign != design
+                or sch.linkedBoard != brd or brd.linkedSchematic != sch):
+            raise ValueError('New schematic/board reciprocal family links are not verified')
+        exports = {kind:_export_product(prod,kind) for kind,prod in (('schematic',sch),('board',brd))}
+        observed = _pair_support().readback(*(exports[k]['path'] for k in ('schematic','board')))
+        if observed != record['expected']: raise ValueError('Native part/sheet/contact read-back differs from the pinned source pair')
+        destination = _import_destination(record['args']) if not doc.isSaved else record['folder']
+        if destination.id != record['folder'].id: raise ValueError('Destination folder identity changed')
+        if not doc.isSaved:
+            if record.get('save_requested'):
+                raise ValueError('A save was already requested; reconcile its native/cloud identity before continuing. SaveAs will not be submitted twice.')
+            record['save_requested'] = True
+            _import_update(record, save_requested=True)
+            if not doc.saveAs(record['args']['name'], destination, 'Imported pinned EAGLE schematic/board pair', ''):
+                raise ValueError('Fusion did not confirm save; inspect this request before retrying')
+            _settle(40)
+        family = (doc,sch_doc,brd_doc)
+        if any(not d.isSaved or d.isModified or d.dataFile is None for d in family):
+            raise ValueError('New family save is not yet verified; finish this same request again after saving settles')
+        if any(d.dataFile.parentProject.id != record['args']['project_id'] for d in family):
+            raise ValueError('Saved family project identity differs')
+        if doc.dataFile.parentFolder.id != record['folder'].id or doc.dataFile.name != record['args']['name']:
+            raise ValueError('Saved Electronics Design destination/name differs')
+        _import_preserved(record)
+        _import_update(record, status='saved_linked', documents=[_doc_info(d) for d in family],
+                       exports=exports, verification='Reciprocal native family links, part names/counts, sheets and complete physical net/contact mapping. Footprint geometry and manufacturing acceptance require independent review.',
+                       next_action='Independently inspect the exports and reopen the exact saved family IDs before product acceptance.')
+    except Exception as ex:
+        _import_update(record, status='state_unknown', error=str(ex), next_action='Inspect native dialogs and documents; do not start a second import. Retry finish only for this same request after resolving its state.')
+    return op_eagle_pair_import_status({'request_id':rid})
 
 
 def op_new_library(args):
@@ -1569,6 +1753,8 @@ def op_update_libraries(args):
 
 
 OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export": op_export,
+       "start_eagle_pair_import": op_start_eagle_pair_import,
+       "eagle_pair_import_status": op_eagle_pair_import_status, "finish_eagle_pair_import": op_finish_eagle_pair_import,
        "list_scripts": op_list_scripts, "inspect_script": op_inspect_script, "control_script": op_control_script,
        "events": op_events, "reload_addin": op_reload_addin,
        "selection": op_selection, "commands": op_commands,
@@ -1592,12 +1778,18 @@ OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export"
 class _Handler(adsk.core.CustomEventHandler):
     def notify(self, args):
         jid = args.additionalInfo
+        if jid.startswith('eagle-pair:'):
+            _launch_eagle_pair_import(jid[len('eagle-pair:'):])
+            return
         with _jobs_lock:
             job = _jobs.get(jid)
             if job is None or job["state"] != "queued":
                 return
             job["state"] = "running"
         try:
+            if (_pair_import_pending()
+                    and job['op'] not in ('ping','events','start_eagle_pair_import','finish_eagle_pair_import')):
+                raise BridgeError('import_pending','A paired import is pending; inspect its dialogs/status and finish it before CAD edits or reloads')
             fn = OPS[job["op"]]
             job["result"] = {"ok": True, "result": fn(job["args"])}
         except BridgeError as ex:
@@ -1634,10 +1826,22 @@ def _serve_conn(conn):
         if op not in OPS:
             _reply(conn, {"v": PROTOCOL, "id": rid, "ok": False, "error": {"code": "unknown_op", "message": f"unknown op {op!r}"}})
             return
-        if op == 'events':
+        if op == 'start_eagle_pair_import' and (req.get('args') or {}).get('request_id') in _pair_import_records:
+            # A retry must stay available while the original launch is blocked in a file picker.
+            values = req['args']; record = _pair_import_records[values['request_id']]
+            if record['args'] != values:
+                _reply(conn, {'v':PROTOCOL, 'id':rid, 'ok':False, 'error':{'code':'bad_args','message':'Import request ID cannot be rebound'}})
+            else:
+                _reply(conn, {'v':PROTOCOL, 'id':rid, 'ok':True, 'result':op_eagle_pair_import_status(values)})
+            return
+        if _pair_import_pending() and op not in ('events','eagle_pair_import_status','finish_eagle_pair_import','ping'):
+            _reply(conn, {'v':PROTOCOL, 'id':rid, 'ok':False, 'error':{'code':'import_pending',
+                         'message':'Inspect the pending paired-import status/dialogs and finish the same request before other CAD calls or reloads'}})
+            return
+        if op in ('events','eagle_pair_import_status'):
             # Cached data only: event inspection must remain available while Fusion's UI is busy.
             try:
-                _reply(conn, {'v': PROTOCOL, 'id': rid, 'ok': True, 'result': op_events(req.get('args') or {})})
+                _reply(conn, {'v': PROTOCOL, 'id': rid, 'ok': True, 'result': OPS[op](req.get('args') or {})})
             except (ValueError, BridgeError) as ex:
                 _reply(conn, {'v': PROTOCOL, 'id': rid, 'ok': False, 'error': {'code': 'bad_args', 'message': str(ex)}})
             return

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Guarded paired-EAGLE import (workflow.27 / add-in 0.14.19)
+
+- Add start/status/finish operations for pinned local `.sch`/`.brd` pairs using
+  Fusion's native paired importer. Existing documents must be saved/unmodified;
+  the destination must be an explicit existing active project/folder and a new name.
+- Return pending file-selection state rather than claiming import success. Cached
+  status remains available while native dialogs are open; dialogs are not dismissed.
+- Verify the new reciprocal family and complete physical contact mapping before
+  saving only the new product. Uncertain outcomes retain their request identity.
+
 ### Slot geometry verification boundaries (workflow.26)
 - Retain declared through-hole pad shape, diameter, rotation and slot length in
   the shared XML reader; compare slot parameters before package reuse.
