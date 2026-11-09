@@ -83,3 +83,9 @@ class RestrictRectanglesTest(unittest.TestCase):
         self.assertEqual(board_obstacles(board(rect(21)))[0], [])
         self.assertEqual(board_obstacles(board(native(layer=21)))[0], [])
         self.assertEqual(len(board_obstacles(board(rect(extra='rot="R0"')))[0]), 1)
+
+    def test_observed_outer_mask_cannot_be_assumed_to_describe_an_inner_layer(self):
+        root = board(native('restrictlayers="16"'))
+        root.find('.//param[@name="layerSetup"]').set('value', '(1*2*16*64)')
+        with self.assertRaises(UnverifiedGeometry):
+            board_obstacles(root)

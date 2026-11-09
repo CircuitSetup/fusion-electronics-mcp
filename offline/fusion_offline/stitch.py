@@ -194,7 +194,7 @@ def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y)
         mask = shape.get('restrictlayers')
         if mask is not None or shape.tag == 'polygonshape':
             # shortcut: only observed singleton outer-layer masks are verified; reject other masks until their schema is established.
-            if mask not in ('1', '16') or int(mask) not in stack or shape.get('layer') == '43':
+            if mask not in ('1', '16') or int(mask) not in (stack[0], stack[-1]) or shape.get('layer') == '43':
                 raise ValueError('unsupported or missing native restrictlayers mask')
             layer = int(mask)
             if mirror:
