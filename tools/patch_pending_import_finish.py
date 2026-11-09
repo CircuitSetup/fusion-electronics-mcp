@@ -73,9 +73,10 @@ def patch(live,config,verify_originals):
         record['first_save_documents']=[config['document_ids'][k] for k in ('design','schematic','board')]
         exec(code,live.__dict__)
         live.OPS['finish_eagle_pair_import']=live.op_finish_eagle_pair_import
-        live._import_update(record,completion_patch_sha256=config['patched_source_sha256'])
     live._import_preserved(record); live._import_source(record)
     verify_originals(live,before_ids,config['original_exports'])
+    live._import_update(record,completion_patch_sha256=config['patched_source_sha256'],
+                        completion_patch_verified=True)
     result['status']='completion_patch_installed'
     receipt=Path(live.INFO_DIR)/'import-recoveries'/(rid+'-'+config['session_id']+'-completion-patch.json')
     result['receipt_path']=str(receipt)

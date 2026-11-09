@@ -165,6 +165,104 @@ class PickerTest(unittest.TestCase):
         self.info['token'] = 'rotated'
         with self.assertRaises(ValueError): picker.begin(self.bridge, self.start_args)
 
+    def reload_not_started(self):
+        self.ticket.update(status='not_started', dispatch_acknowledged=False)
+        self.info.update(event_session_id='reloaded', token='new-token')
+        self.events = EventLog()
+        self.events.session_id = 'reloaded'
+        self.events.supported = ['commandStarting', 'commandTerminated']
+        self.events.append('documentOpened')
+        original_call = self.bridge.call
+
+        def call(op, args, **kwargs):
+            result = original_call(op, args, **kwargs)
+            if op == 'start_eagle_pair_import':
+                self.ticket.update(session_id='reloaded', status='awaiting_file_selection',
+                                   dispatch_acknowledged=True)
+                self.events.append('commandStarting', command_id='ImportSCHAndBRDCmd')
+            return result
+
+        self.bridge.call = call
+
+    def test_begin_rebinds_retained_not_started_ticket_after_reload(self):
+        self.reload_not_started()
+        result = picker.begin(self.bridge, self.start_args)
+        self.assertEqual(result['session_id'], 'reloaded')
+        journal = json.loads((self.root/'import-requests'/('a'*32+'.json')).read_text())
+        self.assertEqual(journal['after_seq'], 1)
+        self.assertEqual(journal['binding']['session_id'], 'reloaded')
+        self.assertEqual(self.select(expected_session_id='reloaded')['status'], 'submitted')
+
+    def test_begin_reload_rejects_changed_args_without_native_start(self):
+        self.reload_not_started()
+        count = len(self.calls)
+        for key, value in [('name', 'Changed'), ('folder', 'other'),
+                           ('schematic_path', 'different.sch'), ('board_sha256', '0'*64)]:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                picker.begin(self.bridge, dict(self.start_args, **{key: value}))
+        self.assertEqual(len(self.calls), count)
+
+    def test_begin_rebinds_acknowledged_dispatch_that_never_launched(self):
+        self.reload_not_started()
+        self.ticket['dispatch_acknowledged'] = True
+        self.assertEqual(picker.begin(self.bridge, self.start_args)['session_id'], 'reloaded')
+        self.assertEqual(self.select(expected_session_id='reloaded')['status'], 'submitted')
+
+    def test_begin_reload_requires_original_known_not_started_ticket(self):
+        self.reload_not_started()
+        journal_path = self.root/'import-requests'/('a'*32+'.json')
+        original = journal_path.read_text()
+        for changes in [dict(status='queued'), dict(status='state_unknown'),
+                        dict(status='awaiting_file_selection'), dict(session_id='unrelated'),
+                        dict(request_id='b'*32),
+                        dict(save_requested=True), dict(destination=dict(self.ticket['destination'], folder_id='other')),
+                        dict(expected=dict(self.ticket['expected'], sheets=9))]:
+            saved = dict(self.ticket)
+            self.ticket.update(changes)
+            count = len(self.calls)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                picker.begin(self.bridge, self.start_args)
+            self.assertNotIn('start_eagle_pair_import', [op for op, _ in self.calls[count:]])
+            self.assertEqual(journal_path.read_text(), original)
+            self.ticket = saved
+
+    def test_begin_reload_refuses_unknown_ticket_and_changed_source(self):
+        self.reload_not_started()
+        call = self.bridge.call
+        def unknown(op, args, **kwargs):
+            if op == 'eagle_pair_import_status': raise ValueError('Unknown import request')
+            return call(op, args, **kwargs)
+        self.bridge.call = unknown
+        with self.assertRaises(ValueError): picker.begin(self.bridge, self.start_args)
+        self.bridge.call = call
+        Path(self.paths['board']).write_text(BRD + '\n')
+        count = len(self.calls)
+        with self.assertRaises(ValueError): picker.begin(self.bridge, self.start_args)
+        self.assertNotIn('start_eagle_pair_import', [op for op, _ in self.calls[count:]])
+
+    def test_begin_reload_refuses_session_change_before_start(self):
+        self.reload_not_started()
+        call = self.bridge.call
+        def rotate(op, args, **kwargs):
+            result = call(op, args, **kwargs)
+            if op == 'events': self.info['token'] = 'rotated-again'
+            return result
+        self.bridge.call = rotate
+        count = len(self.calls)
+        with self.assertRaises(ValueError): picker.begin(self.bridge, self.start_args)
+        self.assertNotIn('start_eagle_pair_import', [op for op, _ in self.calls[count:]])
+
+    def test_begin_reload_requires_same_process_and_new_event_session(self):
+        self.reload_not_started()
+        for changes in [dict(pid=456), dict(event_session_id='session')]:
+            saved = dict(self.info)
+            self.info.update(changes)
+            count = len(self.calls)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                picker.begin(self.bridge, self.start_args)
+            self.assertNotIn('start_eagle_pair_import', [op for op, _ in self.calls[count:]])
+            self.info = saved
+
     def test_untracked_ticket_and_hash_rebinding_refused(self):
         # A different valid pair with the same summary must not replace the original pins.
         path = Path(self.paths['schematic'])

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Import lifecycle review fixes
+
+- Scope first-save event verification to the import request and read all event pages.
+- Permit public completion of a verified, ticket-bound 0.14.22 recovery patch without
+  allowing unpatched writes or new imports on that version.
+- Revalidate retained `not_started` tickets before rebinding their server journal after reload.
+- Keep rejected-import cancellation terminal when a stale finish call is repeated.
+
 ### Verified moves with unsupported placement reporting (workflow.33)
 
 - Preserve a verified move/rotation result when optional placement reporting encounters

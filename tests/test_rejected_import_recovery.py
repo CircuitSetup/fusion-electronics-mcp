@@ -62,6 +62,13 @@ class RejectedRecoveryTest(unittest.TestCase):
         self.assertFalse(self.parent.closed or self.sch.closed)
         self.assertTrue(self.a._pair_import_pending())
 
+    def test_finish_preserves_cancelled_native_rejection_receipt(self):
+        result=self.module.reconcile(self.a,self.config)
+        status=self.a.op_eagle_pair_import_status({'request_id':self.fx.args['request_id']})
+        self.assertEqual(self.a.op_finish_eagle_pair_import({'request_id':self.fx.args['request_id']}),status)
+        self.assertFalse(self.a._pair_import_pending())
+        self.assertEqual(json.loads(Path(result['receipt_path']).read_text()),result)
+
     def test_default_is_read_only_preflight(self):
         result=self.module.reconcile(self.a,dict(self.config,apply=False))
         self.assertEqual(result['status'],'recovery_preflight_passed')

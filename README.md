@@ -382,6 +382,10 @@ destination, all protected/imported document IDs, old native source/bytecode and
 source hash. It replaces only the three reviewed completion functions and the exact
 finish dispatcher entry. It does not save or finish; retry the same public MCP finish
 after its preflight and explicit apply. Final native link and source checks remain mandatory.
+The public finish call accepts 0.14.22 only for that session's verified completion-patch
+ticket; starting new imports still requires 0.14.23+. Confirmed `not_started` tickets
+can resume after a controlled reload once their retained source and destination pins
+are checked. New imports track their own event history, independent of older session activity.
 
 ### Your own parts library
 

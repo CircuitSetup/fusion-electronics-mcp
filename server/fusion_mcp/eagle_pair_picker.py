@@ -38,16 +38,37 @@ def begin(bridge, args, *, journal_dir=None) -> dict:
         info = bridge._info()
         binding = _session(info)
         path = Path(journal_dir or data_dir('import-requests')) / (rid + '.json')
+        pin_cursor = not path.exists()
         if path.exists():
             journal = json.loads(path.read_text(encoding='utf-8'))
-            if journal.get('binding') != binding or journal.get('args') != args:
+            if journal.get('args') != args:
                 raise ValueError('Request ID is already bound to different arguments or add-in session')
+            if journal.get('binding') != binding:
+                previous = journal.get('binding', {})
+                ticket = bridge.call('eagle_pair_import_status', {'request_id': rid}, timeout=10)
+                if (previous.get('session_id') == binding['session_id'] or previous.get('pid') != binding['pid']
+                        or ticket.get('request_id') != rid or ticket.get('session_id') != previous.get('session_id')
+                        or ticket.get('status') != 'not_started'
+                        or ticket.get('save_requested') or 'destination' not in journal
+                        or ticket.get('destination') != journal['destination']):
+                    raise ValueError('Only the original known-not-started ticket can cross an add-in reload')
+                staged = ticket.get('staged', {})
+                if not all(isinstance(staged.get(kind), str) for kind in ('schematic', 'board')):
+                    raise ValueError('Retained ticket is missing the original staged pair')
+                _, signature = eagle_import.read_pair(dict(args, schematic_path=staged['schematic'],
+                                                          board_path=staged['board']))
+                if eagle_import.summary(signature) != ticket.get('expected'):
+                    raise ValueError('Retained staged pair differs from the original source pins')
+                pin_cursor = True
         else:
+            journal = dict(args=args)
+        if pin_cursor:
             events = bridge.call('events', dict(session_id=binding['session_id'], limit=1), timeout=10)
             if (events.get('session_id') != binding['session_id'] or events.get('reset')
-                    or type(events.get('latest_seq')) is not int or events['latest_seq'] < 0):
+                    or type(events.get('latest_seq')) is not int or events['latest_seq'] < 0
+                    or _session(bridge._info()) != binding):
                 raise ValueError('Cannot pin the current add-in event cursor')
-            journal = dict(binding=binding, args=args, after_seq=events['latest_seq'])
+            journal.update(binding=binding, after_seq=events['latest_seq'])
             ulp_support.atomic_json(path, journal)
         if _session(bridge._info()) != binding:
             raise ValueError('Add-in session changed before start')

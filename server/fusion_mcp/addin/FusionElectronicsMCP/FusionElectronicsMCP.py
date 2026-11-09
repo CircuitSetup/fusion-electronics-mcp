@@ -1073,6 +1073,8 @@ def op_start_eagle_pair_import(args):
             _import_source(record)
             record['before'] = current; record['folder'] = destination
             record.pop('dispatch_job',None); record.pop('dispatch_deadline',None)
+            record['native_event_cursor'] = {'session_id':_events.session_id,
+                                             'after_seq':_events.read(None,0,1)['latest_seq']}
             _import_update(record, status='queued', session_id=_events.session_id,
                            error=None, dispatch_acknowledged=False, dispatch_return=None)
         return op_eagle_pair_import_status({'request_id':rid})
@@ -1093,6 +1095,8 @@ def op_start_eagle_pair_import(args):
     for path,data in zip(paths.values(),raw):
         with open(path,'xb') as stream: stream.write(data)
     record = {'args':dict(args), 'before':before, 'expected':expected, 'folder':folder,
+              'native_event_cursor':{'session_id':_events.session_id,
+                                     'after_seq':_events.read(None,0,1)['latest_seq']},
               'public':{'request_id':rid, 'session_id':_events.session_id, 'status':'queued',
                         'staged':paths, 'expected':support.summary(expected),
                         'destination':{'project_id':args['project_id'], 'folder_id':folder.id,
@@ -1181,13 +1185,23 @@ def _pending_import_first_save(record, family):
         product = _document_product(child,_kind_of(child))
         if product.parentDesign is not None or getattr(product,peer) is not None:
             raise ValueError('Imported child has a foreign or mixed link before first save')
-    events = _events.read(record['public']['session_id'],0,200)
-    if (events.get('reset') or events.get('dropped') or events['next_after_seq'] != events['latest_seq']
-            or not {'commandStarting','commandTerminated'} <= set(events.get('supported_events',[]))):
-        raise ValueError('Complete native import termination history is required before first save')
-    starts = [e['seq'] for e in events['events'] if e['event']=='commandStarting' and e.get('command_id')=='ImportSCHAndBRDCmd']
-    if not starts or not any(e['event']=='commandTerminated' and e.get('command_id')=='ImportSCHAndBRDCmd'
-                             and e['seq']>max(starts) for e in events['events']):
+    # Pre-cursor pending tickets require the complete session and one unambiguous import.
+    cursor = record.get('native_event_cursor',{'session_id':record['public']['session_id'],'after_seq':0})
+    after = cursor['after_seq']; native = []; latest = None
+    while latest is None or after < latest:
+        events = _events.read(cursor['session_id'],after,200)
+        if (events.get('reset') or events.get('dropped')
+                or not {'commandStarting','commandTerminated'} <= set(events.get('supported_events',[]))):
+            raise ValueError('Complete native import termination history is required before first save')
+        if latest is None: latest = events['latest_seq']
+        native.extend(e for e in events['events'] if e['seq']<=latest)
+        if events['next_after_seq']<=after and after<latest:
+            raise ValueError('Complete native import termination history is required before first save')
+        after = events['next_after_seq']
+    starts = [e['seq'] for e in native if e['event']=='commandStarting' and e.get('command_id')=='ImportSCHAndBRDCmd']
+    if (not starts or ('native_event_cursor' not in record and len(starts)!=1)
+            or not any(e['event']=='commandTerminated' and e.get('command_id')=='ImportSCHAndBRDCmd'
+                       and e['seq']>max(starts) for e in native)):
         raise ValueError('Native paired importer must terminate before first save')
     _import_update(record,link_verification='pending_first_save')
 
@@ -1195,7 +1209,7 @@ def _pending_import_first_save(record, family):
 def op_finish_eagle_pair_import(args):
     rid = _pair_support().request_id(args.get('request_id'))
     status = op_eagle_pair_import_status(args)
-    if status['status'] in ('saved_linked','not_started'): return status
+    if status['status'] in ('saved_linked','not_started','cancelled_native_rejection'): return status
     record = _pair_import_records[rid]
     if status['status'] == 'queued': return status
     try:

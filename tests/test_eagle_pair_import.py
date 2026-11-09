@@ -58,7 +58,8 @@ class PairImportTest(unittest.TestCase):
         self.a._app = types.SimpleNamespace(data=types.SimpleNamespace(activeProject=self.project),
                                             fireCustomEvent=lambda *args: None)
         self.a._ui = types.SimpleNamespace(commandDefinitions=types.SimpleNamespace(itemById=lambda n: command))
-        self.a._events = types.SimpleNamespace(session_id='session')
+        self.a._events = EventLog(); self.a._events.session_id='session'
+        self.a._events.supported=['commandStarting','commandTerminated']
         self.timers = []
         def timer(delay, callback):
             return types.SimpleNamespace(start=lambda: self.timers.append(callback))
@@ -212,16 +213,36 @@ class PairImportTest(unittest.TestCase):
                 self.assertEqual(len(self.saves),int(failure is None))
 
     def test_first_save_populates_unsaved_sdk_links_and_verifies_afterward(self):
-        for failure in (None,'foreign_link','mismatched_source','unavailable_after_save','uncertain_save','import_active','saved_then_raises','false_after_saved'):
+        successes=(None,'saved_then_raises','false_after_saved','old_history','paginated','legacy_cursor','legacy_paginated')
+        for failure in successes+('foreign_link','mismatched_source','unavailable_after_save','uncertain_save','import_active','dropped_history','reset_history','prior_import_only','retry_prior_import','legacy_ambiguous','legacy_dropped'):
             with self.subTest(failure=failure):
                 self.a._pair_import_records={}; self.docs=self.originals[:]
-                self.start(); self.a._launch_eagle_pair_import(self.args['request_id'])
-                design,sch,brd=self.add_import()
-                self.a._pair_import_records[self.args['request_id']]['public']['dispatch_acknowledged']=True
                 self.a._events=EventLog(); self.a._events.session_id='session'
                 self.a._events.supported=['commandStarting','commandTerminated']
-                self.a._events.append('commandStarting',command_id='ImportSCHAndBRDCmd')
-                if failure!='import_active': self.a._events.append('commandTerminated',command_id='ImportSCHAndBRDCmd')
+                if failure=='old_history':
+                    for _ in range(600): self.a._events.append('commandStarting',command_id='Other')
+                if failure=='prior_import_only':
+                    self.a._events.append('commandStarting',command_id='ImportSCHAndBRDCmd')
+                    self.a._events.append('commandTerminated',command_id='ImportSCHAndBRDCmd')
+                self.start(); self.a._launch_eagle_pair_import(self.args['request_id'])
+                record=self.a._pair_import_records[self.args['request_id']]
+                if failure=='retry_prior_import':
+                    self.a._events.append('commandStarting',command_id='ImportSCHAndBRDCmd')
+                    self.a._events.append('commandTerminated',command_id='ImportSCHAndBRDCmd')
+                    record['public']['status']='not_started'
+                    self.start(); self.a._launch_eagle_pair_import(self.args['request_id'])
+                design,sch,brd=self.add_import()
+                record['public']['dispatch_acknowledged']=True
+                if failure and failure.startswith('legacy_'): record.pop('native_event_cursor',None)
+                if failure=='legacy_ambiguous':
+                    self.a._events.append('commandStarting',command_id='ImportSCHAndBRDCmd')
+                    self.a._events.append('commandTerminated',command_id='ImportSCHAndBRDCmd')
+                if failure not in ('prior_import_only','retry_prior_import'):
+                    self.a._events.append('commandStarting',command_id='ImportSCHAndBRDCmd')
+                    if failure in ('paginated','dropped_history','legacy_paginated','legacy_dropped'):
+                        for _ in range(220 if failure in ('paginated','legacy_paginated') else 600): self.a._events.append('documentOpened')
+                    if failure!='import_active': self.a._events.append('commandTerminated',command_id='ImportSCHAndBRDCmd')
+                if failure=='reset_history': self.a._events.session_id='different-session'
                 products=self.a._document_product
                 owners={id(products(d,d.kind)):d for d in self.docs}
                 def pending(): return not design.isSaved or failure=='unavailable_after_save'
@@ -242,9 +263,9 @@ class PairImportTest(unittest.TestCase):
                     design.saveAs=saved_with_bad_response
                 with patch.object(self.a,'_document_product',product):
                     result=self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']})
-                    success=failure in (None,'saved_then_raises','false_after_saved')
+                    success=failure in successes
                     self.assertEqual(result['status'],'saved_linked' if success else 'state_unknown')
-                    saves=int(failure in (None,'unavailable_after_save','uncertain_save','saved_then_raises','false_after_saved'))
+                    saves=int(success or failure in ('unavailable_after_save','uncertain_save'))
                     self.assertEqual(len(self.saves),saves)
                     if saves:
                         self.assertTrue(result['save_requested'])

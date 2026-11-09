@@ -1,4 +1,5 @@
 import hashlib
+import contextlib
 import importlib.util
 import json
 from pathlib import Path
@@ -42,6 +43,52 @@ class PendingPatchTest(unittest.TestCase):
         self.original=live.op_finish_eagle_pair_import
 
     def install(self,**changes): return self.patch.patch(self.live,dict(self.config,**changes),lambda *args:None)
+
+    def public_finish(self, mutate=None, rotate_session=False):
+        from fusion_mcp.bridge import Bridge
+        ticket=self.live._pair_import_records['a'*32]['public']
+        ticket.update(request_id='a'*32, session_id='session')
+        if mutate: mutate(ticket)
+        bridge=Bridge(watch_dialogs=False,keep_focus=False)
+        bridge.lock=types.SimpleNamespace(hold=lambda _:contextlib.nullcontext())
+        info=dict(addin_version='0.14.22',event_session_id='session',protocol=1,
+                  pid=1,token='test',port=1)
+        calls=[]
+        def connection(*args,**kwargs):
+            sock=mock.MagicMock(); sock.__enter__.return_value=sock
+            def send(raw): calls.append(json.loads(raw))
+            def recv(*args):
+                req=calls[-1]
+                if rotate_session:
+                    info['token']='rotated'
+                result=ticket if req['op']=='eagle_pair_import_status' else self.live.OPS[req['op']](req['args'])
+                return (json.dumps(dict(ok=True,result=result))+'\n').encode()
+            sock.sendall.side_effect=send; sock.recv.side_effect=recv
+            return sock
+        with mock.patch.object(bridge,'transport',return_value='addin'), \
+             mock.patch.object(bridge,'_info',side_effect=lambda:dict(info)), \
+             mock.patch('fusion_mcp.bridge.socket.create_connection',side_effect=connection):
+            return bridge.call('finish_eagle_pair_import',{'request_id':'a'*32})
+
+    def test_public_finish_accepts_only_verified_patch_for_matching_ticket(self):
+        from fusion_mcp.bridge import BridgeOpError
+        with self.assertRaises(BridgeOpError): self.public_finish()
+        self.install(apply=True)
+        self.assertEqual(self.public_finish(),'new')
+        with self.assertRaises(BridgeOpError): self.public_finish(rotate_session=True)
+        for key,value in [('request_id','b'*32),('session_id','other'),
+                          ('completion_patch_verified',False),('completion_patch_sha256','bad')]:
+            ticket=self.live._pair_import_records['a'*32]['public']
+            old=ticket.get(key)
+            with self.subTest(key=key),self.assertRaises(BridgeOpError):
+                self.public_finish(lambda t:t.update({key:value}))
+            ticket[key]=old
+
+    def test_failed_post_patch_verification_does_not_enable_public_finish(self):
+        checks=mock.Mock(side_effect=[None,ValueError('original changed')])
+        with self.assertRaisesRegex(ValueError,'original changed'):
+            self.patch.patch(self.live,dict(self.config,apply=True),checks)
+        self.assertFalse(self.live._pair_import_records['a'*32]['public'].get('completion_patch_verified'))
 
     def test_preflight_does_not_change_dispatch_and_apply_replaces_only_reviewed_functions(self):
         self.assertEqual(self.install()['status'],'completion_patch_preflight_passed')

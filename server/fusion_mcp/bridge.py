@@ -148,7 +148,17 @@ class Bridge:
             except ValueError:
                 version = ()
             required = (0,14,21) if op == 'eagle_pair_import_status' else (0,14,23)
-            if version < required:
+            patched_finish = False
+            if (version == (0,14,22) and op == 'finish_eagle_pair_import'
+                    and re.fullmatch('[a-f0-9]{32}', (args or {}).get('request_id', ''))):
+                ticket = self._call('eagle_pair_import_status', args, timeout=10)
+                patched_finish = (ticket.get('request_id') == args['request_id']
+                    and ticket.get('session_id') == info.get('event_session_id')
+                    and ticket.get('completion_patch_verified') is True
+                    and isinstance(ticket.get('completion_patch_sha256'), str)
+                    and re.fullmatch('[a-f0-9]{64}', ticket['completion_patch_sha256']) is not None
+                    and self._info() == info)
+            if version < required and not patched_finish:
                 raise BridgeOpError('needs_addin', 'Guarded paired-EAGLE import writes require add-in 0.14.23+; cached status requires 0.14.21+')
         if mode == 'addin' and op in ('new_library', 'list_designs'):
             try:
