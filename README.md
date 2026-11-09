@@ -484,7 +484,7 @@ exact, as do MPN and local part IDs. Real package or mapping differences still f
 
 Available in server `0.3.0+workflow.34`.
 
-Offline routing, pair/bus checks, via stitching and previews include straight, simple
+Offline routing, pair/bus checks, via stitching/fanout and previews include straight, simple
 package and board polygons on tRestrict/bRestrict/vRestrict (41/42/43). Element rotation
 and mirroring are applied; vRestrict blocks vias without blocking traces. Concave
 interiors are preserved. Curved, nonfinite, degenerate or self-intersecting restrict

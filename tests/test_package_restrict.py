@@ -113,6 +113,33 @@ class PackageRestrictTest(unittest.TestCase):
         self.assertTrue(plan['vias'])
         self.assertFalse(any(7.7 < x < 12.3 for x, y in plan['vias']))
 
+    def test_fanout_cannot_escape_through_a_trace_restriction(self):
+        root = board(points=((-1, -1), (1, -1), (1, 1), (-1, 1)))
+        root.find('.//element[@name="J2"]').set('x', '10')
+        self.assertIsNone(stitch.plan_fanout(root, 'J2', '1', 'S', max_dist=3))
+
+    def test_fanout_trace_respects_its_pad_side_and_via_only_restrictions(self):
+        for source_layer, pad_layer, blocked in [(41, 1, True), (42, 1, False), (41, 16, False), (42, 16, True), (43, 1, False)]:
+            with self.subTest(source_layer=source_layer, pad_layer=pad_layer):
+                root = board(layer=source_layer, points=((-1, -1), (1, -1), (1, 1), (-1, 1)))
+                root.find('.//element[@name="J2"]').set('x', '10')
+                root.find('.//package[@name="PIN"]/smd').set('layer', str(pad_layer))
+                plan = stitch.plan_fanout(root, 'J2', '1', 'S', max_dist=3)
+                self.assertEqual(plan is None, blocked)
+
+    def test_public_fanout_paths_refuse_a_restrict_crossing_before_writing(self):
+        from unittest import mock
+        from fusion_mcp import server
+        from fusion_mcp.session import Snapshot
+        root = board(points=((-1, -1), (1, -1), (1, 1), (-1, 1)))
+        root.find('.//element[@name="J2"]').set('x', '10')
+        with mock.patch.object(server, '_snap', return_value=Snapshot(board_xml=ET.tostring(root))):
+            with self.assertRaisesRegex(Exception, 'no via spot'):
+                server.fanout_pad('J2', '1', layer='top')
+            report = server.ground_vias(net='S', max_dist_mm=3, dry_run=True)
+        self.assertIn('J2.1', report['no_spot'])
+        self.assertNotIn('J2.1', [v['pad'] for v in report['vias']])
+
     def test_scalar_and_vector_distance_agree(self):
         obstacles = [o for o in stitch.board_obstacles(board())[0] if o.net is None]
         self.assertTrue(obstacles)

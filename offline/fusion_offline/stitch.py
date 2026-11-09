@@ -430,15 +430,21 @@ def part_bodies(root: ET.Element, margin: float = 0.15) -> list[tuple[str, tuple
 
 def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: float = 0.25,
                 max_dist: float = 3.0, step: float = 0.1, drill: float | None = None,
-                diameter: float | None = None) -> dict | None:
+                diameter: float | None = None, trace_layer: int | None = None) -> dict | None:
     """Nearest via position for a pad's fanout: the via clears other nets'
     copper, every pad (including this one: no via-in-pad), holes, keepouts and
     the edge; and the straight trace from the pad centre to it clears other
-    nets' copper. Returns {via: (x, y), from: (x, y), distance} or None."""
+    nets' copper and restrictions on its actual layer. Returns
+    {via: (x, y), from: (x, y), distance} or None."""
     obs, rules, outline = board_obstacles(root)
     c = pad_center(root, ref, pad)
     if c is None:
         raise KeyError(f"no pad {ref}.{pad}")
+    from .router import pad_target
+    pad_layers = pad_target(root, ref, pad)[2]
+    trace_layer = pad_layers[0] if trace_layer is None else trace_layer
+    if trace_layer not in pad_layers:
+        raise ValueError('Fanout trace layer does not reach the source pad')
     # 0.3 mm is the smallest drill at JLC's standard price; smaller costs extra, so the design's
     # minimum (often 0.2) is NOT used unless asked for
     drill = drill or max(0.3, _mm(rules.get("msDrill"), 0.3))
@@ -451,6 +457,7 @@ def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: flo
     edges = [Obstacle("seg", None, False, (a, b, cc, d, 0.0)) for a, b, cc, d in outline]
     others = [o for o in obs if o.net != net and o.net is not None]
     blockers = [o for o in obs if o.net is None or o.is_pad]
+    trace_obstacles = [o for o in obs if o.net != net and (o.layers is None or trace_layer in o.layers)]
     best = None
     n = int(max_dist / step)
     for i in range(-n, n + 1):
@@ -466,9 +473,9 @@ def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: flo
             if any(o.distance(x, y) < r + (clr if (o.is_pad or o.net) else 0.0) for o in blockers + others):
                 continue
             ok = True
-            for k in range(1, 20):
+            for k in range(21):
                 px, py = c[0] + (x - c[0]) * k / 20, c[1] + (y - c[1]) * k / 20
-                if any(o.distance(px, py) < trace_width / 2 + wclr for o in others):
+                if any(o.distance(px, py) < trace_width / 2 + wclr for o in trace_obstacles):
                     ok = False
                     break
             if ok:

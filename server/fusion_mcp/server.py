@@ -3234,7 +3234,7 @@ def fanout_pad(ref: str, pad: str, layer: str = "top", trace_width_mm: float = 0
     net = next((n for n, s in snap.board().signals.items() if (ref, pad) in s.contacts), None)
     if net is None:
         raise KeyError(f"{ref}.{pad} is not connected to a net")
-    plan = ST.plan_fanout(root, ref, pad, net, trace_width_mm, max_dist_mm)
+    plan = ST.plan_fanout(root, ref, pad, net, trace_width_mm, max_dist_mm, trace_layer=_route_layer(root, layer))
     if plan is None:
         raise ValueError(f"no via spot within {max_dist_mm} mm of {ref}.{pad} with a clear path; "
                          "move parts or allow a longer fanout")
@@ -3280,7 +3280,8 @@ def ground_vias(net: str = "GND", max_dist_mm: float = 1.5, trace_width_mm: floa
             x, y, layers, _ = RT.pad_target(root, c.get("element"), c.get("pad"))
             if len(layers) > 1 or (round(x, 3), round(y, 3)) in wired:   # through-hole, or already has its via
                 continue
-            plan = ST.plan_fanout(root, c.get("element"), c.get("pad"), net, trace_width_mm, max_dist_mm, step=0.1)
+            plan = ST.plan_fanout(root, c.get("element"), c.get("pad"), net, trace_width_mm, max_dist_mm,
+                                  step=0.1, trace_layer=layers[0])
             if plan is None:
                 missed.append(name)
                 continue
