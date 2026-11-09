@@ -16,6 +16,18 @@ SCH = '<eagle><drawing><schematic>' + LIB + '<parts><part name="U1" library="L" 
 BRD = '<eagle><drawing><board><elements><element name="U1"/></elements><signals><signal name="GND"><contactref element="U1" pad="1"/><contactref element="U1" pad="2"/></signal></signals></board></drawing></eagle>'
 
 
+class DataFiles:
+    """Public SDK shape: DataFiles has count/item, but no itemByName."""
+    def __init__(self, names=()):
+        self.names = list(names)
+        self.reads = []
+    @property
+    def count(self): return len(self.names)
+    def item(self, index):
+        self.reads.append(index)
+        return types.SimpleNamespace(name=self.names[index])
+
+
 class PairImportTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
@@ -37,7 +49,7 @@ class PairImportTest(unittest.TestCase):
                                           saved=d.isSaved, modified=d.isModified,
                                           data_file_id=getattr(d.dataFile, 'id', None))
         self.folder = types.SimpleNamespace(id='folder-id', dataFolders=types.SimpleNamespace(itemByName=lambda n: None),
-                                            dataFiles=types.SimpleNamespace(itemByName=lambda n: None))
+                                            dataFiles=DataFiles())
         self.project = types.SimpleNamespace(id='project', rootFolder=self.folder)
         self.starts = []
         command = types.SimpleNamespace(execute=lambda: self.starts.append('start'),
@@ -83,6 +95,26 @@ class PairImportTest(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.a.op_start_eagle_pair_import(dict(self.args, **changes))
         self.assertEqual(self.timers, [])
+
+    def test_destination_collision_uses_public_bounded_datafiles_api(self):
+        for existing in ('New product','new PRODUCT.fprj'):
+            with self.subTest(existing=existing):
+                self.folder.dataFiles=DataFiles(['Other',existing])
+                with self.assertRaisesRegex(ValueError,'already exists'): self.start()
+                self.assertEqual(self.timers,[])
+        self.folder.dataFiles=DataFiles(['Other']*1001)
+        with self.assertRaisesRegex(ValueError,'1000'): self.start()
+        self.assertEqual(self.folder.dataFiles.reads,[])
+        self.assertEqual(self.timers,[])
+
+    def test_failed_destination_guard_does_not_record_or_launch_request(self):
+        self.folder.dataFiles=DataFiles(['New product'])
+        with self.assertRaisesRegex(ValueError,'already exists'): self.start()
+        with self.assertRaisesRegex(ValueError,'Unknown import request'):
+            self.a.op_eagle_pair_import_status({'request_id':self.args['request_id']})
+        self.folder.dataFiles=DataFiles(['Other'])
+        self.assertEqual(self.start()['status'],'queued')
+        self.assertEqual(self.starts,[])
 
     def test_request_id_is_idempotent_and_cannot_be_rebound(self):
         first = self.start()

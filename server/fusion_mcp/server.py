@@ -419,7 +419,7 @@ def start_eagle_pair_import(request_id: str, schematic_path: str, board_path: st
     schematic then board dialogs using the returned staged paths. No files/folders are saved
     or overwritten at start. Call get_eagle_pair_import_status while dialogs are open, then
     finish_eagle_pair_import to verify the new linked family and save to the pinned destination.
-    Needs add-in 0.14.19+. Never start a second import to recover an uncertain first attempt."""
+    Needs add-in 0.14.20+. Never start a second import to recover an uncertain first attempt."""
     return session.bridge.call('start_eagle_pair_import', dict(request_id=request_id,
         schematic_path=schematic_path, board_path=board_path, schematic_sha256=schematic_sha256,
         board_sha256=board_sha256, project_id=project_id, name=name, folder=folder), timeout=30)

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Native destination lookup fix (workflow.28 / add-in 0.14.20)
+
+- Check new-product name collisions through supported `DataFiles.count/item`,
+  bounded to 1000 files, instead of the unavailable `DataFiles.itemByName`.
+- Preserve collision rejection and fail before recording/scheduling an import
+  when destination validation fails. Same-request recovery stays unchanged.
+
 ### Guarded paired-EAGLE import (workflow.27 / add-in 0.14.19)
 
 - Add start/status/finish operations for pinned local `.sch`/`.brd` pairs using

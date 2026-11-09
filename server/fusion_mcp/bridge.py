@@ -147,8 +147,8 @@ class Bridge:
                 version = tuple(int(part) for part in info.get('addin_version','').split('.'))
             except ValueError:
                 version = ()
-            if version < (0,14,19):
-                raise BridgeOpError('needs_addin', 'Guarded paired-EAGLE import requires add-in 0.14.19+')
+            if version < (0,14,20):
+                raise BridgeOpError('needs_addin', 'Guarded paired-EAGLE import requires add-in 0.14.20+')
         if mode == 'addin' and op in ('new_library', 'list_designs'):
             try:
                 version = tuple(int(part) for part in info.get('addin_version', '').split('.'))

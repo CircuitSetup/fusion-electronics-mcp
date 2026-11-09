@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.19"
+ADDIN_VERSION = "0.14.20"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -1011,8 +1011,17 @@ def _import_destination(args):
     if (not isinstance(name,str) or not name.strip() or len(name)>128
             or any(c in name for c in '/\\') or any(ord(c)<32 for c in name)):
         raise ValueError('Use an explicit new product name without separators or control characters')
-    if folder.dataFiles.itemByName(name) or folder.dataFiles.itemByName(name+'.fprj'):
-        raise ValueError('Destination product name already exists; choose a new target')
+    files = folder.dataFiles
+    count = files.count
+    if count > 1000:
+        raise ValueError('Destination exceeds the 1000-file lookup bound; choose an existing smaller folder')
+    names = {name.casefold(), (name+'.fprj').casefold()}
+    for index in range(count):
+        item = files.item(index)
+        if item is None: raise ValueError('Destination file listing changed during validation')
+        if item.name.casefold() in names:
+            raise ValueError('Destination product name already exists; choose a new target')
+    if files.count != count: raise ValueError('Destination file listing changed during validation')
     return folder
 
 
