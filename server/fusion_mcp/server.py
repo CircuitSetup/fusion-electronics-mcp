@@ -2063,22 +2063,22 @@ def add_trace(net: str, layer: str | int, width_mm: float, points_mm: list[list[
     or a layer number."""
     pts = [(float(p[0]), float(p[1])) for p in points_mm]
     wl = _write_layer(layer)
+    exported = _read_layer(_snap(schematic=False).board(), _native_layer(layer))
 
     def verify(before, after):
-        missing, lay = _uncovered(after, net, wl, pts)
+        missing, lay = _uncovered(after, net, exported, pts)
         return (not missing), (f"{net} routed on layer {lay}" if not missing
                                else f"{net}: path not covered near {missing[:3]}")
     after, detail = session.verified_write("board", C.add_trace(net, wl, width_mm, pts), verify, schematic=False)
     return {"ok": True, "detail": detail}
 
 
-def _uncovered(snap, net, wl, pts):
-    """Points along `pts` not covered by `net` copper on write layer wl.
+def _uncovered(snap, net, lay, pts):
+    """Points along `pts` not covered by `net` copper on the planned export layer.
     Fusion merges a wire that continues an existing one, so segment counts
     are meaningless; the path must be covered by same-net copper."""
     b1 = snap.board()
     s1 = b1.signals.get(net)
-    lay = _read_layer(b1, wl)
     wires = [w for w in (s1.wires if s1 else []) if w.layer == lay]
     from fusion_offline.pairs import flatten
     missing = []
@@ -2245,7 +2245,7 @@ def route_pair(p_net: str, n_net: str, centreline_mm: list[list[float]], width_m
         for t in plan[side]["traces"]:
             pts = [tuple(q) for q in t["points"]]
             cmds.append(C.add_trace(net, wmap[t["layer"]], t.get("width", width_mm), pts))
-            checks.append((net, wmap[t["layer"]], pts))
+            checks.append((net, t["layer"], pts))
         for vx, vy in plan[side]["vias"]:
             cmds.append(C.add_via(net, vx, vy, via_drill_mm, plan["via_diameter_mm"]))
     vias = [(plan[s]["net"], v) for s in ("p", "n") for v in plan[s]["vias"]]
@@ -2342,7 +2342,7 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     cmds.append("SET WIRE_BEND 1;")
 
     def verify(before, after):
-        bad = _verify_route(after, an, r, width_mm, wmap)
+        bad = _verify_route(after, an, r, width_mm)
         return (not bad), ("; ".join(bad) if bad else f"{an} {from_pad} -> {to_pad}: {r.length_mm:.1f} mm, {len(r.vias)} vias")
     after, detail = session.verified_write("board", " ".join(cmds), verify, schematic=False, **write_guard)
     out.update(written=True, detail=detail, routing=_routing_state(after))
@@ -2350,7 +2350,7 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
 
 
 def _route_vias(net, route):
-    extent = (_write_layer('top'), _write_layer('bottom')) if route.vias else None
+    extent = (_native_layer('top'), _native_layer('bottom')) if route.vias else None
     # Fusion 2706 reports Bottom=304, but its VIA command requires 1-64 (live read-back verified).
     if extent == (1, 304):
         extent = (1, 64)
@@ -2368,13 +2368,13 @@ def _route_vias(net, route):
     return cmds
 
 
-def _verify_route(after, net, route, width, wmap):
+def _verify_route(after, net, route, width):
     """Verify all intended copper and via dimensions/spans in actual export coordinates."""
     signal = after.board().signals.get(net)
     if signal is None: return [f'{net} missing']
     bad = []
     for layer, points, expected_width in route.pieces(width):
-        missing, actual_layer = _uncovered(after, net, wmap[layer], points)
+        missing, actual_layer = _uncovered(after, net, layer, points)
         if missing: bad.append(f'{net} path missing on layer {layer}')
         from fusion_offline.pairs import flatten
         for x, y in flatten(points, .1):
@@ -2475,7 +2475,7 @@ def route_net(net: str, width_mm: float | None = None, layer: str = "any", allow
         n_air = len(air)
 
         def verify(before, after, n_air=n_air):
-            bad = _verify_route(after, net, r, width_mm, wmap)
+            bad = _verify_route(after, net, r, width_mm)
             if bad: return False, '; '.join(bad)
             s1 = after.board().signals.get(net)
             left = sum(1 for w in s1.wires if w.layer == 19) if s1 else 0
@@ -2583,7 +2583,7 @@ def route_close(max_len_mm: float = 8.0, width_mm: float = 0.25, widths: dict[st
     before_air = _routing_state(snap)["unrouted_connections"]
 
     def verify(before, after):
-        bad = [msg for n, a, b, w, r in done for msg in _verify_route(after, n, r, w, wmap)]
+        bad = [msg for n, a, b, w, r in done for msg in _verify_route(after, n, r, w)]
         if bad: return False, '; '.join(bad)
         left = _routing_state(after)["unrouted_connections"]
         joints = _layer_joints(after, {n for n, *_ in done})
@@ -2663,7 +2663,7 @@ def route_remaining(width_mm: float = 0.25, widths: dict[str, float] | None = No
     before_air = _routing_state(snap)["unrouted_connections"]
 
     def verify(before, after):
-        bad = [msg for cid, r in res.routes.items() for msg in _verify_route(after, by_id[cid].net, r, by_id[cid].width, wmap)]
+        bad = [msg for cid, r in res.routes.items() for msg in _verify_route(after, by_id[cid].net, r, by_id[cid].width)]
         if bad: return False, '; '.join(bad)
         joints = _layer_joints(after, {by_id[i].net for i in res.routes})
         if joints:
@@ -2732,7 +2732,9 @@ def lay_bus(nets: list[str], path_mm: list[list[float]], pitch_mm: float = 0.6, 
     from fusion_offline.render import render
     snap = _snap(schematic=False)
     root = D.read_xml(snap.board_xml)
-    lay = 16 if str(layer).lower() == "bottom" else 1
+    lay = _route_layer(root, layer)
+    if lay is None:
+        raise ValueError('A bus needs one configured copper layer')
     pins = {}
     for sg in root.iterfind(".//signals/signal"):
         if sg.get("name") in nets:
@@ -2753,12 +2755,12 @@ def lay_bus(nets: list[str], path_mm: list[list[float]], pitch_mm: float = 0.6, 
                                 title="lay_bus (plan)")["path"]
     if dry_run or plan["problems"]:
         return out
-    wl = _write_layer(layer)
+    wl = _route_write_map(root)[lay]
     cmds = ["GRID MM; SET WIRE_BEND 2;"] + [C.add_trace(ln["net"], wl, width_mm, ln["points"]).replace("GRID MM; ", "")
                                             for ln in plan["lanes"]] + ["SET WIRE_BEND 1;"]
 
     def verify(before, after):
-        bad = [ln["net"] for ln in plan["lanes"] if _uncovered(after, ln["net"], wl, ln["points"])[0]]
+        bad = [ln["net"] for ln in plan["lanes"] if _uncovered(after, ln["net"], lay, ln["points"])[0]]
         return not bad, (f"{len(plan['lanes'])} lanes laid" if not bad else f"lanes not as drawn: {bad}")
     after, detail = session.verified_write("board", " ".join(cmds), verify, schematic=False)
     out.update(written=True, detail=detail)
@@ -2901,8 +2903,8 @@ def _only_layers(layers: list[int]) -> tuple[str, str]:
     the part instead (Fusion refused: 'Can't backannotate')."""
     vis = _visible_layers()
     _only_layers.last_view = vis
-    pre = "DISPLAY NONE " + " ".join(str(l) for l in layers if l not in _NO_DISPLAY) + ";"
-    post = "DISPLAY NONE " + " ".join(str(l) for l in vis if l not in _NO_DISPLAY) + ";"
+    pre = "DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l)) for l in layers if l not in _NO_DISPLAY) + ";"
+    post = "DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l)) for l in vis if l not in _NO_DISPLAY) + ";"
     return pre, post
 
 
@@ -2910,7 +2912,7 @@ def _ensure_view() -> None:
     """Re-apply the view saved by the last _only_layers if it did not come back."""
     want = getattr(_only_layers, "last_view", None)
     if want is not None and _visible_layers() != want:
-        session.run("DISPLAY NONE " + " ".join(str(l) for l in want if l not in _NO_DISPLAY) + ";", "board")
+        session.run("DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l)) for l in want if l not in _NO_DISPLAY) + ";", "board")
 
 
 def _routing_layer_map(root) -> dict:
@@ -2925,7 +2927,27 @@ def _routing_layer_map(root) -> dict:
 
 
 def _route_write_map(root):
-    return _routing_layer_map(root)
+    return {exported: _command_layer(native) for exported, native in _routing_layer_map(root).items()}
+
+
+def _command_layer(native: int | str) -> int | str:
+    """Extended API IDs select their actual layer name in the legacy Electron CLI."""
+    if isinstance(native, str):
+        C.layer_token(native)
+        return native
+    if 1 <= native <= 255:
+        C.layer_token(native)
+        return native
+    layers = session.bridge.call('layers', timeout=60)['layers']
+    matches = [row for row in layers if row['number'] == native]
+    if len(matches) != 1 or not isinstance(matches[0].get('name'), str):
+        raise ValueError('Native layer has no unique CLI layer name')
+    name = matches[0]['name']
+    if sum(isinstance(row.get('name'), str) and row['name'].casefold() == name.casefold() for row in layers) != 1:
+        raise ValueError('Ambiguous CLI layer name')
+    if not C.layer_token(name).startswith("'"):
+        raise ValueError('Numeric layer names cannot identify an extended API layer')
+    return name
 
 
 def _read_layer(board, native) -> int:
@@ -2949,13 +2971,13 @@ def _route_layer(root, layer):
     raise ValueError('Choose any/top/bottom/innerN or a configured export copper layer')
 
 
-def _write_layer(layer) -> int:
-    """Layer number to use in EAGLE commands. Fusion numbers copper by stack
-    position in its own scheme (2-layer: Top 1, Bottom 304; 4-layer: 1, 2,
-    303, 304), and layer 16 is an unused inner 'Route16', NOT the bottom
-    (verified on 2705.1.15: bottom traces sent to 16 landed on Route16).
-    Accepts 'top', 'bottom', 'inner1'.., a stack number, or the classic
-    export numbering (1, 2, 15, 16 for 4-layer)."""
+def _write_layer(layer) -> int | str:
+    """CLI selector, separate from export geometry and V2 native layer IDs."""
+    return _command_layer(_native_layer(layer))
+
+
+def _native_layer(layer) -> int:
+    """V2 API copper ID; extended IDs must be resolved before use in a CLI command."""
     from fusion_offline import stackup as ST
     stack = None
     try:
@@ -3061,7 +3083,8 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
     if not all(math.isfinite(v) for v in (inset_mm, isolate_mm, width_mm, thermal_width_mm)) or \
             isolate_mm < 0 or width_mm <= 0 or thermal_width_mm <= 0:
         raise ValueError('Pour dimensions must be finite; widths positive and clearance nonnegative')
-    wl = _write_layer(layer)
+    native_layer = _native_layer(layer)
+    wl = _command_layer(native_layer)
     if points_mm is not None:
         if any(len(p) != 2 for p in points_mm):
             raise ValueError('Pour outline points must have two coordinates')
@@ -3083,7 +3106,7 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
     # straight bends: a diagonal edge would otherwise be drawn as a 45-degree jog
     cmd = (f"GRID MM; CHANGE POUR SOLID; CHANGE ISOLATE {C.n(isolate_mm)}; CHANGE ORPHANS OFF; "
            f"CHANGE THERMALS {'ON' if thermals else 'OFF'}; CHANGE THERMALWIDTH {C.n(thermal_width_mm)}; CHANGE RANK {rank}; "
-           f"LAYER {wl}; SET WIRE_BEND 2; POLYGON {C.q(net)} {C.n(width_mm)} {_poly_cmd(pts)}; "
+           f"LAYER {C.layer_token(wl)}; SET WIRE_BEND 2; POLYGON {C.q(net)} {C.n(width_mm)} {_poly_cmd(pts)}; "
            f"SET WIRE_BEND 1; RATSNEST;")
 
     def close(a, b):
@@ -3105,7 +3128,7 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
         if len(remaining) != 1:
             return False, 'Expected exactly one new pour'
         p = remaining[0]
-        expected = dict(net=net, layer=wl, thermals=thermals, rank=rank, orphans=False, hatched=False)
+        expected = dict(net=net, layer=native_layer, thermals=thermals, rank=rank, orphans=False, hatched=False)
         bad = [k for k, v in expected.items() if p.get(k) != v]
         dimensions = dict(isolate_mm=isolate_mm, width_mm=width_mm)
         if thermals:
@@ -3142,11 +3165,11 @@ def set_pour_thermals(net: str, width_mm: float, layer: str | int | None = None)
     restored."""
     pours = [p for p in session.bridge.call("pours", timeout=60)["pours"] if p["net"] == net]
     if layer is not None:
-        wl = _write_layer(layer)
+        wl = _native_layer(layer)
         pours = [p for p in pours if p["layer"] == wl]
     if not pours:
         raise KeyError(f"no pours on {net}" + (f" layer {layer}" if layer is not None else ""))
-    copper = sorted({p["layer"] for p in session.bridge.call("pours", timeout=60)["pours"]} | {1, _write_layer("bottom")})
+    copper = sorted({p["layer"] for p in session.bridge.call("pours", timeout=60)["pours"]} | {1, _native_layer("bottom")})
     cmds = []
     for p in pours:
         if len(p["outline"]) < 2:
@@ -3159,7 +3182,7 @@ def set_pour_thermals(net: str, width_mm: float, layer: str | int | None = None)
     finally:
         _ensure_view()
     now = [p for p in session.bridge.call("pours", timeout=60)["pours"] if p["net"] == net
-           and (layer is None or p["layer"] == _write_layer(layer))]
+           and (layer is None or p["layer"] == _native_layer(layer))]
     bad = [p["layer"] for p in now if abs(p["thermal_width_mm"] - width_mm) > 1e-3]
     if bad:
         raise WriteFailed(f"thermal width not applied on layer(s) {bad}")
@@ -3246,7 +3269,7 @@ def fanout_pad(ref: str, pad: str, layer: str = "top", trace_width_mm: float = 0
                          "move parts or allow a longer fanout")
     wl = _write_layer(layer)
     (x0, y0), (x1, y1) = plan["from"], plan["via"]
-    cmd = (f"GRID MM; LAYER {wl}; CHANGE WIDTH {C.n(trace_width_mm)}; WIRE {C.q(net)} {C.n(trace_width_mm)} "
+    cmd = (f"GRID MM; LAYER {C.layer_token(wl)}; CHANGE WIDTH {C.n(trace_width_mm)}; WIRE {C.q(net)} {C.n(trace_width_mm)} "
            f"{C.pt(x0, y0)} {C.pt(x1, y1)}; CHANGE DRILL {C.n(plan['drill'])}; "
            f"VIA {C.q(net)} {C.n(plan['diameter'])} round {C.pt(x1, y1)};")
 
@@ -3343,11 +3366,11 @@ def remove_stubs(max_rounds: int = 5, geometric: bool = True) -> dict:
         for sb in cands:
             if not sb["on_pad"] and sb.get("keep_to"):
                 # something joins the segment part-way: keep it up to there
-                wl = _write_layer("bottom") if sb["layer"] == 16 else sb["layer"]
+                wl = _write_layer(sb["layer"])
                 dx, dy = sb["dangling"]
                 ox, oy = (sb["x1"], sb["y1"]) if (sb["x2"], sb["y2"]) == (dx, dy) else (sb["x2"], sb["y2"])
                 _delete_segment(sb, wl)
-                add_trace(sb["net"], wl, sb["width"], [[ox, oy], list(sb["keep_to"])])
+                add_trace(sb["net"], sb["layer"], sb["width"], [[ox, oy], list(sb["keep_to"])])
                 fixed.append({"net": sb["net"], "action": "cut back to its last tap",
                               "removed_mm": round(math.dist(sb["keep_to"], (dx, dy)), 3)})
                 if _routing_state(_snap(schematic=False))["unrouted_connections"] > start_air:
@@ -3356,7 +3379,7 @@ def remove_stubs(max_rounds: int = 5, geometric: bool = True) -> dict:
                     fixed[-1]["action"] = "undone: it was carrying a connection"
                     return {"ok": False, "fixed": fixed}
                 continue
-            wl = _write_layer("bottom") if sb["layer"] == 16 else sb["layer"]
+            wl = _write_layer(sb["layer"])
             dx, dy = sb["dangling"]
             ox, oy = (sb["x1"], sb["y1"]) if (sb["x2"], sb["y2"]) == (dx, dy) else (sb["x2"], sb["y2"])
             if sb["on_pad"]:
@@ -3385,7 +3408,7 @@ def remove_stubs(max_rounds: int = 5, geometric: bool = True) -> dict:
     return {"ok": True, "fixed": fixed, "remaining_stubs": left}
 
 
-def _delete_segment(sb: dict, wl: int) -> None:
+def _delete_segment(sb: dict, wl: int | str) -> None:
     """Delete exactly one wire segment (verified), clicking near its loose end
     with only its copper layer visible."""
     pre, post = _only_layers([wl])
@@ -3441,7 +3464,7 @@ def delete_copper(net: str, vias: list[list[float]] | None = None,
                     hit, best, click = int(pg.get("layer")), d, (x1 + t * vx, y1 + t * vy)
         if hit is None:
             raise ValueError(f"no {net} pour has an outline through ({px}, {py})")
-        wl = _write_layer("bottom") if hit in (16, 304) else hit
+        wl = _write_layer(hit)
         pre, post = _only_layers([wl])
         count = lambda sn: sn.board().signals[net].polygons
         copper = lambda sn: (len(sn.board().signals[net].wires), len(sn.board().signals[net].vias))
@@ -3468,7 +3491,7 @@ def delete_copper(net: str, vias: list[list[float]] | None = None,
             (near(w.x1, x2) and near(w.y1, y2) and near(w.x2, x1) and near(w.y2, y1)))), None)
         if w is None:
             raise ValueError(f"no {net} segment from ({x1}, {y1}) to ({x2}, {y2})")
-        wl = _write_layer("bottom") if w.layer == 16 else w.layer
+        wl = _write_layer(w.layer)
         # click near the end fewer other wires and vias meet, so the pick cannot land on a neighbour
         meets = lambda x, y: sum(1 for o in sig.wires if o is not w and o.layer != 19 and (
             (near(o.x1, x) and near(o.y1, y)) or (near(o.x2, x) and near(o.y2, y)))) +             sum(1 for v in sig.vias if near(v.x, x) and near(v.y, y))
@@ -4293,6 +4316,7 @@ def import_routing_from_kicad(pcb_path: str, nets: list[str] | None = None, vias
             raise ValueError(f"nets not on this board: {unknown[:12]}")
         return {"ok": not unknown, "applied": False, **plan}
     layers = {lay: _write_layer(lay) for lay in {x[1] for x in segs + arcs}}
+    exported_layers = {lay: _read_layer(snap.board(), _native_layer(lay)) for lay in layers}
     cmds = ["GRID MM;", "SET WIRE_BEND 2;"]          # straight: arbitrary-angle segments stay as drawn
     for net, lay, w, a, b in segs:
         cmds.append(C.add_trace(net, layers[lay], w, [a, b]).replace("GRID MM; ", ""))
@@ -4315,7 +4339,7 @@ def import_routing_from_kicad(pcb_path: str, nets: list[str] | None = None, vias
                 short.append(f"{net}: {got}/{k} vias")
         miss = []
         for net, lay, w, a, b in segs:
-            m, _ = _uncovered(after, net, layers[lay], [a, b])
+            m, _ = _uncovered(after, net, exported_layers[lay], [a, b])
             if m:
                 miss.append(f"{net} {lay} {a}->{b}")
         ok = not short and not miss

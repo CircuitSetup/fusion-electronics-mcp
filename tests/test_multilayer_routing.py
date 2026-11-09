@@ -103,7 +103,7 @@ class MultilayerTest(unittest.TestCase):
     def test_fusion_through_via_command_uses_command_layer_numbers(self):
         route = R.Route('S', vias=[(10, 5)], via_extent=(1, 16))
         for native_bottom, command_bottom in [(304, 64), (16, 16), (64, 64)]:
-            with self.subTest(bottom=native_bottom), patch.object(S, '_write_layer',
+            with self.subTest(bottom=native_bottom), patch.object(S, '_native_layer',
                     side_effect=lambda name: 1 if name == 'top' else native_bottom):
                 commands = S._route_vias('S', route)
                 self.assertIn(f'round 1-{command_bottom} (10 5)', commands[0])
@@ -179,11 +179,11 @@ class MultilayerTest(unittest.TestCase):
         via = ET.SubElement(sg, 'via', x='10', y='5', drill='.3', diameter='.6', extent='1-16')
         stack = '<layerstackup>' + ''.join(f'<layerdef type="Signal" layer="{l}"/>' for l in [1,2,303,304]) + '</layerstackup>'
         with patch.object(S.session.bridge, 'call', return_value={'xml':stack}):
-            self.assertEqual(S._verify_route(Snapshot(board_xml=ET.tostring(root)), 'S', r, .5, {15:303}), [])
+            self.assertEqual(S._verify_route(Snapshot(board_xml=ET.tostring(root)), 'S', r, .5), [])
             wire.set('width','.25')
-            self.assertTrue(S._verify_route(Snapshot(board_xml=ET.tostring(root)), 'S', r, .5, {15:303}))
+            self.assertTrue(S._verify_route(Snapshot(board_xml=ET.tostring(root)), 'S', r, .5))
             wire.set('width','.5'); via.set('extent','1-2')
-            self.assertTrue(S._verify_route(Snapshot(board_xml=ET.tostring(root)), 'S', r, .5, {15:303}))
+            self.assertTrue(S._verify_route(Snapshot(board_xml=ET.tostring(root)), 'S', r, .5))
 
     def test_inner_preference_without_vias_cannot_route_outer_smds(self):
         snap = Snapshot(board_xml=ET.tostring(board()))

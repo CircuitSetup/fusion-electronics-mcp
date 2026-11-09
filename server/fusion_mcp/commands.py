@@ -49,6 +49,19 @@ def orient(angle: float, bottom: bool = False) -> str:
     return f"={'M' if bottom else ''}R{n(a)}"
 
 
+def layer_token(layer: int | str) -> str:
+    """CLI selector: legacy number or a safely quoted semantic name, never a V2 ID."""
+    if isinstance(layer, str):
+        if not layer.strip() or any(ord(c) < 32 for c in layer):
+            raise InvalidInput('invalid CLI layer name')
+        if not re.fullmatch(r'[+-]?\d+', layer.strip()):
+            return q(layer)
+        layer = int(layer)
+    if type(layer) is not int or not 1 <= layer <= 255:
+        raise InvalidInput('CLI layer numbers must be legacy IDs 1..255; resolve V2 IDs to names')
+    return str(layer)
+
+
 # -- board -------------------------------------------------------------------
 def move_part(ref: str, x: float, y: float) -> str:
     return f"{GRID} MOVE {q(ref)} {pt(x, y)};"
@@ -61,17 +74,19 @@ def rotate_part(ref: str, angle: float, bottom: bool) -> str:
 def add_via(net: str, x: float, y: float, drill: float, diameter: float | None = None,
             extent: tuple | None = None) -> str:
     dia = n(diameter) if diameter else "auto"
-    span = f'{int(extent[0])}-{int(extent[1])} ' if extent else ''
+    if extent and (len(extent) != 2 or any(type(n) is not int for n in extent)):
+        raise InvalidInput('via extent needs two legacy CLI layer numbers')
+    span = f'{layer_token(extent[0])}-{layer_token(extent[1])} ' if extent else ''
     return f"{GRID} CHANGE DRILL {n(drill)}; VIA {q(net)} {dia} round {span}{pt(x, y)};"
 
 
-def add_trace(net: str, layer: int, width: float, points: list[tuple[float, float]]) -> str:
+def add_trace(net: str, layer: int | str, width: float, points: list[tuple[float, float]]) -> str:
     if len(points) < 2:
         raise InvalidInput("a trace needs at least two points")
     # a point may carry a third value: the arc (degrees, + = counter-clockwise)
     # of the segment that ends at it, written as EAGLE's curve before the point
     path = " ".join((f"{float(p[2]):+g} " if len(p) > 2 and p[2] else "") + pt(p[0], p[1]) for p in points)
-    return f"{GRID} LAYER {int(layer)}; CHANGE WIDTH {n(width)}; WIRE {q(net)} {n(width)} {path};"
+    return f"{GRID} LAYER {layer_token(layer)}; CHANGE WIDTH {n(width)}; WIRE {q(net)} {n(width)} {path};"
 
 
 def define_net_class(number: int, name: str) -> str:

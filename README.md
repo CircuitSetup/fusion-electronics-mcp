@@ -440,6 +440,11 @@ Copper planning uses the export's declared layer IDs. When Fusion retains a 64-I
 the configured stack to those export IDs; retained copper and pad sides then use
 the same layers. Raw XML stays unchanged. Ambiguous mappings are refused, and native
 physical layers are mapped separately by verified stack order before routing writes.
+Routing commands resolve extended V2 API layer IDs such as 303/304 to the actual
+layer names in Fusion's layer inventory. API pour checks retain their native IDs;
+trace verification checks the planned export layer directly. Numeric CLI selectors
+outside 1..255 are refused before submission. Native IDs, export IDs and CLI layer
+names are separate; Bottom 16 in an export does not establish a numeric CLI selector.
 Conversion refuses repeated physical pad identifiers, standalone paste/mask
 apertures, SMD layer selections other than top copper/paste/mask, and embedded
 zones/keepouts or rule areas. These features require a compatible library or a

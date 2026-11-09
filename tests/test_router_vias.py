@@ -32,7 +32,7 @@ class RouterViaTest(unittest.TestCase):
             self.assertEqual(float(via.get('drill')), .35)
             self.assertAlmostEqual(float(via.get('diameter')), .7564)
         with patch.object(S, '_only_layers', return_value=('DISPLAY NONE 18;', 'DISPLAY ALL;')), \
-                patch.object(S, '_write_layer', side_effect=lambda l: 304 if l == 'bottom' else 1):
+                patch.object(S, '_native_layer', side_effect=lambda l: 304 if l == 'bottom' else 1):
             commands = ' '.join(S._route_vias('S', route))
         self.assertIn('CHANGE DRILL 0.35;', commands)
         self.assertIn("VIA 'S' 0.7564", commands)

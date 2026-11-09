@@ -37,11 +37,15 @@ class FakeSession:
         self.commands = []
         self.bridge = self
         self.lock = self
+        self.layers = [1, 304]
 
     def hold(self, label):
         return contextlib.nullcontext()
 
     def call(self, op, *args, **kwargs):
+        if op == 'layers':
+            return {'layers': [dict(number=n, name='Top' if i == 0 else 'Bottom' if i == len(self.layers)-1
+                                   else f'Inner {i}', visible=True) for i, n in enumerate(self.layers)]}
         if op == 'design_rules':
             return {'xml': '<layerstackup>' + ''.join(
                 f'<layerdef type="Signal" layer="{n}"/>' for n in self.layers) + '</layerstackup>'}
@@ -78,7 +82,8 @@ class PourCreationTest(unittest.TestCase):
                                 patch.object(S, 'session', fake), patch.object(S, '_snap', return_value=snap):
                             result = S.add_pour('GND', requested, points_mm=POINTS, rank=rank)
                             self.assertTrue(result['ok'])
-                            self.assertIn(f'LAYER {number};', fake.commands[0])
+                            selector = str(number) if number <= 255 else "'Bottom'" if number == native[-1] else f"'Inner {native.index(number)}'"
+                            self.assertIn(f'LAYER {selector};', fake.commands[0])
                             self.assertIn(f'CHANGE RANK {rank};', fake.commands[0])
 
     def test_unconfigured_inner_and_noncopper_layers_refused_before_write(self):
@@ -95,15 +100,14 @@ class PourCreationTest(unittest.TestCase):
         for rank in (0, 7, -1, 1.5, True, '2'):
             actual = pour(); actual['rank'] = int(rank)
             fake = FakeSession([], [actual])
-            with self.subTest(rank=rank), patch.object(S, 'session', fake), \
-                    patch.object(S, '_write_layer', return_value=304):
+            with self.subTest(rank=rank), patch.object(S, 'session', fake):
                 with self.assertRaisesRegex(Exception, 'rank'):
                     S.add_pour('GND', points_mm=POINTS, rank=rank)
                 self.assertFalse(fake.commands)
 
     def run_pour(self, after, before=None, **kwargs):
         fake = FakeSession(before or [], after)
-        with patch.object(S, 'session', fake), patch.object(S, '_write_layer', return_value=304):
+        with patch.object(S, 'session', fake):
             result = S.add_pour('GND', 'bottom', points_mm=POINTS, **kwargs)
         return fake, result
 
@@ -138,8 +142,7 @@ class PourCreationTest(unittest.TestCase):
         for points in [[], [[0, 0], [1, 1]], [[0, 0], [1, 1], [2, 2]],
                        [[0, 0], [float('nan'), 1], [2, 0]]]:
             fake = FakeSession([], [])
-            with self.subTest(points=points), patch.object(S, 'session', fake), \
-                    patch.object(S, '_write_layer', return_value=304):
+            with self.subTest(points=points), patch.object(S, 'session', fake):
                 with self.assertRaises(Exception):
                     S.add_pour('GND', points_mm=points)
                 self.assertFalse(fake.commands)
