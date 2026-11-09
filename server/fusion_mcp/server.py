@@ -419,7 +419,7 @@ def start_eagle_pair_import(request_id: str, schematic_path: str, board_path: st
     schematic then board dialogs using the returned staged paths. No files/folders are saved
     or overwritten at start. Call get_eagle_pair_import_status while dialogs are open, then
     finish_eagle_pair_import to verify the new linked family and save to the pinned destination.
-    Needs add-in 0.14.22+. A confirmed not_started request can be explicitly retried with
+    Needs add-in 0.14.23+. A confirmed not_started request can be explicitly retried with
     this same ID/arguments; its queued callback is cancelled before retry becomes possible.
     Never start a second import to recover an uncertain first attempt. Journals the original
     source pins and event cursor for select_eagle_pair_import_file; older untracked tickets
@@ -470,7 +470,9 @@ def finish_eagle_pair_import(request_id: str) -> dict:
     Returns saved_linked only with saved native identities. state_unknown requires inspection;
     resume this same request instead of reimporting. Does not certify footprint geometry or
     manufacturing readiness. Independently review exports and reopen the returned saved IDs.
-    Requires add-in 0.14.22+ for stable document identity and reciprocal linked-export checks."""
+    Requires add-in 0.14.23+. When unsaved native links are unavailable, verify the exact
+    child sources first, save the new parent once, then require all reciprocal links and
+    matching source read-back after save before reporting saved_linked."""
     return session.bridge.call('finish_eagle_pair_import', {'request_id':request_id}, timeout=90)
 
 

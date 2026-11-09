@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.22"
+ADDIN_VERSION = "0.14.23"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -1144,6 +1144,54 @@ def _launch_eagle_pair_import(rid):
         _import_update(record, status='state_unknown' if attempted else 'not_started', error=str(ex))
 
 
+def _verify_import_links(doc, sch_doc, brd_doc, created, exports):
+    design = _document_product(doc,'design')
+    sch,brd = design.schematic,design.board
+    if (sch is None or brd is None
+            or _product_document(sch,'schematic',created) is not sch_doc
+            or _product_document(brd,'board',created) is not brd_doc
+            or _product_document(sch.parentDesign,'design',created) is not doc
+            or _product_document(brd.parentDesign,'design',created) is not doc
+            or _product_document(sch.linkedBoard,'board',created) is not brd_doc
+            or _product_document(brd.linkedSchematic,'schematic',created) is not sch_doc):
+        raise ValueError('New schematic/board reciprocal family links are not verified')
+    for kind, product in (('schematic',sch),('board',brd),
+                          ('board',sch.linkedBoard),('schematic',brd.linkedSchematic)):
+        linked = _export_product(product,kind)
+        with open(linked['path'],'rb') as actual, open(exports[kind]['path'],'rb') as expected:
+            if actual.read() != expected.read():
+                raise ValueError('Native document or reciprocal linked export differs from the imported family')
+
+
+def _pending_import_first_save(record, family):
+    doc,sch_doc,brd_doc = family
+    if (record.get('save_requested') or not record['public'].get('dispatch_acknowledged')
+            or any(d.isSaved or d.dataFile is not None for d in family)):
+        raise ValueError('First-save link exception requires exactly the never-saved imported family')
+    design = _document_product(doc,'design')
+    if not _same_document(_product_parent_document(design),doc):
+        raise ValueError('Imported parent document identity changed')
+    for field in ('schematic','board'):
+        try: getattr(design,field)
+        except RuntimeError as ex:
+            if str(ex) == '2 : InternalValidationError : '+field+'Link': continue
+            raise
+        raise ValueError('Mixed available/unavailable import links are not safe for first save')
+    for child,peer in ((sch_doc,'linkedBoard'),(brd_doc,'linkedSchematic')):
+        product = _document_product(child,_kind_of(child))
+        if product.parentDesign is not None or getattr(product,peer) is not None:
+            raise ValueError('Imported child has a foreign or mixed link before first save')
+    events = _events.read(record['public']['session_id'],0,200)
+    if (events.get('reset') or events.get('dropped') or events['next_after_seq'] != events['latest_seq']
+            or not {'commandStarting','commandTerminated'} <= set(events.get('supported_events',[]))):
+        raise ValueError('Complete native import termination history is required before first save')
+    starts = [e['seq'] for e in events['events'] if e['event']=='commandStarting' and e.get('command_id')=='ImportSCHAndBRDCmd']
+    if not starts or not any(e['event']=='commandTerminated' and e.get('command_id')=='ImportSCHAndBRDCmd'
+                             and e['seq']>max(starts) for e in events['events']):
+        raise ValueError('Native paired importer must terminate before first save')
+    _import_update(record,link_verification='pending_first_save')
+
+
 def op_finish_eagle_pair_import(args):
     rid = _pair_support().request_id(args.get('request_id'))
     status = op_eagle_pair_import_status(args)
@@ -1158,44 +1206,47 @@ def op_finish_eagle_pair_import(args):
         designs = [d for d in created if _kind_of(d)=='design']
         if len(designs)!=1 or len([d for d in created if _kind_of(d) in _DESIGN_PRODUCTS])!=3:
             raise ValueError('Expected exactly one new Electronics Design, schematic and board; import is not verified')
-        doc = designs[0]; design = _document_product(doc,'design')
-        sch,brd = design.schematic,design.board
-        sch_doc = _product_document(sch,'schematic',created); brd_doc = _product_document(brd,'board',created)
-        if (sch is None or brd is None or sch_doc is None or brd_doc is None
-                or _product_document(sch.parentDesign,'design',created) is not doc
-                or _product_document(brd.parentDesign,'design',created) is not doc
-                or _product_document(sch.linkedBoard,'board',created) is not brd_doc
-                or _product_document(brd.linkedSchematic,'schematic',created) is not sch_doc):
-            raise ValueError('New schematic/board reciprocal family links are not verified')
-        exports = {kind:_export_product(prod,kind) for kind,prod in (('schematic',sch),('board',brd))}
-        for kind, product in (('schematic',_document_product(sch_doc,'schematic')),
-                              ('board',_document_product(brd_doc,'board')),
-                              ('board',sch.linkedBoard),('schematic',brd.linkedSchematic)):
-            linked = _export_product(product,kind)
-            with open(linked['path'],'rb') as actual, open(exports[kind]['path'],'rb') as expected:
-                if actual.read() != expected.read():
-                    raise ValueError('Native document or reciprocal linked export differs from the imported family')
-        observed = _pair_support().readback(*(exports[k]['path'] for k in ('schematic','board')))
-        if observed != record['expected']: raise ValueError('Native part/sheet/contact read-back differs from the pinned source pair')
+        kinds = {kind:[d for d in created if _kind_of(d)==kind] for kind in ('design','schematic','board')}
+        if any(len(docs)!=1 for docs in kinds.values()):
+            raise ValueError('Expected exactly one imported document of each family kind')
+        family = tuple(kinds[kind][0] for kind in ('design','schematic','board'))
+        identities = [_doc_info(d)['document_id'] for d in family]
+        if record.get('first_save_documents',identities) != identities:
+            raise ValueError('Imported document identities changed before completion')
+        record['first_save_documents'] = identities
+        doc,sch_doc,brd_doc = family
         destination = _import_destination(record['args']) if not doc.isSaved else record['folder']
         if destination.id != record['folder'].id: raise ValueError('Destination folder identity changed')
         if not doc.isSaved:
             if record.get('save_requested'):
                 raise ValueError('A save was already requested; reconcile its native/cloud identity before continuing. SaveAs will not be submitted twice.')
+            exports = {kind:_export_product(_document_product(kinds[kind][0],kind),kind) for kind in ('schematic','board')}
+            if _pair_support().readback(*(exports[k]['path'] for k in ('schematic','board'))) != record['expected']:
+                raise ValueError('Native part/sheet/contact read-back differs from the pinned source pair')
+            try: _verify_import_links(doc,sch_doc,brd_doc,created,exports)
+            except RuntimeError as ex:
+                if str(ex) not in ('2 : InternalValidationError : schematicLink','2 : InternalValidationError : boardLink'): raise
+                _pending_import_first_save(record,family)
+            _import_preserved(record)
+            _import_source(record)
             record['save_requested'] = True
             _import_update(record, save_requested=True)
             if not doc.saveAs(record['args']['name'], destination, 'Imported pinned EAGLE schematic/board pair', ''):
                 raise ValueError('Fusion did not confirm save; inspect this request before retrying')
             _settle(40)
-        family = (doc,sch_doc,brd_doc)
         if any(not d.isSaved or d.isModified or d.dataFile is None for d in family):
             raise ValueError('New family save is not yet verified; finish this same request again after saving settles')
         if any(d.dataFile.parentProject.id != record['args']['project_id'] for d in family):
             raise ValueError('Saved family project identity differs')
         if doc.dataFile.parentFolder.id != record['folder'].id or doc.dataFile.name != record['args']['name']:
             raise ValueError('Saved Electronics Design destination/name differs')
+        exports = {kind:_export_product(_document_product(kinds[kind][0],kind),kind) for kind in ('schematic','board')}
+        _verify_import_links(doc,sch_doc,brd_doc,created,exports)
+        if _pair_support().readback(*(exports[k]['path'] for k in ('schematic','board'))) != record['expected']:
+            raise ValueError('Saved native part/sheet/contact read-back differs from the pinned source pair')
+        _import_source(record)
         _import_preserved(record)
-        _import_update(record, status='saved_linked', documents=[_doc_info(d) for d in family],
+        _import_update(record, status='saved_linked', link_verification='verified_after_save', documents=[_doc_info(d) for d in family],
                        exports=exports, verification='Reciprocal native family links, part names/counts, sheets and complete physical net/contact mapping. Footprint geometry and manufacturing acceptance require independent review.',
                        next_action='Independently inspect the exports and reopen the exact saved family IDs before product acceptance.')
     except Exception as ex:

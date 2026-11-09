@@ -331,7 +331,7 @@ absolute same-directory/same-basename `.sch` and `.brd` paths, their exact
 `schematic_sha256` and `board_sha256`, an explicit active `project_id`, an existing
 project-relative `folder` (empty for the root), and a new product `name`.
 Every open document must already be saved and unmodified. Import start/finish require
-add-in 0.14.22+; cached status remains available with 0.14.21.
+add-in 0.14.23+; cached status remains available with 0.14.21.
 
 Start stages pinned copies and launches Fusion's native paired importer asynchronously,
 through the normal bridge worker after its response has been sent. Main-thread acknowledgement
@@ -357,9 +357,12 @@ cannot use automated selection.
 reads cached state and observed dialog controls even while the native UI is busy.
 
 After file selection, call `finish_eagle_pair_import(request_id)`. It requires exactly
-one new reciprocal Electronics Design/schematic/board family, unchanged original
-documents, and matching part names/counts, sheets and every physical net/contact mapping
-before saving that new family to the pinned destination. Hierarchical modules are
+one new Electronics Design/schematic/board family, unchanged original documents, and
+matching part names/counts, sheets and every physical net/contact mapping before saving
+that new family to the pinned destination. If the unsaved SDK links are unavailable,
+only the exact native missing-link state may proceed to one parent SaveAs; saved identities,
+strict reciprocal links and full source read-back must then pass before `saved_linked`.
+An uncertain save is never submitted twice. Hierarchical modules are
 explicitly unsupported by this verifier. `state_unknown` is never permission to start
 another import: inspect the dialogs/documents and resume the same request. A successful
 result includes saved native IDs and EAGLE export paths for independent geometry review
@@ -372,6 +375,13 @@ read-only preflight. Explicit `apply=true` additionally requires only the new em
 Untitled parent/schematic, closes those without saving, verifies every original and
 its exports again, and marks that exact ticket cancelled. It does not reload the add-in
 or start another import; partial recovery refuses automatic retry.
+
+`tools/patch_pending_import_finish.py` supports an already-pending 0.14.22 import
+without a reload. Its reviewed manifest pins the process/session, original source and
+destination, all protected/imported document IDs, old native source/bytecode and new
+source hash. It replaces only the three reviewed completion functions and the exact
+finish dispatcher entry. It does not save or finish; retry the same public MCP finish
+after its preflight and explicit apply. Final native link and source checks remain mandatory.
 
 ### Your own parts library
 

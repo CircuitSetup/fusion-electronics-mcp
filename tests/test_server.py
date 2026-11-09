@@ -279,7 +279,7 @@ class TransportTest(unittest.TestCase):
         from fusion_mcp import bridge as B
         bridge=B.Bridge(watch_dialogs=False,keep_focus=False)
         with mock.patch.object(bridge,'transport',return_value='addin'), \
-             mock.patch.object(bridge,'_info',return_value={'addin_version':'0.14.21'}):
+             mock.patch.object(bridge,'_info',return_value={'addin_version':'0.14.22'}):
             for op in ('start_eagle_pair_import','finish_eagle_pair_import'):
                 with self.subTest(op=op),self.assertRaises(B.BridgeOpError) as error:
                     bridge._call(op,{})

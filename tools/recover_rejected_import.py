@@ -132,9 +132,8 @@ def reconcile(live, config):
     return result
 
 
-def run(config_path):
-    """Find only the current authenticated installed bridge, then apply the fixed recovery."""
-    config=json.loads(Path(config_path).read_text(encoding='utf-8'))
+def live_bridge(config):
+    """Find only the current authenticated native bridge pinned by the reviewed manifest."""
     info_dir=Path(os.environ['APPDATA'])/'fusion-electronics-mcp'
     info=json.loads((info_dir/'bridge.json').read_text(encoding='utf-8'))
     if info['pid']!=os.getpid() or info['event_session_id']!=config['session_id']:
@@ -145,6 +144,12 @@ def run(config_path):
                 and os.path.normcase(os.path.realpath(module.__file__))==os.path.normcase(str(owner.resolve()))
                 and getattr(module,'_token',None)==info['token']]
     if len(candidates)!=1: raise ValueError('Cannot uniquely identify the current live installed bridge')
-    result=reconcile(candidates[0],config)
+    return candidates[0]
+
+
+def run(config_path):
+    """Find only the current authenticated installed bridge, then apply the fixed recovery."""
+    config=json.loads(Path(config_path).read_text(encoding='utf-8'))
+    result=reconcile(live_bridge(config),config)
     print(json.dumps(result,indent=2))
     return result

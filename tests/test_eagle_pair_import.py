@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from test_server import load_addin
 from test_document_lifecycle import family, NativeProduct
+from fusion_mcp.addin.FusionElectronicsMCP.management import EventLog
 
 
 LIB = '<libraries><library name="L"><devicesets><deviceset name="D"><devices><device name="" package="P"><connects><connect gate="G" pin="1" pad="1 2"/></connects></device></devices></deviceset></devicesets></library></libraries>'
@@ -209,6 +210,38 @@ class PairImportTest(unittest.TestCase):
                     result=self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']})
                 self.assertEqual(result['status'],'saved_linked' if failure is None else 'state_unknown')
                 self.assertEqual(len(self.saves),int(failure is None))
+
+    def test_first_save_populates_unsaved_sdk_links_and_verifies_afterward(self):
+        for failure in (None,'foreign_link','mismatched_source','unavailable_after_save','uncertain_save','import_active'):
+            with self.subTest(failure=failure):
+                self.a._pair_import_records={}; self.docs=self.originals[:]
+                self.start(); self.a._launch_eagle_pair_import(self.args['request_id'])
+                design,sch,brd=self.add_import()
+                self.a._pair_import_records[self.args['request_id']]['public']['dispatch_acknowledged']=True
+                self.a._events=EventLog(); self.a._events.session_id='session'
+                self.a._events.supported=['commandStarting','commandTerminated']
+                self.a._events.append('commandStarting',command_id='ImportSCHAndBRDCmd')
+                if failure!='import_active': self.a._events.append('commandTerminated',command_id='ImportSCHAndBRDCmd')
+                products=self.a._document_product
+                owners={id(products(d,d.kind)):d for d in self.docs}
+                def pending(): return not design.isSaved or failure=='unavailable_after_save'
+                class PendingProduct(NativeProduct):
+                    def __getattr__(p,name):
+                        if pending() and name in ('parentDesign','linkedBoard','linkedSchematic'):
+                            return NativeProduct(self.originals[0].ecadDesign,owners) if failure=='foreign_link' and name=='parentDesign' else None
+                        return super().__getattr__(name)
+                def product(d,k): return PendingProduct(products(d,k),owners,d is design and pending())
+                if failure=='mismatched_source': self.a._export_product=lambda p,k:{'path':str(self.brd)}
+                if failure=='uncertain_save': design.saveAs=lambda *args:self.saves.append(args) or False
+                with patch.object(self.a,'_document_product',product):
+                    result=self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']})
+                    self.assertEqual(result['status'],'saved_linked' if failure is None else 'state_unknown')
+                    saves=int(failure in (None,'unavailable_after_save','uncertain_save'))
+                    self.assertEqual(len(self.saves),saves)
+                    if saves:
+                        self.assertTrue(result['save_requested'])
+                        self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']})
+                        self.assertEqual(len(self.saves),1)
 
     def test_wrong_link_or_readback_mismatch_never_saves(self):
         for linked in (False,True):

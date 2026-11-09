@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Imported family first save (workflow.32 / add-in 0.14.23)
+
+- Verify the unique imported child documents and complete source signatures before
+  saving when Fusion exposes no unsaved SDK family links. Require both exact native
+  missing-link errors, null child links, never-saved identities and importer termination.
+- Bind the first-save document IDs, submit SaveAs once, and require saved identities,
+  strict reciprocal links and matching exports/source signatures after saving.
+- Include a pinned native-console completion patch for an already-pending 0.14.22
+  ticket; it replaces only the reviewed finish functions without reloading or saving.
+
 ### Native Electronics product identity (workflow.31 / add-in 0.14.22)
 
 - Resolve Electronics products through native parent-document identities instead of
