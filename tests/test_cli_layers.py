@@ -20,6 +20,7 @@ class CliFusion(FakeFusion):
     def __init__(self, wrong_layer=False):
         super().__init__(fusion_export())
         self.native = [1, 2, 303, 304]
+        self.physical_names = ['Top', 'Route2', 'Inner return', 'Bottom']
         self.exported = [1, 2, 15, 16]
         self.inventory = [dict(number=n, name=name, visible=True) for n, name in
                           [(1, 'Top'), (2, 'Route2'), (303, 'Inner return'), (304, 'Bottom'), (23, 'Origins')]]
@@ -28,7 +29,8 @@ class CliFusion(FakeFusion):
     def call(self, op, args=None, **kwargs):
         if op == 'design_rules':
             return {'xml': '<layerstackup>' + ''.join(
-                f'<layerdef type="Signal" layer="{n}"/>' for n in self.native) + '</layerstackup>'}
+                f'<layerdef type="Signal" layer="{n}" name="{name}"/>'
+                for n, name in zip(self.native, self.physical_names)) + '</layerstackup>'}
         if op == 'layers':
             return {'layers': copy.deepcopy(self.inventory)}
         if op == 'run' and 'SET ' in args['commands'] and 'WIRE ' not in args['commands']:
@@ -77,6 +79,7 @@ class CliLayerTest(unittest.TestCase):
     def test_classic_inventory_is_joined_to_v2_stack_through_export_ids(self):
         fake = CliFusion()
         fake.inventory = copy.deepcopy(CLASSIC_INVENTORY)
+        fake.physical_names = ['Top', 'Route2', 'Route15', 'Bottom']
         with patch.object(S, 'session', Session(fake)):
             self.assertEqual(S._write_layer('bottom'), 'Bottom')
             self.assertEqual(S._write_layer('inner2'), 'Route15')
@@ -96,6 +99,7 @@ class CliLayerTest(unittest.TestCase):
         fake = CliFusion()
         fake.native = [1, 2, 3, 304]
         fake.inventory = copy.deepcopy(CLASSIC_INVENTORY) + [dict(number=3, name='Route3', visible=False, used=False)]
+        fake.physical_names = ['Top', 'Route2', 'Route15', 'Bottom']
         with patch.object(S, 'session', Session(fake)):
             self.assertEqual(S._route_write_map(ET.fromstring(fake.xml), used_layers={15}), {15: 'Route15'})
             self.assertEqual(S._write_layer('inner2'), 'Route15')

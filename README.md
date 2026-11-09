@@ -440,14 +440,18 @@ Copper planning uses the export's declared layer IDs. When Fusion retains a 64-I
 the configured stack to those export IDs; retained copper and pad sides then use
 the same layers. Raw XML stays unchanged. Ambiguous mappings are refused, and native
 physical layers are mapped separately by verified stack order before routing writes.
-Routing commands resolve extended V2 API layer IDs such as 303/304 to the actual
-layer names in Fusion's layer inventory. API pour checks retain their native IDs;
+Routing commands resolve physical V2 layer IDs such as 303/304 to the configured
+stack names in Fusion's live layer inventory. API pour checks use those inventory IDs;
 trace verification checks the planned export layer directly. Numeric CLI selectors
 outside 1..255 are refused before submission. Native IDs, export IDs and CLI layer
 names are separate; Bottom 16 in an export does not establish a numeric CLI selector.
 The layer inventory can also use classic IDs while the physical stack uses V2 IDs.
-CLI selection joins these through the verified export stack, uses actual inventory
-names, and resolves only layers used by the planned route.
+CLI selection matches physical stack names to unique live inventory entries at
+the corresponding position in the verified inventory namespace and
+resolves only layers used by the planned route. A placeholder such as Route15 cannot
+substitute for a configured L3 name. Missing or ambiguous configured names are refused
+before writing; when physical names are absent, differing IDs require a verified
+physical inventory namespace. Pour thermal selection uses the same inventory IDs.
 Routing clearance checks retain their result when a foreign pour is on disjoint
 copper layers. Same-net pours, relevant layers, through copper and unknown pour
 layers still report unavailable filled-copper geometry as unverified.

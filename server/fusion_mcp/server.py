@@ -2917,29 +2917,33 @@ def _ensure_view() -> None:
         session.run("DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l, inventory=inventory)) for l in want if l not in _NO_DISPLAY) + ";", "board")
 
 
-def _routing_layer_map(root) -> dict:
-    """Export -> native copper, in physical stack order; refuse incomplete multilayer mapping."""
+def _routing_layers(root) -> tuple[dict, dict]:
+    """Export -> physical IDs and names; refuse incomplete multilayer mapping."""
     from fusion_offline import stackup as ST
     classic = D.parse_board_design(root).copper_layers
     st = ST.parse_stackup(session.bridge.call('design_rules', timeout=60)['xml'])
     native = [c.number for c in st.copper] if st else []
     if len(native) != len(classic) or len(set(native)) != len(native) or None in native:
         raise ValueError('Native/export copper stack mismatch; cannot safely map routing layers')
-    return dict(zip(classic, native))
+    return dict(zip(classic, native)), dict(zip(classic, [c.name for c in st.copper]))
+
+
+def _routing_layer_map(root) -> dict:
+    return _routing_layers(root)[0]
 
 
 def _route_write_map(root, used_layers=None):
-    mapping = _routing_layer_map(root)
+    mapping, physical_names = _routing_layers(root)
     wanted = set(mapping) if used_layers is None else set(used_layers)
     if not wanted <= mapping.keys():
         raise ValueError('Planned layer is not in the verified copper stack')
     if not wanted:
         return {}
     inventory = session.bridge.call('layers', timeout=60)['layers']
-    return _mapped_layer_names(mapping, inventory, wanted)
+    return _mapped_layer_names(mapping, inventory, wanted, physical_names=physical_names)
 
 
-def _mapped_layer_names(mapping, inventory, wanted):
+def _mapped_layer_names(mapping, inventory, wanted, *, physical_names=None):
     """Establish the inventory namespace before resolving potentially overlapping IDs."""
     ids = {row['number'] for row in inventory}
     exports, natives = list(mapping), list(mapping.values())
@@ -2956,6 +2960,17 @@ def _mapped_layer_names(mapping, inventory, wanted):
         if exported != native and namespace is None:
             raise ValueError('Ambiguous native/export layer inventory namespace')
         number = native if namespace == 'native' or exported == native else exported
+        name = physical_names.get(exported) if physical_names is not None else None
+        if name:
+            matches = [row for row in inventory if isinstance(row.get('name'), str)
+                       and row['name'].casefold() == name.casefold()]
+            if sum(n.casefold() == name.casefold() for n in physical_names.values()) != 1 or \
+                    len(matches) != 1 or matches[0]['number'] != number:
+                raise ValueError(f'Configured physical copper layer {name!r} has no unique native inventory entry')
+            out[exported] = _command_layer(matches[0]['number'], inventory=inventory)
+            continue
+        if physical_names is not None and exported != native and namespace != 'native':
+            raise ValueError('A verified physical layer name is required for this classic inventory')
         out[exported] = _command_layer(number, inventory=inventory)
     return out
 
@@ -3000,18 +3015,24 @@ def _route_layer(root, layer):
     raise ValueError('Choose any/top/bottom/innerN or a configured export copper layer')
 
 
-def _write_layer(layer) -> int | str:
-    """CLI selector, separate from export geometry and V2 native layer IDs."""
+def _inventory_layer(layer) -> dict:
+    """Live API inventory entry, separate from export and physical stack IDs."""
     root = D.read_xml(_snap(schematic=False).board_xml)
-    mapping = _routing_layer_map(root)
+    mapping, physical_names = _routing_layers(root)
     native = _native_layer(layer, mapping=mapping)
     exported = next(e for e, n in mapping.items() if n == native)
     inventory = session.bridge.call('layers', timeout=60)['layers']
-    return _mapped_layer_names(mapping, inventory, {exported})[exported]
+    name = _mapped_layer_names(mapping, inventory, {exported}, physical_names=physical_names)[exported]
+    return next(row for row in inventory if row['name'] == name)
+
+
+def _write_layer(layer) -> str:
+    """CLI selector, separate from export geometry and physical stack IDs."""
+    return _inventory_layer(layer)['name']
 
 
 def _native_layer(layer, *, mapping=None) -> int:
-    """V2 API copper ID; extended IDs must be resolved before use in a CLI command."""
+    """Physical V2 copper ID; live object APIs may instead use inventory IDs."""
     from fusion_offline import stackup as ST
     stack = list(mapping.values()) if mapping is not None else None
     if mapping is None:
@@ -3118,8 +3139,8 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
     if not all(math.isfinite(v) for v in (inset_mm, isolate_mm, width_mm, thermal_width_mm)) or \
             isolate_mm < 0 or width_mm <= 0 or thermal_width_mm <= 0:
         raise ValueError('Pour dimensions must be finite; widths positive and clearance nonnegative')
-    native_layer = _native_layer(layer)
-    wl = _write_layer(layer)
+    selected_layer = _inventory_layer(layer)
+    wl = selected_layer['name']
     if points_mm is not None:
         if any(len(p) != 2 for p in points_mm):
             raise ValueError('Pour outline points must have two coordinates')
@@ -3163,7 +3184,7 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
         if len(remaining) != 1:
             return False, 'Expected exactly one new pour'
         p = remaining[0]
-        expected = dict(net=net, layer=native_layer, thermals=thermals, rank=rank, orphans=False, hatched=False)
+        expected = dict(net=net, layer=selected_layer['number'], thermals=thermals, rank=rank, orphans=False, hatched=False)
         bad = [k for k, v in expected.items() if p.get(k) != v]
         dimensions = dict(isolate_mm=isolate_mm, width_mm=width_mm)
         if thermals:
@@ -3199,25 +3220,24 @@ def set_pour_thermals(net: str, width_mm: float, layer: str | int | None = None)
     Each pour is picked on its outline with the other copper layers hidden, then the view is
     restored."""
     pours = [p for p in session.bridge.call("pours", timeout=60)["pours"] if p["net"] == net]
+    wl = _inventory_layer(layer)['number'] if layer is not None else None
     if layer is not None:
-        wl = _native_layer(layer)
         pours = [p for p in pours if p["layer"] == wl]
     if not pours:
         raise KeyError(f"no pours on {net}" + (f" layer {layer}" if layer is not None else ""))
-    copper = sorted({p["layer"] for p in session.bridge.call("pours", timeout=60)["pours"]} | {1, _native_layer("bottom")})
     cmds = []
     for p in pours:
         if len(p["outline"]) < 2:
             raise ValueError(f"cannot read the outline of the {net} pour on layer {p['layer']}")
         (xa, ya), (xb, yb) = p["outline"][0], p["outline"][1]
-        pre, post = _only_layers([_write_layer(p["layer"])])
+        pre, post = _only_layers([p["layer"]])
         cmds.append(f"{pre} CHANGE THERMALWIDTH {C.n(width_mm)} {C.pt((xa + xb) / 2, (ya + yb) / 2)}; {post}")
     try:
         session.run(" ".join(cmds), "board")
     finally:
         _ensure_view()
     now = [p for p in session.bridge.call("pours", timeout=60)["pours"] if p["net"] == net
-           and (layer is None or p["layer"] == _native_layer(layer))]
+           and (layer is None or p["layer"] == wl)]
     bad = [p["layer"] for p in now if abs(p["thermal_width_mm"] - width_mm) > 1e-3]
     if bad:
         raise WriteFailed(f"thermal width not applied on layer(s) {bad}")
