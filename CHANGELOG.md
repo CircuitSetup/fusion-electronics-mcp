@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Slot geometry verification boundaries (workflow.26)
+- Retain declared through-hole pad shape, diameter, rotation and slot length in
+  the shared XML reader; compare slot parameters before package reuse.
+- Report SLOT placement/CAM geometry as unverified and refuse routing/clearance
+  checks that would otherwise replace the slot with a circle.
+- Reject unsupported slotted/routed Excellon commands instead of treating their
+  coordinates as round drill hits. No native slot or CAM extent claim is made.
+
 ### Library evidence and conversion guards (workflow.25)
 - Compare native library identifiers without case sensitivity while preserving
   reviewed evidence, content hashes, exact MPNs and electrical mapping checks.

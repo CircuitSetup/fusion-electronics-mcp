@@ -21,7 +21,7 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 
-from .eagle import parse_rot
+from .eagle import parse_rot, Pad as LibraryPad
 
 
 def _f(el, k, d=0.0):
@@ -144,6 +144,7 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
             else:
                 obs.append(Obstacle("rect", net_, True, (cx, cy, dx / 2, dy / 2, a), frozenset({side})))
         for pad in pk.iterfind("pad"):
+            LibraryPad.from_xml(pad).require_supported_geometry(el.get("name"))
             cx, cy = _xf(_f(pad, "x"), _f(pad, "y"), ex, ey, ang, mir)
             drill = _f(pad, "drill")
             dia = max(_f(pad, "diameter"), drill + 2 * _ring(rules, "Pad", drill))

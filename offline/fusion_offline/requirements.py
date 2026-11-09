@@ -4,6 +4,7 @@ import math
 from . import router as RT
 from . import design as D
 from . import stitch
+from .eagle import UnverifiedGeometry
 
 PLACEMENT = {'distance', 'separation', 'keepout'}
 METRICS = {'resistance_ohm', 'capacitance_f', 'effective_capacitance_f', 'esr_ohm',
@@ -320,6 +321,8 @@ def check(root, spec, evidence, phase='all'):
                 status, reason = _evaluate(root, r, spec, evidence)
             except KeyError as ex:
                 status, reason = 'unverified', f'Missing geometry or requirement field: {ex}'
+            except UnverifiedGeometry as ex:
+                status, reason = 'unverified', str(ex)
         source = evidence.get(r.get('source'), {})
         findings.append(dict(id=r['id'], type=r['type'], status=status, observed=reason, origin=r['origin'],
                              device=r['device'], statement=r['statement'], conditions=r.get('conditions'),

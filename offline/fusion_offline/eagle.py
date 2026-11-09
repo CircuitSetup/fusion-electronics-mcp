@@ -81,6 +81,30 @@ class Pad:
     x: float
     y: float
     drill: float
+    diameter: float = 0.0
+    shape: str = "round"
+    rot: float = 0.0
+    slot_length: float | None = None
+
+    @classmethod
+    def from_xml(cls, node: ET.Element):
+        length = node.get("slotLength")
+        if any(k.lower() == "slotlength" and k != "slotLength" for k in node.attrib):
+            raise UnverifiedGeometry(f"Unverified SLOT attribute on pad {node.get('name')!r}; native spelling/convention is unknown")
+        return cls(name=node.get("name", ""), x=float(node.get("x", 0)), y=float(node.get("y", 0)),
+                   drill=float(node.get("drill", 0)), diameter=float(node.get("diameter", 0)),
+                   shape=(node.get("shape") or "round").lower(), rot=parse_rot(node.get("rot"))[0],
+                   slot_length=float(length) if length is not None else None)
+
+    def require_supported_geometry(self, ref: str):
+        if self.shape == "slot" or self.slot_length is not None:
+            raise UnverifiedGeometry(f"Unverified SLOT geometry for {ref}.{self.name}: drill={self.drill}, "
+                                     f"diameter={self.diameter}, slotLength={self.slot_length}, rot={self.rot}. "
+                                     "Native slot extents and CAM cuts are not validated; no circular substitute is used.")
+
+
+class UnverifiedGeometry(ValueError):
+    """Declared geometry that the current native/CAM contract cannot verify."""
 
 
 @dataclass
@@ -215,9 +239,7 @@ def _parse_package(lib_name: str, node: ET.Element) -> Package:
                                 layer=int(child.get("layer", 1)),
                                 rot=parse_rot(child.get("rot"))[0]))
         elif tag == "pad":
-            pkg.pads.append(Pad(name=child.get("name", ""),
-                                x=float(child.get("x", 0)), y=float(child.get("y", 0)),
-                                drill=float(child.get("drill", 0))))
+            pkg.pads.append(Pad.from_xml(child))
         elif tag == "text":
             pkg.texts.append((int(child.get("layer", 0)), child.text or ""))
         elif tag == "wire":

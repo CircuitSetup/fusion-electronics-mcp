@@ -23,7 +23,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
-from .eagle import parse_rot
+from .eagle import parse_rot, Pad as LibraryPad, UnverifiedGeometry
 
 
 @dataclass
@@ -133,6 +133,10 @@ def parse_excellon(path: str) -> DrillFile:
         lines = f.readlines()
     for line in lines:
         line = line.strip()
+        code = line.split(';', 1)[0].upper()
+        if re.search(r'(?:G85|G0?[0123]|M1[56])(?!\d)', code):
+            raise UnverifiedGeometry(f"Unverified slotted/routed Excellon geometry in {os.path.basename(path)}; "
+                                     "routed cuts cannot be compared as round drill hits")
         if line.startswith(("INCH", "M72")):
             unit_scale = 25.4
         elif line.startswith(("METRIC", "M71")):
@@ -280,6 +284,7 @@ def design_holes(root: ET.Element) -> tuple[DrillFile, dict]:
         ang, mir = parse_rot(el.get("rot"))
         ex, ey = _f(el, "x"), _f(el, "y")
         for p in pk.iterfind("pad"):
+            LibraryPad.from_xml(p).require_supported_geometry(el.get("name"))
             x, y = _xf(_f(p, "x"), _f(p, "y"), ex, ey, ang, mir)
             df.holes.append((round(_f(p, "drill"), 4), x, y))
             counts["tht_pads"] += 1
@@ -327,7 +332,10 @@ def check(path: str, root: ET.Element, copper_layers: int, tol_mm: float = 0.05)
             xs += [_f(w, "x1"), _f(w, "x2")]
             ys += [_f(w, "y1"), _f(w, "y2")]
     outline = (round(max(xs) - min(xs), 3), round(max(ys) - min(ys), 3)) if xs else None
-    holes, counts = design_holes(root)
+    try:
+        holes, counts = design_holes(root)
+    except UnverifiedGeometry as exc:
+        return {"ok": False, "status": "unverified", "problems": [str(exc)], "ignored_files": ignored}
     has_bottom_silk = any(t.get("layer") == "22" for t in board.iterfind("./plain/text"))
 
     copper = {s: layers.get(("copper", s), []) for s in ("top", "inner", "bottom")}
@@ -384,8 +392,12 @@ def check(path: str, root: ET.Element, copper_layers: int, tol_mm: float = 0.05)
 
     drills = layers.get(("drill", ""), [])
     made = DrillFile(path="cam")
-    for p in drills:
-        made.holes += parse_excellon(p).holes
+    try:
+        for p in drills:
+            made.holes += parse_excellon(p).holes
+    except UnverifiedGeometry as exc:
+        return {"ok": False, "status": "unverified", "problems": problems + [str(exc)],
+                "ignored_files": ignored, **info}
     info["drill_files"] = sorted(os.path.basename(p) for p in drills)
     if not drills:
         problems.append("no drill file")

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 from .commands import n, q
 from fusion_offline.kicad_import import validate_pad_names
+from fusion_offline.eagle import Pad
 
 from . import data_dir
 
@@ -93,15 +94,22 @@ class Library:
 
 
 def same_package(el, pkg: dict, tol: float = 0.02) -> bool:
-    """An exported library <package> element has the same pads as the part's package (names,
-    positions and sizes), so a second device can use it instead of drawing it again."""
+    """Compare declared pad parameters for reuse, including SLOT shape, length and axis.
+    Matching XML fields do not certify native SLOT extents or manufactured cuts."""
     def key(name, x, y, a, b):
         return (str(name).upper(), round(float(x) / tol), round(float(y) / tol), round(float(a) / tol), round(float(b) / tol))
-    got = sorted([key(s.get("name"), s.get("x"), s.get("y"), s.get("dx"), s.get("dy")) for s in el.findall("smd")]
-                 + [key(p.get("name"), p.get("x"), p.get("y"), p.get("drill"), p.get("diameter") or 0) for p in el.findall("pad")])
-    want = sorted([key(s["name"], s["x"], s["y"], s["dx"], s["dy"]) for s in pkg.get("smds", [])]
-                  + [key(p["name"], p["x"], p["y"], p["drill"], p.get("diameter", 0)) for p in pkg.get("pads", [])])
-    return got == want
+    def pad_key(p):
+        period = {"round": 1, "square": 90, "octagon": 45, "slot": 180, "long": 180}.get(p.shape, 360)
+        return key(p.name, p.x, p.y, p.drill, p.diameter) + (p.shape, round((p.rot % period) / tol),
+                                                         round(p.slot_length / tol) if p.slot_length is not None else None)
+    got_pads = [Pad.from_xml(p) for p in el.findall("pad")]
+    want_pads = [Pad(p["name"], p["x"], p["y"], p["drill"], p.get("diameter", 0),
+                     p.get("shape", "round"), p.get("rot", 0), p.get("slot_length")) for p in pkg.get("pads", [])]
+    if any(p.shape == "slot" and p.slot_length is None for p in got_pads + want_pads):
+        return False
+    got = sorted(key(s.get("name"), s.get("x"), s.get("y"), s.get("dx"), s.get("dy")) for s in el.findall("smd"))
+    want = sorted(key(s["name"], s["x"], s["y"], s["dx"], s["dy"]) for s in pkg.get("smds", []))
+    return got == want and sorted(map(pad_key, got_pads)) == sorted(map(pad_key, want_pads))
 
 
 def configure_part(part: dict, pin_groups=None, pin_units=None, pin_sides=None, datasheet=None) -> None:

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from . import footprints as FP
 from .pairs import flatten
 from .stitch import _mm, _ring
+from .eagle import Pad as LibraryPad, UnverifiedGeometry
 
 PASSIVE_PREFIXES = ("R", "C", "L", "D", "FB", "LED", "F")
 DEFAULT_GRID = {"passive": 0.125, "other": 0.25}     # agreed 2026-10-05
@@ -110,6 +111,7 @@ def pads(root: ET.Element) -> list[Pad]:
             out.append(Pad(ref, s.get("name"), pad_net.get((ref, s.get("name"))), True, frozenset({side}),
                            x, y, poly, _bbox(poly), min(dx, dy), (s.get("stop") or "yes") != "no"))
         for p in pk.iterfind("pad"):
+            LibraryPad.from_xml(p).require_supported_geometry(ref)
             lx, ly, drill = _f(p, "x"), _f(p, "y"), _f(p, "drill")
             dia = max(_f(p, "diameter"), drill + 2 * _ring(rules, "Pad", drill))
             prot = FP.parse_rot(p.get("rot"))[0]
@@ -493,7 +495,10 @@ def check(root: ET.Element, refs=None, region=None, alignment: bool = False, gri
     cys = FP.courtyards(root)
     skipped = FP.enclosing(cys)
     have = {c.ref for c in cys.values()}
-    pad_list = pads(root)
+    try:
+        pad_list = pads(root)
+    except UnverifiedGeometry as exc:
+        return {"status": "unverified", "summary": str(exc), "unverified_geometry": [str(exc)]}
     all_refs = {p.ref for p in pad_list}
     missing = sorted(all_refs - have, key=_natural)
     derived = {}

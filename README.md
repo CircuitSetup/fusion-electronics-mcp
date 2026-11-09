@@ -359,6 +359,12 @@ component library folder and builds them into a Fusion library of yours:
 Footprints keep plated slots (`(drill oval ...)` becomes a Fusion slot pad)
 and unplated slots (milled on layer 46). `>NAME` / `>VALUE` are 0.8128 mm,
 vector, ratio 8 %, bottom-left, above the footprint's top-left corner.
+The XML reader retains declared pad shape, diameter, rotation and `slotLength`.
+Native SLOT copper/drill extents and routed Excellon cuts are currently
+**unverified**: routing and clearance helpers refuse a circular substitute, and
+placement/CAM reports return `status: unverified`. Package reuse compares the
+declared slot parameters; matching them does not certify native import or CAM
+dimensions. Those require actual import/read-back and cut inspection.
 Conversion refuses repeated physical pad identifiers, standalone paste/mask
 apertures, SMD layer selections other than top copper/paste/mask, and embedded
 zones/keepouts or rule areas. These features require a compatible library or a
