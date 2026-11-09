@@ -1231,8 +1231,12 @@ def op_finish_eagle_pair_import(args):
             _import_source(record)
             record['save_requested'] = True
             _import_update(record, save_requested=True)
-            if not doc.saveAs(record['args']['name'], destination, 'Imported pinned EAGLE schematic/board pair', ''):
-                raise ValueError('Fusion did not confirm save; inspect this request before retrying')
+            try:
+                response = doc.saveAs(record['args']['name'], destination, 'Imported pinned EAGLE schematic/board pair', '')
+                _import_update(record,save_response=response)
+            except Exception as ex:
+                # The SDK can raise after committing the family; saved identities decide the outcome.
+                _import_update(record,save_response_error=str(ex))
             _settle(40)
         if any(not d.isSaved or d.isModified or d.dataFile is None for d in family):
             raise ValueError('New family save is not yet verified; finish this same request again after saving settles')
@@ -1246,7 +1250,7 @@ def op_finish_eagle_pair_import(args):
             raise ValueError('Saved native part/sheet/contact read-back differs from the pinned source pair')
         _import_source(record)
         _import_preserved(record)
-        _import_update(record, status='saved_linked', link_verification='verified_after_save', documents=[_doc_info(d) for d in family],
+        _import_update(record, status='saved_linked', error=None, link_verification='verified_after_save', documents=[_doc_info(d) for d in family],
                        exports=exports, verification='Reciprocal native family links, part names/counts, sheets and complete physical net/contact mapping. Footprint geometry and manufacturing acceptance require independent review.',
                        next_action='Independently inspect the exports and reopen the exact saved family IDs before product acceptance.')
     except Exception as ex:

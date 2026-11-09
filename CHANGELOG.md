@@ -9,6 +9,8 @@
   missing-link errors, null child links, never-saved identities and importer termination.
 - Bind the first-save document IDs, submit SaveAs once, and require saved identities,
   strict reciprocal links and matching exports/source signatures after saving.
+- Reconcile those saved identities even when SaveAs returns false or raises after
+  committing; preserve the response diagnostic and never repeat the save.
 - Include a pinned native-console completion patch for an already-pending 0.14.22
   ticket; it replaces only the reviewed finish functions without reloading or saving.
 

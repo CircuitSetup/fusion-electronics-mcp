@@ -212,7 +212,7 @@ class PairImportTest(unittest.TestCase):
                 self.assertEqual(len(self.saves),int(failure is None))
 
     def test_first_save_populates_unsaved_sdk_links_and_verifies_afterward(self):
-        for failure in (None,'foreign_link','mismatched_source','unavailable_after_save','uncertain_save','import_active'):
+        for failure in (None,'foreign_link','mismatched_source','unavailable_after_save','uncertain_save','import_active','saved_then_raises','false_after_saved'):
             with self.subTest(failure=failure):
                 self.a._pair_import_records={}; self.docs=self.originals[:]
                 self.start(); self.a._launch_eagle_pair_import(self.args['request_id'])
@@ -233,10 +233,18 @@ class PairImportTest(unittest.TestCase):
                 def product(d,k): return PendingProduct(products(d,k),owners,d is design and pending())
                 if failure=='mismatched_source': self.a._export_product=lambda p,k:{'path':str(self.brd)}
                 if failure=='uncertain_save': design.saveAs=lambda *args:self.saves.append(args) or False
+                if failure in ('saved_then_raises','false_after_saved'):
+                    save=design.saveAs
+                    def saved_with_bad_response(*args):
+                        save(*args)
+                        if failure=='saved_then_raises': raise RuntimeError('2 : InternalValidationError : res')
+                        return False
+                    design.saveAs=saved_with_bad_response
                 with patch.object(self.a,'_document_product',product):
                     result=self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']})
-                    self.assertEqual(result['status'],'saved_linked' if failure is None else 'state_unknown')
-                    saves=int(failure in (None,'unavailable_after_save','uncertain_save'))
+                    success=failure in (None,'saved_then_raises','false_after_saved')
+                    self.assertEqual(result['status'],'saved_linked' if success else 'state_unknown')
+                    saves=int(failure in (None,'unavailable_after_save','uncertain_save','saved_then_raises','false_after_saved'))
                     self.assertEqual(len(self.saves),saves)
                     if saves:
                         self.assertTrue(result['save_requested'])
