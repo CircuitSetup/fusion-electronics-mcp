@@ -134,13 +134,26 @@ class BoardDesign:
 
     @property
     def copper_layers(self) -> list[int]:
-        """Copper layer numbers in stack order, from designrules layerSetup."""
+        """Copper IDs in stack order, in the numbering of this XML's layer table."""
         setup = self.rules.get("layerSetup", "")
         nums = [int(n) for n in re.findall(r"\d+", setup)]
         seen: list[int] = []
         for n in nums:
             if n not in seen:
                 seen.append(n)
+        if seen and max(seen) > 16 and self.layers:
+            if self.layers.get(1, '').casefold() == 'top' and self.layers.get(16, '').casefold() == 'bottom':
+                # Fusion can retain its 64-ID setup while exporting geometry on EAGLE's 16 IDs.
+                mapped = [n if n <= 8 else n - 48 for n in seen]
+                if (seen[0] != 1 or seen[-1] != 64
+                        or any(not (1 <= n <= 8 or 57 <= n <= 64) for n in seen)
+                        or any(n > 16 and n in self.layers for n in seen)
+                        or mapped != sorted(set(mapped))
+                        or any(n not in self.layers for n in mapped)):
+                    raise ValueError('Ambiguous copper layer setup/export mapping')
+                return mapped
+            if any(n not in self.layers for n in seen):
+                raise ValueError('Copper layer setup disagrees with export layer declarations')
         return seen or [1, 16]
 
     def stackup(self) -> dict:

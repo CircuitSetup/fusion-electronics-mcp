@@ -435,6 +435,11 @@ return `placement_status: unverified`, the geometry reason, and null `introduced
 placement planners and routing/CAM guards continue to refuse unsupported geometry.
 Real placement edits activate the linked PCB before selecting Ignore Violators mode.
 If PCB activation or that mode cannot be confirmed, no move or rotation is submitted.
+Copper planning uses the export's declared layer IDs. When Fusion retains a 64-ID
+`layerSetup` in an EAGLE export declaring Top 1/Bottom 16, the shared parser maps
+the configured stack to those export IDs; retained copper and pad sides then use
+the same layers. Raw XML stays unchanged. Ambiguous mappings are refused, and native
+physical layers are mapped separately by verified stack order before routing writes.
 Conversion refuses repeated physical pad identifiers, standalone paste/mask
 apertures, SMD layer selections other than top copper/paste/mask, and embedded
 zones/keepouts or rule areas. These features require a compatible library or a
