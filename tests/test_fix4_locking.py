@@ -10,9 +10,9 @@ from unittest import mock
 
 from fusion_mcp import bridge as BR
 from fusion_mcp import server as S
-from fusion_mcp.bridge import Bridge, BridgeUnavailable
+from fusion_mcp.bridge import Bridge, BridgeOpError, BridgeUnavailable
 from fusion_mcp.fusion_lock import FusionBusy, FusionLock
-from fusion_mcp.session import Session
+from fusion_mcp.session import Session, WriteFailed
 
 from test_drc import DrcFusion
 from test_move_parts import FakeFusion, parts_root
@@ -157,6 +157,56 @@ class MultiCallToolsTest(unittest.TestCase):
             with self.assertRaises(BridgeUnavailable):
                 with S._IgnoreViolators():
                     self.fail("the edit must not run when the mode could not be set")
+
+    def test_mode_errors_stop_before_the_edit(self):
+        for code in ("error", "unknown_op"):
+            with self.subTest(code=code):
+                class ModeError(LockedFake):
+                    def call(self, op, args=None, **kwargs):
+                        if op == "violation_mode":
+                            raise BridgeOpError(code, "mode unavailable")
+                        return super().call(op, args, **kwargs)
+
+                fake = ModeError(parts_root())
+                before = fake.xml
+                with mock.patch.object(S, "session", Session(fake)):
+                    with self.assertRaises(BridgeOpError):
+                        S._move_parts([{"ref": "R1", "x_mm": 8}], False)
+                self.assertEqual(fake.xml, before)
+                self.assertEqual(fake.ran, [])
+                self.assertEqual(fake.lock.depth, 0)
+
+    def test_unconfirmed_ignore_mode_restores_prior_mode_without_editing(self):
+        for mode in ("push", None):
+            with self.subTest(mode=mode):
+                class ModeUnchanged(LockedFake):
+                    def call(self, op, args=None, **kwargs):
+                        if op == "violation_mode" and args.get("set") == "ignore":
+                            return {"before": "walkaround", "mode": mode}
+                        return super().call(op, args, **kwargs)
+
+                fake = ModeUnchanged(parts_root())
+                with mock.patch.object(S, "session", Session(fake)):
+                    with self.assertRaises(WriteFailed):
+                        S._move_parts([{"ref": "R1", "x_mm": 8}], False)
+                self.assertEqual(fake.ran, [])
+                self.assertEqual(fake.mode, "walkaround")
+                self.assertEqual(fake.lock.depth, 0)
+
+    def test_failed_board_activation_stops_before_setting_mode(self):
+        class WrongEditor(LockedFake):
+            def call(self, op, args=None, **kwargs):
+                if op == "activate":
+                    return {"active_document": {"kind": "schematic"}, "active_editor": "schematic"}
+                return super().call(op, args, **kwargs)
+
+        fake = WrongEditor(parts_root())
+        with mock.patch.object(S, "session", Session(fake)):
+            with self.assertRaises(WriteFailed):
+                S._move_parts([{"ref": "R1", "x_mm": 8}], False)
+        self.assertEqual(fake.modes, [])
+        self.assertEqual(fake.ran, [])
+        self.assertEqual(fake.lock.depth, 0)
 
     def test_check_drc_runs_and_reads_in_one_hold(self):
         S._DRC_LAST.clear()

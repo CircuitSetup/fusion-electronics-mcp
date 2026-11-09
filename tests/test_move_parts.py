@@ -25,6 +25,8 @@ class FakeFusion:
         self.ran = []
         self.push = push
         self.modes = []
+        self.editor = "board"
+        self.mode = "push"
         self.dir = tempfile.mkdtemp()
 
     def _els(self, root):
@@ -32,14 +34,20 @@ class FakeFusion:
 
     def call(self, op, args=None, timeout=60, answers=None, forms=None):
         if op == "activate":
-            return {}
+            self.editor = args["kind"]
+            return {"active_document": {"name": self.design, "kind": self.editor},
+                    "active_editor": self.editor}
         if op == "context":
             if self.designs:
                 self.design = self.designs.pop(0)
-            return {"active_document": {"name": self.design, "kind": "board"}}
+            return {"active_document": {"name": self.design, "kind": self.editor},
+                    "active_editor": self.editor}
         if op == "violation_mode":
             self.modes.append(args.get("set"))
-            return {"before": "push"}
+            before = self.mode
+            if self.editor == "board" and args.get("set"):
+                self.mode = args["set"]
+            return {"before": before, "mode": self.mode}
         if op == "export":
             path = os.path.join(self.dir, f"b{len(self.ran)}.brd")
             with open(path, "wb") as f:
@@ -107,6 +115,21 @@ class MoveToolsTest(unittest.TestCase):
         self.assertEqual(fake.modes, ["ignore", "push"])         # Fusion's push mode restored after
         els = fake._els(ET.fromstring(fake.xml))
         self.assertEqual((els["R3"].get("x"), els["R3"].get("rot")), ("12", "MR180"))
+
+    def test_schematic_active_move_sets_board_mode_before_moving(self):
+        class EditorModeFusion(FakeFusion):
+            def call(self, op, args=None, **kwargs):
+                if op == "run" and "MOVE" in args["commands"] and self.mode != "ignore":
+                    self.push = "R1"
+                return super().call(op, args, **kwargs)
+
+        fake = EditorModeFusion(parts_root())
+        fake.editor = "schematic"
+        fake.mode = "walkaround"
+        result = self.run_tool(fake, S._move_parts, [{"ref": "R1", "x_mm": 8}], False)
+        self.assertTrue(result["written"])
+        self.assertEqual(fake._els(ET.fromstring(fake.xml))["R1"].get("x"), "8")
+        self.assertEqual(fake.mode, "walkaround")
 
     def test_bystander_pushed_aside_undoes_the_whole_batch(self):
         fake = FakeFusion(parts_root(), push="C1")

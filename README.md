@@ -433,6 +433,8 @@ reporting encounters unsupported geometry, they retain the verified write result
 return `placement_status: unverified`, the geometry reason, and null `introduced`,
 `cleared` and `unchanged` lists. Dry runs omit the unsupported picture. Constrained
 placement planners and routing/CAM guards continue to refuse unsupported geometry.
+Real placement edits activate the linked PCB before selecting Ignore Violators mode.
+If PCB activation or that mode cannot be confirmed, no move or rotation is submitted.
 Conversion refuses repeated physical pad identifiers, standalone paste/mask
 apertures, SMD layer selections other than top copper/paste/mask, and embedded
 zones/keepouts or rule areas. These features require a compatible library or a

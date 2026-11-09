@@ -1792,8 +1792,8 @@ class _IgnoreViolators:
     user's mode after. In the default 'push' mode Fusion shoves a moved part
     away from others, even on the other side of the board.
     The lock all server processes share is held from setting the mode to restoring it, so
-    another session's write cannot run in the wrong mode or have its mode reset. A busy or
-    unreachable Fusion is raised, never skipped; only an add-in without the op is tolerated."""
+    another session's write cannot run in the wrong mode or have its mode reset. Activate
+    the linked PCB before changing this editor-specific mode, and refuse an unverified mode."""
     def __enter__(self):
         self.prev = None
         self._stack = contextlib.ExitStack()
@@ -1801,11 +1801,16 @@ class _IgnoreViolators:
         if lock is not None:
             self._stack.enter_context(lock.hold("ignore violators"))
         try:
-            self.prev = session.bridge.call("violation_mode", {"set": "ignore"})["before"]
-        except BridgeOpError:
-            pass
-        except BaseException:
-            self._stack.close()
+            context = session.activate("board")
+            if (context.get("active_editor") != "board"
+                    or (context.get("active_document") or {}).get("kind") != "board"):
+                raise WriteFailed("Fusion did not activate the PCB; nothing was written")
+            mode = session.bridge.call("violation_mode", {"set": "ignore"})
+            self.prev = mode["before"]
+            if mode.get("mode") != "ignore":
+                raise WriteFailed("Fusion did not confirm Ignore Violators mode; nothing was written")
+        except BaseException as ex:
+            self.__exit__(type(ex), ex, ex.__traceback__)
             raise
         return self
 
@@ -1849,6 +1854,7 @@ def move_parts(moves: list[dict], dry_run: bool = False, design: str | None = No
     The write is checked as a whole: every listed part must end exactly where asked and no other
     part may move (Fusion pushes parts aside in its default mode, so the moves run with
     violations ignored); otherwise the whole batch is undone.
+    No edit is sent unless the linked PCB is active and Ignore Violators mode is confirmed.
     dry_run=true writes nothing: it returns a picture of the parts at their new places with
     courtyards drawn, and what the moves would introduce or clear: courtyard overlaps (derived
     ones marked, for parts without a library courtyard), pad gaps under the rules, and silkscreen
@@ -4327,6 +4333,7 @@ def import_placement_from_kicad(pcb_path: str, dry_run: bool = False, skip: list
     bottom-left, y up; bottom parts at angle R become mirrored 180 - R). All moves run in one
     verified command (one undo step) in Ignore Violators mode, so parts may sit over each other on
     opposite sides. dry_run=true only reports the moves. Routing is not imported.
+    No edit is sent unless the linked PCB is active and Ignore Violators mode is confirmed.
 
     fit_pads (default): each part is placed so its pads land on the KiCad board's pads (matched by
     pad name, least squares), not by footprint origin and angle: a Fusion footprint whose origin
