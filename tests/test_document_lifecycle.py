@@ -38,6 +38,21 @@ class IncompleteDesign(Product):
         return super().__getattribute__(name)
 
 
+class NativeProduct:
+    def __init__(self, wrapped, documents, missing_links=False):
+        self.wrapped=wrapped; self.documents=documents; self.missing_links=missing_links
+    def __eq__(self, other): return False
+    def __getattr__(self, name):
+        if name=='parentDocument':
+            doc=self.documents[id(self.wrapped)]
+            if doc.kind!='design': raise RuntimeError('2 : InternalValidationError : adapter')
+            return doc
+        if self.missing_links and name in ('schematic','board'):
+            raise RuntimeError('2 : InternalValidationError : '+name+'Link')
+        value=getattr(self.wrapped,name)
+        return NativeProduct(value,self.documents) if id(value) in self.documents else value
+
+
 def family():
     design = Document("Design A", "design")
     schematic = Document("Logic", "schematic", modified=True)
@@ -62,6 +77,25 @@ class LifecycleTest(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.addin.INFO_DIR = temp.name
         self.addin.FOLDERS_PATH = str(Path(temp.name) / "folders.json")
+
+    def test_distinct_native_product_wrappers_resolve_exact_family_without_names(self):
+        first,second=family(),family()
+        docs=[*first,*second]
+        products=self.addin._document_product
+        owners={id(products(d,d.kind)):d for d in docs}
+        self.addin._document_product=lambda d,k:NativeProduct(products(d,k),owners)
+        for design,sch,board in (first,second):
+            for doc in (design,sch,board):
+                product=self.addin._document_product(doc,doc.kind)
+                self.assertIs(self.addin._product_document(product,doc.kind,docs),doc)
+            self.assertIs(self.addin._family_peer(sch,'board',docs),board)
+            keys=dict((id(d),key) for d,key in self.addin._family_keys(docs))
+            self.assertTrue(self.addin._same_family(keys[id(sch)],keys[id(board)]))
+        self.assertFalse(self.addin._same_family(keys[id(first[1])],keys[id(second[1])]))
+        duplicate=Document('duplicate','schematic'); duplicate.schematic=first[1].schematic
+        owners[id(duplicate.schematic)]=first[1]
+        self.assertIsNone(self.addin._product_document(self.addin._document_product(first[1],'schematic'),
+                                                     'schematic',[*docs,duplicate]))
 
     def test_close_checks_entire_linked_family_and_preserves_unrelated_tab(self):
         design, schematic, board = family()

@@ -274,6 +274,17 @@ class TransportTest(unittest.TestCase):
                 B.Bridge(watch_dialogs=False, keep_focus=False).call("save", {})
         self.assertEqual(cm.exception.code, "needs_addin")
 
+    def test_import_writes_refuse_addin_with_broken_product_identity(self):
+        from unittest import mock
+        from fusion_mcp import bridge as B
+        bridge=B.Bridge(watch_dialogs=False,keep_focus=False)
+        with mock.patch.object(bridge,'transport',return_value='addin'), \
+             mock.patch.object(bridge,'_info',return_value={'addin_version':'0.14.21'}):
+            for op in ('start_eagle_pair_import','finish_eagle_pair_import'):
+                with self.subTest(op=op),self.assertRaises(B.BridgeOpError) as error:
+                    bridge._call(op,{})
+                self.assertEqual(error.exception.code,'needs_addin')
+
 
 class RuleLibraryTest(unittest.TestCase):
     def test_bundled_rule_sets(self):

@@ -330,7 +330,8 @@ Use `start_eagle_pair_import` with a fresh 32-character lowercase hex `request_i
 absolute same-directory/same-basename `.sch` and `.brd` paths, their exact
 `schematic_sha256` and `board_sha256`, an explicit active `project_id`, an existing
 project-relative `folder` (empty for the root), and a new product `name`.
-Every open document must already be saved and unmodified. Requires add-in 0.14.21+.
+Every open document must already be saved and unmodified. Import start/finish require
+add-in 0.14.22+; cached status remains available with 0.14.21.
 
 Start stages pinned copies and launches Fusion's native paired importer asynchronously,
 through the normal bridge worker after its response has been sent. Main-thread acknowledgement

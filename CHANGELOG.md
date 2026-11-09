@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Native Electronics product identity (workflow.31 / add-in 0.14.22)
+
+- Resolve Electronics products through native parent-document identities instead of
+  comparing separate SDK product wrappers. Reject ambiguous child matches.
+- Verify imported document and reciprocal link exports against the new family before
+  saving; retain full source part/sheet/contact and original-document checks.
+- Require add-in 0.14.22 for import start/finish; cached status still supports 0.14.21.
+
 ### Guarded native file selection (workflow.30; server only)
 
 - Add `select_eagle_pair_import_file` to select only the pending import's pinned

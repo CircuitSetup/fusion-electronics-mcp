@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.21"
+ADDIN_VERSION = "0.14.22"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -192,11 +192,33 @@ def _same_file_version(left_file, right_file):
                 and (file_id := getattr(left_file, "id", None)) and file_id == getattr(right_file, "id", None))
 
 
+def _product_parent_document(product):
+    try:
+        return product.parentDocument if product is not None else None
+    except (AttributeError, RuntimeError):
+        return None
+
+
+def _same_design(left, right):
+    if left is None or right is None:
+        return False
+    owner, peer = _product_parent_document(left), _product_parent_document(right)
+    return _same_document(owner, peer) if owner is not None or peer is not None else left == right
+
+
 def _product_document(product, kind, docs):
-    if product is not None:
-        return next((doc for doc in docs if _kind_of(doc) == kind
-                     and _document_product(doc, kind) == product), None)
-    return None
+    if product is None:
+        return None
+    candidates = [doc for doc in docs if _kind_of(doc) == kind]
+    owner = _product_parent_document(product)
+    if owner is not None:
+        matches = [doc for doc in candidates if _same_document(doc, owner)]
+    elif kind in ('schematic', 'board') and _product_parent_document(getattr(product, 'parentDesign', None)) is not None:
+        # Electronics child adapters lack parentDocument and can compare unequal to their own wrappers.
+        matches = [doc for doc in candidates if _same_design(product.parentDesign, _family_design(doc))]
+    else:
+        matches = [doc for doc in candidates if _document_product(doc, kind) == product]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _family_peer(doc, kind, docs):
@@ -278,7 +300,7 @@ def _same_family(left, right):
     left_doc, left_design = left
     right_doc, right_design = right
     return (_same_document(left_doc, right_doc) or
-            (left_design is not None and right_design is not None and left_design == right_design))
+            _same_design(left_design, right_design))
 
 
 def _docs():
@@ -1140,10 +1162,19 @@ def op_finish_eagle_pair_import(args):
         sch,brd = design.schematic,design.board
         sch_doc = _product_document(sch,'schematic',created); brd_doc = _product_document(brd,'board',created)
         if (sch is None or brd is None or sch_doc is None or brd_doc is None
-                or sch.parentDesign != design or brd.parentDesign != design
-                or sch.linkedBoard != brd or brd.linkedSchematic != sch):
+                or _product_document(sch.parentDesign,'design',created) is not doc
+                or _product_document(brd.parentDesign,'design',created) is not doc
+                or _product_document(sch.linkedBoard,'board',created) is not brd_doc
+                or _product_document(brd.linkedSchematic,'schematic',created) is not sch_doc):
             raise ValueError('New schematic/board reciprocal family links are not verified')
         exports = {kind:_export_product(prod,kind) for kind,prod in (('schematic',sch),('board',brd))}
+        for kind, product in (('schematic',_document_product(sch_doc,'schematic')),
+                              ('board',_document_product(brd_doc,'board')),
+                              ('board',sch.linkedBoard),('schematic',brd.linkedSchematic)):
+            linked = _export_product(product,kind)
+            with open(linked['path'],'rb') as actual, open(exports[kind]['path'],'rb') as expected:
+                if actual.read() != expected.read():
+                    raise ValueError('Native document or reciprocal linked export differs from the imported family')
         observed = _pair_support().readback(*(exports[k]['path'] for k in ('schematic','board')))
         if observed != record['expected']: raise ValueError('Native part/sheet/contact read-back differs from the pinned source pair')
         destination = _import_destination(record['args']) if not doc.isSaved else record['folder']
@@ -1676,13 +1707,13 @@ def _pcb3d_link():
         if board not in docs or pcb not in docs:
             continue
         if (_same_document(active, board) or _same_document(active, pcb)
-                or (parent is not None and parent == _family_design(board))):
+                or _same_design(parent, _family_design(board))):
             return board, pcb
     mechanical = [doc for doc in docs if _kind_of(doc) == "other" and getattr(doc, "dataFile", None) is not None]
     matches = []
     if mechanical:
         for board in (doc for doc in docs if _kind_of(doc) == "board"):
-            board_active = _same_document(active, board) or (parent is not None and parent == _family_design(board))
+            board_active = _same_document(active, board) or _same_design(parent, _family_design(board))
             candidates = mechanical if board_active else [doc for doc in mechanical if _same_document(active, doc)]
             if not candidates:
                 continue

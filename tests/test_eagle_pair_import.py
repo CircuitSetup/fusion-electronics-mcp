@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_server import load_addin
-from test_document_lifecycle import family
+from test_document_lifecycle import family, NativeProduct
 
 
 LIB = '<libraries><library name="L"><devicesets><deviceset name="D"><devices><device name="" package="P"><connects><connect gate="G" pin="1" pad="1 2"/></connects></device></devices></deviceset></devicesets></library></libraries>'
@@ -190,6 +190,25 @@ class PairImportTest(unittest.TestCase):
         self.assertEqual(self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']}),result)
         self.assertEqual(len(self.saves),1)
         self.assertTrue(all(d.isSaved and not d.isModified for d in self.originals))
+
+    def test_finish_resolves_distinct_native_adapters_and_rejects_foreign_or_changed_links(self):
+        products=self.a._document_product
+        for failure in (None,'foreign_parent','changed_link'):
+            with self.subTest(failure=failure):
+                self.a._pair_import_records={}; self.docs=self.originals[:]
+                self.start(); self.a._launch_eagle_pair_import(self.args['request_id'])
+                design,sch,brd=self.add_import()
+                owners={id(products(d,d.kind)):d for d in self.docs}
+                if failure=='foreign_parent': sch.schematic.parentDesign=self.originals[0].ecadDesign
+                if failure=='changed_link':
+                    wrong=types.SimpleNamespace(parentDesign=design.ecadDesign)
+                    owners[id(wrong)]=brd
+                    sch.schematic.linkedBoard=wrong
+                    self.a._export_product=lambda p,k:{'path':str(self.sch if getattr(p,'wrapped',p) is wrong or k=='schematic' else self.brd)}
+                with patch.object(self.a,'_document_product',lambda d,k:NativeProduct(products(d,k),owners)):
+                    result=self.a.op_finish_eagle_pair_import({'request_id':self.args['request_id']})
+                self.assertEqual(result['status'],'saved_linked' if failure is None else 'state_unknown')
+                self.assertEqual(len(self.saves),int(failure is None))
 
     def test_wrong_link_or_readback_mismatch_never_saves(self):
         for linked in (False,True):

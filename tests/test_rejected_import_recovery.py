@@ -6,23 +6,11 @@ import types
 import unittest
 
 import test_eagle_pair_import as F
-from test_document_lifecycle import family
+from test_document_lifecycle import family, NativeProduct
 from fusion_mcp.addin.FusionElectronicsMCP.management import EventLog
 
 
 SCRIPT=Path(__file__).resolve().parents[1]/'tools/recover_rejected_import.py'
-
-
-class NativeProduct:
-    def __init__(self, wrapped, documents, missing_links=False):
-        self.wrapped=wrapped; self.documents=documents; self.missing_links=missing_links
-    def __eq__(self, other): return False
-    def __getattr__(self, name):
-        if name=='parentDocument': return self.documents[id(self.wrapped)]
-        if self.missing_links and name in ('schematic','board'):
-            raise RuntimeError('2 : InternalValidationError : '+name+'Link')
-        value=getattr(self.wrapped,name)
-        return NativeProduct(value,self.documents) if id(value) in self.documents else value
 
 
 class RejectedRecoveryTest(unittest.TestCase):
