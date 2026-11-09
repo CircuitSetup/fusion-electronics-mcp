@@ -144,6 +144,8 @@ class HeaderKeepoutExceptionTest(unittest.TestCase):
         stack = '<layerstackup>' + ''.join(f'<layerdef type="Signal" layer="{layer}"/>' for layer in (1, 2, 15, 16)) + '</layerstackup>'
         def call(op, *args, **kwargs):
             if op == 'context': return contexts
+            if op == 'layers':
+                return {'layers': [dict(number=n, name=f'Layer{n}', visible=True) for n in (1, 2, 15, 16)]}
             if op == 'design_rules':
                 changed = copy.deepcopy(root)
                 changed.find('.//element[@name="J2"]').set('x', '2.1')

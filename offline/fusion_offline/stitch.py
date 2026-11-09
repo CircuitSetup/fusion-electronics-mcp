@@ -162,6 +162,49 @@ def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x
                     restrict_layer=layer, source_ref=source_ref)
 
 
+def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False):
+    """Normalize supported native filled outlines without changing the exported XML."""
+    try:
+        polygon = ET.Element('polygon', layer=shape.attrib['layer'])
+        if shape.tag == 'rectangle':
+            if (shape.get('rot', 'R0') != 'R0' or len(shape)
+                    or set(shape.attrib) - {'x1', 'y1', 'x2', 'y2', 'layer', 'rot', 'restrictlayers'}):
+                raise ValueError('rotated or nested restrict rectangles are unsupported')
+            x1, y1, x2, y2 = (float(shape.attrib[k]) for k in ('x1', 'y1', 'x2', 'y2'))
+            if not all(math.isfinite(v) for v in (x1, y1, x2, y2)) or x1 == x2 or y1 == y2:
+                raise ValueError('restrict rectangle must have finite nonzero area')
+            for x, y in ((x1, y1), (x2, y1), (x2, y2), (x1, y2)):
+                ET.SubElement(polygon, 'vertex', x=str(x), y=str(y))
+        else:
+            if ([c.tag for c in shape] != ['polygonoutlineobjects', 'polygonoutlinesegments']
+                    or set(shape.attrib) - {'layer', 'restrictlayers'}):
+                raise ValueError('unsupported native restrict outline or apertures')
+            objects, segments = list(shape)
+            if any(v.tag != 'vertex' or set(v.attrib) - {'x', 'y', 'curve'} or len(v)
+                   for group in (objects, segments) for v in group):
+                raise ValueError('unsupported native restrict outline segments')
+            def vertices(group):
+                return [(float(v.attrib['x']), float(v.attrib['y']), float(v.get('curve', '0'))) for v in group]
+            points, closed = vertices(objects), vertices(segments)
+            if not points or closed != points + points[:1]:
+                raise ValueError('native restrict outline must be a single matching closed contour')
+            for vertex in objects:
+                ET.SubElement(polygon, 'vertex', vertex.attrib)
+        obstacle = _restrict_polygon(polygon, stack, source_ref, transform, mirror)
+        mask = shape.get('restrictlayers')
+        if mask is not None or shape.tag == 'polygonshape':
+            # shortcut: only observed singleton outer-layer masks are verified; reject other masks until their schema is established.
+            if mask not in ('1', '16') or int(mask) not in stack or shape.get('layer') == '43':
+                raise ValueError('unsupported or missing native restrictlayers mask')
+            layer = int(mask)
+            if mirror:
+                layer = stack[-1] if layer == stack[0] else stack[0]
+            obstacle.layers = frozenset({layer})
+        return obstacle
+    except (ValueError, KeyError, TypeError) as error:
+        raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None
+
+
 def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[float, float, float, float]]]:
     """(obstacles, rules, outline segments) from a board XML root."""
     board = root.find("./drawing/board")
@@ -229,6 +272,10 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
         for h in pk.iterfind("hole"):
             cx, cy = _xf(_f(h, "x"), _f(h, "y"), ex, ey, ang, mir)
             obs.append(Obstacle("circle", None, True, (cx, cy, _f(h, "drill") / 2)))
+        for shape in list(pk.findall('rectangle')) + list(pk.findall('polygonshape')):
+            if shape.get('layer') in ('41', '42', '43'):
+                obs.append(_restrict_shape(shape, stack, el.get('name'),
+                           lambda x, y: _xf(x, y, ex, ey, ang, mir), mir))
         for polygon in pk.findall('polygon'):
             if polygon.get('layer') in ('41', '42', '43'):
                 obs.append(_restrict_polygon(polygon, stack, el.get('name'),
@@ -243,6 +290,9 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
         if c.get("layer") in ("41", "42", "43") and _f(c, "width") == 0:
             obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius")),
                                 restrict_layer=int(c.get('layer'))))
+    for shape in list(board.findall('./plain/rectangle')) + list(board.findall('./plain/polygonshape')):
+        if shape.get('layer') in ('41', '42', '43'):
+            obs.append(_restrict_shape(shape, stack))
     for polygon in board.findall('./plain/polygon'):
         if polygon.get('layer') in ('41', '42', '43'):
             obs.append(_restrict_polygon(polygon, stack))

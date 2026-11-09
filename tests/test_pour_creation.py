@@ -42,6 +42,9 @@ class FakeSession:
     def hold(self, label):
         return contextlib.nullcontext()
 
+    def snapshot(self, board=True, schematic=True):
+        return snapshot(self.after if self.commands else self.before)
+
     def call(self, op, *args, **kwargs):
         if op == 'layers':
             return {'layers': [dict(number=n, name='Top' if i == 0 else 'Bottom' if i == len(self.layers)-1
@@ -82,7 +85,7 @@ class PourCreationTest(unittest.TestCase):
                                 patch.object(S, 'session', fake), patch.object(S, '_snap', return_value=snap):
                             result = S.add_pour('GND', requested, points_mm=POINTS, rank=rank)
                             self.assertTrue(result['ok'])
-                            selector = str(number) if number <= 255 else "'Bottom'" if number == native[-1] else f"'Inner {native.index(number)}'"
+                            selector = "'Top'" if number == native[0] else "'Bottom'" if number == native[-1] else f"'Inner {native.index(number)}'"
                             self.assertIn(f'LAYER {selector};', fake.commands[0])
                             self.assertIn(f'CHANGE RANK {rank};', fake.commands[0])
 

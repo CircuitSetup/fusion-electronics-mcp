@@ -43,6 +43,45 @@ def req(kind, **kw):
 
 
 class RequirementsTest(unittest.TestCase):
+    def test_foreign_pour_on_disjoint_layer_preserves_clearance_pass(self):
+        root, spec, evidence = fixture()
+        spec['requirements'] = [req('routing', net='VIN', layers=[1], clearance_mm=.2)]
+        before = R.check(root, spec, evidence)
+        self.assertEqual(before['status'], 'pass')
+        ET.SubElement(root.find(".//signal[@name='GND']"), 'polygon', layer='2')
+        after = R.check(root, spec, evidence)
+        self.assertEqual(after['status'], 'pass')
+        self.assertEqual(R.regressions(before, after), [])
+
+    def test_pour_clearance_remains_unverified_for_relevant_or_unknown_layers(self):
+        for net, layer in [('GND', '1'), ('VIN', '2'), ('GND', None),
+                           ('GND', 'unknown'), ('GND', '3')]:
+            with self.subTest(net=net, layer=layer):
+                root, spec, evidence = fixture()
+                spec['requirements'] = [req('routing', net='VIN', clearance_mm=.2)]
+                polygon = ET.SubElement(root.find(f".//signal[@name='{net}']"), 'polygon')
+                if layer is not None:
+                    polygon.set('layer', layer)
+                result = R.check(root, spec, evidence)
+                self.assertEqual(result['status'], 'unverified')
+                self.assertIn('actual poured copper geometry unavailable', result['findings'][-1]['observed'])
+
+    def test_through_copper_makes_internal_pour_clearance_unverified(self):
+        for kind in ('via', 'pad'):
+            with self.subTest(kind=kind):
+                root, spec, evidence = fixture()
+                spec['requirements'] = [req('routing', net='VIN', clearance_mm=.2)]
+                if kind == 'via':
+                    ET.SubElement(root.find(".//signal[@name='VIN']"), 'via',
+                                  x='9', y='10', drill='.3', diameter='.6', extent='1-16')
+                else:
+                    package = root.find(".//package[@name='QFN']")
+                    package.remove(package.find("smd[@name='VIN']"))
+                    ET.SubElement(package, 'pad', name='VIN', x='0', y='0', drill='.3', diameter='.6')
+                self.assertEqual(R.check(root, spec, evidence)['status'], 'pass')
+                ET.SubElement(root.find(".//signal[@name='GND']"), 'polygon', layer='2')
+                self.assertEqual(R.check(root, spec, evidence)['status'], 'unverified')
+
     def test_solid_pour_requires_solid_fill_and_direct_connection(self):
         root, spec, evidence = fixture()
         polygon = ET.SubElement(root.find(".//signal[@name='GND']"), 'polygon',

@@ -2334,7 +2334,7 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     if dry_run or r.problems or not r.legs:
         return out
     DR.guard(session, root, proposed, constraints)
-    wmap = _route_write_map(root)
+    wmap = _route_write_map(root, used_layers={l for l, _ in r.legs})
     cmds = ["GRID MM; SET WIRE_BEND 2;"]
     for l, pts, w in r.pieces(width_mm):
         cmds.append(C.add_trace(an, wmap[l], w, pts))
@@ -2470,7 +2470,7 @@ def route_net(net: str, width_mm: float | None = None, layer: str = "any", allow
                     "picture": pic["path"], "skipped": steps, "width_mm": width_mm, "datasheet_requirements": proposed_report,
                     **({"width_from": width_note} if width_note else {})}
         DR.guard(session, root, proposed, constraints)
-        wmap = _route_write_map(root)
+        wmap = _route_write_map(root, used_layers={l for l, _ in r.legs})
         cmds = ["GRID MM; SET WIRE_BEND 2;"] + [C.add_trace(net, wmap[l], w, pts) for l, pts, w in r.pieces(width_mm)] + _route_vias(net, r) + ["SET WIRE_BEND 1;"]
         n_air = len(air)
 
@@ -2574,7 +2574,7 @@ def route_close(max_len_mm: float = 8.0, width_mm: float = 0.25, widths: dict[st
     if dry_run or not done:
         return {"written": False, **out}
     DR.guard(session, original, root, constraints)
-    wmap = _route_write_map(root)
+    wmap = _route_write_map(root, used_layers={l for _, _, _, _, r in done for l, _ in r.legs})
     cmds = ["GRID MM; SET WIRE_BEND 2;"]
     for n, a, b, w, r in done:
         cmds += [C.add_trace(n, wmap[l], lw, pts).replace("GRID MM; ", "") for l, pts, lw in r.pieces(w)]
@@ -2653,7 +2653,7 @@ def route_remaining(width_mm: float = 0.25, widths: dict[str, float] | None = No
     if dry_run or not res.routes:
         return out
     DR.guard(session, root, res.root, constraints)
-    wmap = _route_write_map(root)
+    wmap = _route_write_map(root, used_layers={l for r in res.routes.values() for l, _ in r.legs})
     cmds = ["GRID MM; SET WIRE_BEND 2;"]
     for cid, r in res.routes.items():
         c = by_id[cid]
@@ -2755,7 +2755,7 @@ def lay_bus(nets: list[str], path_mm: list[list[float]], pitch_mm: float = 0.6, 
                                 title="lay_bus (plan)")["path"]
     if dry_run or plan["problems"]:
         return out
-    wl = _route_write_map(root)[lay]
+    wl = _route_write_map(root, used_layers={lay})[lay]
     cmds = ["GRID MM; SET WIRE_BEND 2;"] + [C.add_trace(ln["net"], wl, width_mm, ln["points"]).replace("GRID MM; ", "")
                                             for ln in plan["lanes"]] + ["SET WIRE_BEND 1;"]
 
@@ -2901,10 +2901,11 @@ def _only_layers(layers: list[int]) -> tuple[str, str]:
     and then restore exactly the layers the user had visible. EAGLE picks the
     nearest visible object; with pads visible a DELETE meant for a via picked
     the part instead (Fusion refused: 'Can't backannotate')."""
-    vis = _visible_layers()
+    inventory = session.bridge.call('layers', timeout=60)['layers']
+    vis = [row['number'] for row in inventory if row['visible']]
     _only_layers.last_view = vis
-    pre = "DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l)) for l in layers if l not in _NO_DISPLAY) + ";"
-    post = "DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l)) for l in vis if l not in _NO_DISPLAY) + ";"
+    pre = "DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l, inventory=inventory)) for l in layers if l not in _NO_DISPLAY) + ";"
+    post = "DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l, inventory=inventory)) for l in vis if l not in _NO_DISPLAY) + ";"
     return pre, post
 
 
@@ -2912,7 +2913,8 @@ def _ensure_view() -> None:
     """Re-apply the view saved by the last _only_layers if it did not come back."""
     want = getattr(_only_layers, "last_view", None)
     if want is not None and _visible_layers() != want:
-        session.run("DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l)) for l in want if l not in _NO_DISPLAY) + ";", "board")
+        inventory = session.bridge.call('layers', timeout=60)['layers']
+        session.run("DISPLAY NONE " + " ".join(C.layer_token(_command_layer(l, inventory=inventory)) for l in want if l not in _NO_DISPLAY) + ";", "board")
 
 
 def _routing_layer_map(root) -> dict:
@@ -2926,20 +2928,47 @@ def _routing_layer_map(root) -> dict:
     return dict(zip(classic, native))
 
 
-def _route_write_map(root):
-    return {exported: _command_layer(native) for exported, native in _routing_layer_map(root).items()}
+def _route_write_map(root, used_layers=None):
+    mapping = _routing_layer_map(root)
+    wanted = set(mapping) if used_layers is None else set(used_layers)
+    if not wanted <= mapping.keys():
+        raise ValueError('Planned layer is not in the verified copper stack')
+    if not wanted:
+        return {}
+    inventory = session.bridge.call('layers', timeout=60)['layers']
+    return _mapped_layer_names(mapping, inventory, wanted)
 
 
-def _command_layer(native: int | str) -> int | str:
-    """Extended API IDs select their actual layer name in the legacy Electron CLI."""
-    if isinstance(native, str):
-        C.layer_token(native)
-        return native
-    if 1 <= native <= 255:
-        C.layer_token(native)
-        return native
-    layers = session.bridge.call('layers', timeout=60)['layers']
-    matches = [row for row in layers if row['number'] == native]
+def _mapped_layer_names(mapping, inventory, wanted):
+    """Establish the inventory namespace before resolving potentially overlapping IDs."""
+    ids = {row['number'] for row in inventory}
+    exports, natives = list(mapping), list(mapping.values())
+    native_complete, export_complete = set(natives) <= ids, set(exports) <= ids
+    namespace = None
+    if native_complete != export_complete:
+        namespace = 'native' if native_complete else 'export'
+    elif (natives[-1] in ids) != (exports[-1] in ids):
+        namespace = 'native' if natives[-1] in ids else 'export'
+    out = {}
+    for exported, native in mapping.items():
+        if exported not in wanted:
+            continue
+        if exported != native and namespace is None:
+            raise ValueError('Ambiguous native/export layer inventory namespace')
+        number = native if namespace == 'native' or exported == native else exported
+        out[exported] = _command_layer(number, inventory=inventory)
+    return out
+
+
+def _command_layer(number: int | str, *, inventory=None) -> str:
+    """Select an actual inventory ID/name; physical stack IDs are mapped separately."""
+    if isinstance(number, str):
+        C.layer_token(number)
+        return number
+    if type(number) is not int:
+        raise ValueError('Inventory layer ID must be an integer')
+    layers = inventory if inventory is not None else session.bridge.call('layers', timeout=60)['layers']
+    matches = [row for row in layers if row['number'] == number]
     if len(matches) != 1 or not isinstance(matches[0].get('name'), str):
         raise ValueError('Native layer has no unique CLI layer name')
     name = matches[0]['name']
@@ -2973,18 +3002,24 @@ def _route_layer(root, layer):
 
 def _write_layer(layer) -> int | str:
     """CLI selector, separate from export geometry and V2 native layer IDs."""
-    return _command_layer(_native_layer(layer))
+    root = D.read_xml(_snap(schematic=False).board_xml)
+    mapping = _routing_layer_map(root)
+    native = _native_layer(layer, mapping=mapping)
+    exported = next(e for e, n in mapping.items() if n == native)
+    inventory = session.bridge.call('layers', timeout=60)['layers']
+    return _mapped_layer_names(mapping, inventory, {exported})[exported]
 
 
-def _native_layer(layer) -> int:
+def _native_layer(layer, *, mapping=None) -> int:
     """V2 API copper ID; extended IDs must be resolved before use in a CLI command."""
     from fusion_offline import stackup as ST
-    stack = None
-    try:
-        st = ST.parse_stackup(session.bridge.call("design_rules", timeout=60)["xml"])
-        stack = [c.number for c in st.copper] if st else None
-    except (BridgeOpError, BridgeUnavailable):
-        pass
+    stack = list(mapping.values()) if mapping is not None else None
+    if mapping is None:
+        try:
+            st = ST.parse_stackup(session.bridge.call("design_rules", timeout=60)["xml"])
+            stack = [c.number for c in st.copper] if st else None
+        except (BridgeOpError, BridgeUnavailable):
+            pass
     stack = stack or [1, 304]
     if isinstance(layer, str):
         key = layer.strip().lower()
@@ -3000,7 +3035,7 @@ def _native_layer(layer) -> int:
             raise ValueError(f"unknown layer {layer!r}; use top, bottom, inner1.. or a layer number")
     if layer in stack:
         return layer
-    classic = _snap(schematic=False).board().copper_layers
+    classic = list(mapping) if mapping is not None else _snap(schematic=False).board().copper_layers
     if layer in classic and len(classic) == len(stack):
         return stack[classic.index(layer)]
     if layer == 16:
@@ -3084,7 +3119,7 @@ def add_pour(net: str, layer: str | int = "top", points_mm: list[list[float]] | 
             isolate_mm < 0 or width_mm <= 0 or thermal_width_mm <= 0:
         raise ValueError('Pour dimensions must be finite; widths positive and clearance nonnegative')
     native_layer = _native_layer(layer)
-    wl = _command_layer(native_layer)
+    wl = _write_layer(layer)
     if points_mm is not None:
         if any(len(p) != 2 for p in points_mm):
             raise ValueError('Pour outline points must have two coordinates')
@@ -3175,7 +3210,7 @@ def set_pour_thermals(net: str, width_mm: float, layer: str | int | None = None)
         if len(p["outline"]) < 2:
             raise ValueError(f"cannot read the outline of the {net} pour on layer {p['layer']}")
         (xa, ya), (xb, yb) = p["outline"][0], p["outline"][1]
-        pre, post = _only_layers([p["layer"]])
+        pre, post = _only_layers([_write_layer(p["layer"])])
         cmds.append(f"{pre} CHANGE THERMALWIDTH {C.n(width_mm)} {C.pt((xa + xb) / 2, (ya + yb) / 2)}; {post}")
     try:
         session.run(" ".join(cmds), "board")
@@ -3198,7 +3233,7 @@ def add_keepout(x_mm: float, y_mm: float, radius_mm: float,
     bad = [l for l in layers if l not in rl]
     if bad:
         raise ValueError(f"unknown keepout layers {bad}; use top, bottom, vias")
-    cmd = "GRID MM; " + " ".join(f"LAYER {rl[l]}; CIRCLE 0 {C.pt(x_mm, y_mm)} {C.pt(x_mm + radius_mm, y_mm)};"
+    cmd = "GRID MM; " + " ".join(f"LAYER {C.layer_token(_command_layer(rl[l]))}; CIRCLE 0 {C.pt(x_mm, y_mm)} {C.pt(x_mm + radius_mm, y_mm)};"
                                   for l in layers)
 
     def circles(sn):
@@ -3323,7 +3358,7 @@ def ground_vias(net: str = "GND", max_dist_mm: float = 1.5, trace_width_mm: floa
            "vias": [{"pad": n, "via": p["via"], "trace_mm": p["distance"]} for n, _, p in plans]}
     if dry_run or not plans:
         return {"written": False, **out}
-    wmap = _route_write_map(root)
+    wmap = _route_write_map(root, used_layers={l for _, l, _ in plans})
     cmds = ["GRID MM;"]
     for n, l, p in plans:
         cmds.append(C.add_trace(net, wmap[l], trace_width_mm, [p["from"], p["via"]]).replace("GRID MM; ", ""))

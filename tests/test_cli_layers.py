@@ -10,6 +10,11 @@ from test_move_parts import FakeFusion
 from test_multilayer_routing import fusion_export
 
 
+CLASSIC_INVENTORY = [dict(number=n, name=name, visible=True, used=True) for n, name in
+                     [(1, 'Top'), (2, 'Route2'), (15, 'Route15'), (16, 'Bottom'),
+                      (18, 'Vias'), (41, 'RestrictCopper'), (42, 'bRestrict'), (43, 'vRestrict')]]
+
+
 class CliFusion(FakeFusion):
     """V2 inventory IDs differ from both CLI names and exported geometry IDs."""
     def __init__(self, wrong_layer=False):
@@ -43,7 +48,7 @@ class CliFusion(FakeFusion):
                 else:
                     name = selector.strip("'")
                     native = next(row['number'] for row in self.inventory if row['name'] == name)
-                    layer = self.exported[self.native.index(native)]
+                    layer = self.exported[self.native.index(native)] if native in self.native else native
                 if self.wrong_layer:
                     layer = 1
                 signal = root.find(f'.//signal[@name="{net}"]')
@@ -62,12 +67,38 @@ class CliLayerTest(unittest.TestCase):
         root = ET.fromstring(fake.xml)
         with patch.object(S, 'session', Session(fake)), patch.object(S, '_snap', return_value=Snapshot(board_xml=fake.xml)):
             self.assertEqual(S._routing_layer_map(root), {1: 1, 2: 2, 15: 303, 16: 304})
-            self.assertEqual(S._route_write_map(root), {1: 1, 2: 2, 15: 'Inner return', 16: 'Bottom'})
+            self.assertEqual(S._route_write_map(root), {1: 'Top', 2: 'Route2', 15: 'Inner return', 16: 'Bottom'})
             for requested in ('bottom', 16, 304):
                 self.assertEqual(S._write_layer(requested), 'Bottom')
             self.assertEqual(S._write_layer('inner2'), 'Inner return')
             self.assertEqual(S._read_layer(Snapshot(board_xml=fake.xml).board(), 304), 16)
             self.assertEqual(S._read_layer(Snapshot(board_xml=fake.xml).board(), 303), 15)
+
+    def test_classic_inventory_is_joined_to_v2_stack_through_export_ids(self):
+        fake = CliFusion()
+        fake.inventory = copy.deepcopy(CLASSIC_INVENTORY)
+        with patch.object(S, 'session', Session(fake)):
+            self.assertEqual(S._write_layer('bottom'), 'Bottom')
+            self.assertEqual(S._write_layer('inner2'), 'Route15')
+            self.assertEqual(S._route_write_map(ET.fromstring(fake.xml)),
+                             {1: 'Top', 2: 'Route2', 15: 'Route15', 16: 'Bottom'})
+            self.assertEqual(S._command_layer(41), 'RestrictCopper')
+        self.assertTrue(self.route(fake)['written'])
+
+    def test_bottom_only_write_does_not_resolve_unused_inner_layer_names(self):
+        fake = CliFusion()
+        fake.inventory = [row for row in copy.deepcopy(CLASSIC_INVENTORY) if row['number'] in (1, 16)]
+        with patch.object(S, 'session', Session(fake)):
+            self.assertEqual(S._route_write_map(ET.fromstring(fake.xml), used_layers={16}), {16: 'Bottom'})
+        self.assertTrue(self.route(fake)['written'])
+
+    def test_classic_inventory_does_not_confuse_overlapping_physical_inner_id(self):
+        fake = CliFusion()
+        fake.native = [1, 2, 3, 304]
+        fake.inventory = copy.deepcopy(CLASSIC_INVENTORY) + [dict(number=3, name='Route3', visible=False, used=False)]
+        with patch.object(S, 'session', Session(fake)):
+            self.assertEqual(S._route_write_map(ET.fromstring(fake.xml), used_layers={15}), {15: 'Route15'})
+            self.assertEqual(S._write_layer('inner2'), 'Route15')
 
     def test_trace_builder_quotes_semantic_names_and_rejects_v2_numbers(self):
         self.assertIn("LAYER 'Bottom';", C.add_trace('S', 'Bottom', .25, [(0, 0), (1, 1)]))

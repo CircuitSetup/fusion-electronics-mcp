@@ -445,6 +445,17 @@ layer names in Fusion's layer inventory. API pour checks retain their native IDs
 trace verification checks the planned export layer directly. Numeric CLI selectors
 outside 1..255 are refused before submission. Native IDs, export IDs and CLI layer
 names are separate; Bottom 16 in an export does not establish a numeric CLI selector.
+The layer inventory can also use classic IDs while the physical stack uses V2 IDs.
+CLI selection joins these through the verified export stack, uses actual inventory
+names, and resolves only layers used by the planned route.
+Routing clearance checks retain their result when a foreign pour is on disjoint
+copper layers. Same-net pours, relevant layers, through copper and unknown pour
+layers still report unavailable filled-copper geometry as unverified.
+Native restriction rectangles and the observed straight, closed `polygonshape`
+outlines are parsed as router obstacles, including package transforms and explicit
+outer-layer masks `1`/`16`. Rotated rectangle primitives, unverified masks, holes or
+unsupported contours are refused before planning. Native Restricted Layers settings
+and actual exported geometry still require read-back verification.
 Conversion refuses repeated physical pad identifiers, standalone paste/mask
 apertures, SMD layer selections other than top copper/paste/mask, and embedded
 zones/keepouts or rule areas. These features require a compatible library or a

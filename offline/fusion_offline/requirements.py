@@ -272,10 +272,12 @@ def _evaluate(root, r, spec, evidence):
         if r.get('clearance_mm'):
             from . import placement_check as PC, footprints as FP
             obstacles = stitch.board_obstacles(root)[0]
+            own_obstacles = [o for o in obstacles if o.net == r['net']]
+            own_layers = {layer for o in own_obstacles for layer in (layers if o.layers is None else o.layers)}
             def shape(o):
                 return (PC._circle(*o.data) if o.kind == 'circle' else
                         PC._box(*o.data) if o.kind == 'rect' else PC._stadium(*o.data))
-            for own in (o for o in obstacles if o.net == r['net']):
+            for own in own_obstacles:
                 for o in obstacles:
                     if o.net == r['net'] or (o.layers is not None and own.layers is not None and not o.layers & own.layers): continue
                     if o.layers == frozenset() and own.is_pad: continue
@@ -289,8 +291,15 @@ def _evaluate(root, r, spec, evidence):
                     else:
                         gap = FP.gap(shape(own), shape(o))
                     if gap < r['clearance_mm'] - 1e-6: bad.append('copper clearance')
-            if not bad and root.find('.//board/signals/signal/polygon') is not None:
-                return 'unverified', 'Wire/pad/via clearance checked; actual poured copper geometry unavailable'
+            if not bad:
+                for signal in root.findall('.//board/signals/signal'):
+                    for polygon in signal.findall('polygon'):
+                        try:
+                            layer = int(polygon.get('layer'))
+                        except (TypeError, ValueError):
+                            layer = None
+                        if signal.get('name') == r['net'] or layer not in layers or layer in own_layers:
+                            return 'unverified', 'Wire/pad/via clearance checked; actual poured copper geometry unavailable'
         if not bad and not wires: return 'unverified', 'Via constraints checked; no routed wires on required net'
         return ('fail' if bad else 'pass', sorted(set(bad)))
     return 'unverified', f'Unsupported analysis: {kind}'
