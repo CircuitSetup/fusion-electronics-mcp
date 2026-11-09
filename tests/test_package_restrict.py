@@ -131,6 +131,19 @@ class PackageRestrictTest(unittest.TestCase):
         result = requirements._evaluate(root, {'type': 'routing', 'net': 'S', 'layers': [1], 'clearance_mm': .1}, {}, {})
         self.assertEqual(result[0], 'fail')
 
+    def test_vrestrict_routing_requirement_allows_through_hole_pads_but_not_vias(self):
+        root = board(layer=43)
+        package = root.find('.//package[@name="PIN"]')
+        package.remove(package.find('smd'))
+        ET.SubElement(package, 'pad', name='1', x='0', y='0', drill='.3', diameter='.6')
+        root.find('.//element[@name="J2"]').set('x', '10')
+        signal = root.find('.//signal[@name="S"]')
+        ET.SubElement(signal, 'wire', x1='10', y1='10', x2='18', y2='10', layer='1', width='.2')
+        rule = {'type': 'routing', 'net': 'S', 'layers': [1], 'clearance_mm': .1}
+        self.assertEqual(requirements._evaluate(root, rule, {}, {})[0], 'pass')
+        ET.SubElement(signal, 'via', x='11', y='10', drill='.3', diameter='.6', extent='1-16')
+        self.assertEqual(requirements._evaluate(root, rule, {}, {})[0], 'fail')
+
     def test_render_accepts_restrict_geometry(self):
         from fusion_offline.render import render
         with tempfile.TemporaryDirectory() as folder:

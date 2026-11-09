@@ -115,6 +115,12 @@ class HeaderKeepoutExceptionTest(unittest.TestCase):
                 if change == 'duplicate_pair': spec['connections'].append(copy.deepcopy(corridor))
                 with self.assertRaises(ValueError): self.scoped(root, spec)
 
+    def test_protected_rectangle_cannot_span_a_concave_notch(self):
+        root = board(points=((-2, -11), (2, -11), (2, 11), (.5, 11), (.5, 3), (-.5, 3), (-.5, 11), (-2, 11)))
+        spec = declaration(root)
+        spec['protected_region_mm'] = [8.5, 12, 11.5, 20]
+        with self.assertRaises(ValueError): self.scoped(root, spec)
+
     def test_other_pad_pair_on_same_net_does_not_reuse_exception(self):
         root = board()
         ET.SubElement(root.find('.//elements'), 'element', name='J4', library='L', package='PIN', x='2', y='5')

@@ -482,6 +482,8 @@ exact, as do MPN and local part IDs. Real package or mapping differences still f
 
 ### Package restrictions and header corridors
 
+Available in server `0.3.0+workflow.34`.
+
 Offline routing, pair/bus checks, via stitching and previews include straight, simple
 package and board polygons on tRestrict/bRestrict/vRestrict (41/42/43). Element rotation
 and mirroring are applied; vRestrict blocks vias without blocking traces. Concave
@@ -511,6 +513,13 @@ Trace width and clearance must fit inside the opening; all vias and other restri
 remain blocked. The exact active PCB and board hash are checked before an exception write.
 The result reports `keepout_exception` with its scope and `native_drc_waived=false`.
 Use measured, reviewed coordinates; the tool does not infer RF clearance or human approval.
+
+`check_library_keepout_update(source_lbr_path, proposed_lbr_path, package)` is a separate
+offline source preflight. It permits changes only to that footprint's drawing shapes on
+39/40/41/42/43 and requires all pads, CONNECT mappings, identities, model declarations,
+paste apertures and unrelated library objects to remain identical. It does not certify
+RF clearance or a native model link. Targeted native application/undo is unqualified;
+the preflight does not run an update or fall back to Update All.
 
 Open a design in Fusion, then ask your agent things like:
 

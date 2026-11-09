@@ -58,8 +58,10 @@ def header_connection_obstacles(root, declaration, from_pad, to_pad):
     core = _box(declaration['protected_region_mm'])
     obstacles, rules, outline = stitch.board_obstacles(root)
     source_obstacles = [o for o in obstacles if o.source_ref == source['source_ref'] and o.restrict_layer in (41, 42)]
+    from .footprints import area, clip
     corners = [(core[0], core[1]), (core[2], core[1]), (core[2], core[3]), (core[0], core[3])]
-    if not any(all(o.distance(*p) <= 1e-8 for p in corners) for o in source_obstacles):
+    core_area = (core[2]-core[0])*(core[3]-core[1])
+    if not any(math.isclose(area(clip(o.data[2], corners)), core_area, rel_tol=1e-9, abs_tol=1e-9) for o in source_obstacles):
         raise ValueError('Protected central region must lie inside a source trace restriction')
     layers = declaration['layers']
     available = {layer for o in source_obstacles for layer in o.layers}

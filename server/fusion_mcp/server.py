@@ -4722,6 +4722,22 @@ def update_from_libraries(refresh_parts: list[str] | None = None) -> dict:
     return out
 
 
+@tool(CALC)
+def check_library_keepout_update(source_lbr_path: str, proposed_lbr_path: str, package: str) -> dict:
+    """Offline preflight of a source footprint restrict/courtyard-only change. Reads two EAGLE
+    library XML files, without calling Fusion or applying an update. Requires every pad, CONNECT,
+    package/device identity, model declaration, paste aperture and unrelated library object to
+    remain identical. Native model-link preservation and targeted apply/undo remain unverified;
+    this result is not authorization or proof of native application."""
+    from pathlib import Path
+    from fusion_offline.library_update import check_keepout_update
+    try:
+        source, proposed = Path(source_lbr_path).read_bytes(), Path(proposed_lbr_path).read_bytes()
+    except OSError as error:
+        raise ValueError(f'Cannot read source library preflight files: {error}') from None
+    return check_keepout_update(source, proposed, package)
+
+
 @tool(CHANGE)
 def push_3d() -> dict:
     """Bring the board's changes into its 3D PCB (creating the 3D PCB the first time, answering

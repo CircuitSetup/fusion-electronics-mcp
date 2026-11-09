@@ -278,6 +278,7 @@ def _evaluate(root, r, spec, evidence):
             for own in (o for o in obstacles if o.net == r['net']):
                 for o in obstacles:
                     if o.net == r['net'] or (o.layers is not None and own.layers is not None and not o.layers & own.layers): continue
+                    if o.layers == frozenset() and own.is_pad: continue
                     if o.kind == 'polygon':
                         a, b = shape(own), o.data[2]
                         ae, be = list(zip(a, a[1:]+a[:1])), list(zip(b, b[1:]+b[:1]))
