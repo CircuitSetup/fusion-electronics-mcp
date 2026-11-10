@@ -193,13 +193,15 @@ def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y)
         obstacle = _restrict_polygon(polygon, stack, source_ref, transform, mirror)
         mask = shape.get('restrictlayers')
         if mask is not None or shape.tag == 'polygonshape':
-            # shortcut: only observed singleton outer-layer masks are verified; reject other masks until their schema is established.
-            if mask not in ('1', '16') or int(mask) not in (stack[0], stack[-1]) or shape.get('layer') == '43':
+            # shortcut: only observed outer-layer masks are verified; reject inner masks until their native mapping is established.
+            if mask not in ('1', '16', '1,16', '16,1') or shape.get('layer') == '43':
                 raise ValueError('unsupported or missing native restrictlayers mask')
-            layer = int(mask)
+            layers = {int(layer) for layer in mask.split(',')}
+            if not layers <= {stack[0], stack[-1]}:
+                raise ValueError('unsupported or missing native restrictlayers mask')
             if mirror:
-                layer = stack[-1] if layer == stack[0] else stack[0]
-            obstacle.layers = frozenset({layer})
+                layers = {stack[-1] if layer == stack[0] else stack[0] for layer in layers}
+            obstacle.layers = frozenset(layers)
         return obstacle
     except (ValueError, KeyError, TypeError) as error:
         raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None

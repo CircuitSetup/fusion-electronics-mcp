@@ -67,6 +67,40 @@ class RestrictRectanglesTest(unittest.TestCase):
             for a, b in zip(before.bounds, after.bounds):
                 self.assertAlmostEqual(a, b)
 
+    def test_combined_outer_mask_preserves_both_surfaces_and_package_transform(self):
+        for shape in (native('restrictlayers="1,16"'), native('restrictlayers="16,1"'),
+                      rect(42, 'restrictlayers="1,16"')):
+            for package in (False, True):
+                with self.subTest(shape=shape, package=package):
+                    root = board(shape, package)
+                    root.find('.//param[@name="layerSetup"]').set('value', '(1*2*15*16)')
+                    before = ET.tostring(root)
+                    obstacle, = board_obstacles(root)[0]
+                    self.assertEqual(obstacle.layers, frozenset({1, 16}))
+                    self.assertEqual(obstacle.source_ref, 'U1' if package else None)
+                    self.assertEqual(obstacle.bounds, (12, 11, 14, 13) if package else (1, 2, 3, 4))
+                    x, y = (13, 12) if package else (2, 3)
+                    self.assertLess(obstacle.distance(x, y), 0)
+                    grid = Grid(root, 'N', .2, .1, .5, (0, 0), layers=(1, 2, 15, 16),
+                                window=(0, 0, 18, 18))
+                    for layer in grid.layers:
+                        self.assertEqual(_seg_clear(grid, layer, (x-2, y), (x+2, y)), layer in (2, 15))
+                    self.assertTrue(grid.via_blocked[grid.ij(x, y)])
+                    self.assertEqual(ET.tostring(root), before)
+
+    def test_combined_mask_does_not_admit_unknown_masks_or_geometry(self):
+        invalid = [native(f'restrictlayers="{mask}"') for mask in
+                   ('1,2,16', '1,16,64', '1,1', '1,,16', '1 16', '1, 16', '0', '65535')]
+        combined = native('restrictlayers="1,16"')
+        invalid += [native('restrictlayers="1,16"', layer=43),
+                    combined.replace('</polygonshape>', '<hole x="2" y="3"/></polygonshape>'),
+                    combined.replace('x="3" y="2"', 'x="3" y="2" curve="90"'),
+                    combined.replace('layer="41"', 'layer="41" unknown="yes"')]
+        for shape in invalid:
+            with self.subTest(shape=shape):
+                with self.assertRaises(UnverifiedGeometry):
+                    board_obstacles(board(shape))
+
     def test_invalid_shapes_fail_closed(self):
         invalid = [rect(extra='rot="R90"'), rect(extra='rot="MR0"'),
                    rect().replace('x2="3"', 'x2="1"'), rect().replace('x1="1"', 'x1="nan"'),
@@ -85,7 +119,9 @@ class RestrictRectanglesTest(unittest.TestCase):
         self.assertEqual(len(board_obstacles(board(rect(extra='rot="R0"')))[0]), 1)
 
     def test_observed_outer_mask_cannot_be_assumed_to_describe_an_inner_layer(self):
-        root = board(native('restrictlayers="16"'))
-        root.find('.//param[@name="layerSetup"]').set('value', '(1*2*16*64)')
-        with self.assertRaises(UnverifiedGeometry):
-            board_obstacles(root)
+        for mask in ('16', '1,16', '16,1'):
+            with self.subTest(mask=mask):
+                root = board(native(f'restrictlayers="{mask}"'))
+                root.find('.//param[@name="layerSetup"]').set('value', '(1*2*16*64)')
+                with self.assertRaises(UnverifiedGeometry):
+                    board_obstacles(root)

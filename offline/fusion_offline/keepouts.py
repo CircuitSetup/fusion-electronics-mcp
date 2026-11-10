@@ -106,9 +106,10 @@ def header_connection_obstacles(root, declaration, from_pad, to_pad):
     result = []
     for obstacle in obstacles:
         if obstacle in source_obstacles and obstacle.layers & set(layers):
-            # Keep the full restriction for vias, including when the source has no vRestrict.
-            result.append(replace(obstacle, layers=frozenset()))
-            obstacle = replace(obstacle, trace_holes=(_rectangle(corridor),), trace_holes_for=scope_key)
+            # Keep undeclared trace layers and the full restriction for vias.
+            result.append(replace(obstacle, layers=obstacle.layers - set(layers)))
+            obstacle = replace(obstacle, layers=obstacle.layers & set(layers),
+                               trace_holes=(_rectangle(corridor),), trace_holes_for=scope_key)
         result.append(obstacle)
     result.append(_rectangle(core, restrict_layer=43, source_ref=source['source_ref']))
     scope = {**source, 'header_refs': list(headers), 'connection': [from_pad, to_pad], 'net': targets[0][3],

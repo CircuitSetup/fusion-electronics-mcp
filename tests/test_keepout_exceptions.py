@@ -86,6 +86,32 @@ class HeaderKeepoutExceptionTest(unittest.TestCase):
         self.assertFalse(g.free(*g.ij(10, 10), 16))
         self.assertEqual(len([o for o in cache[0] if o.source_ref == other.get('name')]), 2)
 
+    def test_combined_native_mask_relaxes_only_declared_layers(self):
+        for layers in ([1], [16], [1, 16]):
+            with self.subTest(layers=layers):
+                root = board()
+                package = root.find('.//package[@name="RF"]')
+                legacy = package.find('polygon')
+                package.remove(legacy)
+                native = ET.SubElement(package, 'polygonshape', layer='41', restrictlayers='1,16')
+                objects = ET.SubElement(native, 'polygonoutlineobjects')
+                segments = ET.SubElement(native, 'polygonoutlinesegments')
+                objects.extend(copy.deepcopy(list(legacy)))
+                segments.extend(copy.deepcopy(list(legacy)) + [copy.deepcopy(legacy[0])])
+                before = ET.tostring(root)
+                spec = declaration(root)
+                spec['layers'] = layers
+                cache, scope = self.scoped(root, spec)
+                g = router.Grid(root, 'S', .2, .1, .25, (0, 0), layers=(1, 2, 15, 16), cache=cache)
+                self.assertEqual(scope['layers'], layers)
+                for layer in (1, 16):
+                    self.assertEqual(g.free(*g.ij(10, 10), layer), layer in layers)
+                self.assertTrue(g.via_blocked[g.ij(10, 10)])
+                self.assertTrue(all(not g.free(*g.ij(10, 15), layer) for layer in g.layers))
+                other = router.Grid(root, 'OTHER', .2, .1, .25, (0, 0), cache=cache)
+                self.assertTrue(all(not other.free(*other.ij(10, 10), layer) for layer in (1, 16)))
+                self.assertEqual(ET.tostring(root), before)
+
     def test_wrong_identity_reference_pair_and_missing_authority_reject(self):
         for change in ('package', 'pose', 'source_ref', 'header', 'pair', 'net', 'reason', 'unknown', 'layer'):
             with self.subTest(change=change):
