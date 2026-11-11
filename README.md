@@ -155,14 +155,16 @@ fusion-electronics-mcp doctor
 
 Start with `get_context` and read the target board, schematic, or library. Use
 the command-backed tools for supported edits so Fusion can batch and verify the
-work. For example:
+work. Use the EAGLE column as a starting point when writing a `.scr`.
 
-| Build task | Use |
-| --- | --- |
-| Place a set of PCB parts | Preview the moves with `move_parts(dry_run=true)`, then apply the batch. |
-| Route a board | Use `route_net` for a specific net or preview a batch with `route_remaining(dry_run=true)` before applying it; check airwires and DRC afterward. |
-| Build a schematic | Preview parts and wiring with `preview_schematic_edits` or repeat a reviewed circuit with `preview_circuit_block`; apply the approved plan with `apply_schematic_plan`, then inspect the drawing and run ERC. |
-| Build a library device | Prepare a missing part with `create_library_part`, then use `insert_library_part` to build it in the open Fusion library. Use `add_library_variant` for a new package on an existing device. Both Fusion edits use generated EAGLE scripts and verify the resulting library. |
+| Editor and task | Prefer these MCP tools | EAGLE commands for scripts |
+| --- | --- | --- |
+| Schematic placement and wiring | Preview with `preview_schematic_edits` or `preview_circuit_block`. Apply the approved plan with `apply_schematic_plan`, inspect the drawing, and run ERC. | `EDIT .sN` selects an existing sheet. `ADD` places a device. `NET` connects pin endpoints. Use `LABEL` for nets that cross blocks or sheets. |
+| PCB placement | Preview with `move_parts(dry_run=true)`, then apply the batch. | `MOVE` sets position and `ROTATE` sets orientation. Quote reference designators. |
+| PCB routing | Use `route_net` for one net or preview a batch with `route_remaining(dry_run=true)`. Use `add_trace` and `add_via` when the geometry is known. Check airwires and DRC afterward. | Select the copper layer with `LAYER`. Use named-signal `WIRE` for explicit trace coordinates and `VIA` for layer transitions. |
+| PCB copper pours | Use `add_pour` and inspect the actual fill and net connectivity. | Select the layer with `LAYER`, draw the named-signal `POLYGON`, and recalculate with `RATSNEST`. |
+| PCB outline | Use `set_board_outline` for a rectangle. Verify that the outline is closed. | Use `LAYER 20` and `WIRE` for custom contours, as in the example below. |
+| Library devices and variants | Prepare the part with `create_library_part`, then build it in Fusion with `insert_library_part`. Use `add_library_variant` for a new package on an existing device. | Use `EDIT` to select the package, symbol, or device. Use `SMD` or `PAD` for the footprint, `PIN` for the symbol, and `PACKAGE` and `CONNECT` for device mappings. Give each pin's full pad list in one `CONNECT`. |
 
 For an edit the tools cannot express, write a short, inspectable `.scr` using
 the [Electronics command-line reference](https://help.autodesk.com/cloudhelp/ENU/Fusion-ECAD/files/ECD-CMD-LINE-CMDS.htm).
