@@ -118,6 +118,38 @@ class PairImportTest(unittest.TestCase):
         self.assertEqual(self.start()['status'],'queued')
         self.assertEqual(self.starts,[])
 
+    def test_active_project_id_error_keeps_import_destination_pinned_through_first_save(self):
+        class Data:
+            @property
+            def activeProject(self):
+                raise RuntimeError('2 : InternalValidationError : id.size()')
+
+        self.a._app.data = Data()
+        self.folder.parentProject = self.project
+        original = self.originals[0]
+        original.dataFile = types.SimpleNamespace(id='original', parentProject=self.project)
+        self.a._app.activeDocument = original
+        with self.assertRaisesRegex(ValueError, 'explicit destination project'):
+            self.a.op_start_eagle_pair_import(dict(self.args, project_id='other'))
+        self.assertEqual(self.a._pair_import_records, {})
+
+        self.assertEqual(self.start()['status'], 'queued')
+        self.a._launch_eagle_pair_import(self.args['request_id'])
+        self.assertEqual(self.starts, ['start'])
+        design, _, _ = self.add_import()
+        self.a._app.activeDocument = design
+        finish = {'request_id': self.args['request_id']}
+        self.project.rootFolder = types.SimpleNamespace(id='other-folder', dataFiles=DataFiles())
+        result = self.a.op_finish_eagle_pair_import(finish)
+        self.assertEqual(result['status'], 'state_unknown')
+        self.assertIn('Destination folder identity changed', result['error'])
+        self.assertEqual(self.saves, [])
+
+        self.project.rootFolder = self.folder
+        result = self.a.op_finish_eagle_pair_import(finish)
+        self.assertEqual(result['status'], 'saved_linked', result)
+        self.assertEqual(self.saves, [('New product', self.folder)])
+
     def test_request_id_is_idempotent_and_cannot_be_rebound(self):
         first = self.start()
         self.assertEqual(self.start(), first)

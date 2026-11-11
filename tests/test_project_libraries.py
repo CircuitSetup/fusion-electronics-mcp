@@ -49,6 +49,55 @@ class ProjectLibrariesTest(unittest.TestCase):
         return types.SimpleNamespace(id='id-' + name, name=name, fileExtension=ext, versionNumber=1,
                                      parentFolder=self.root, parentProject=self.project)
 
+    def broken_active_project(self, message='2 : InternalValidationError : id.size()'):
+        class Data:
+            @property
+            def activeProject(self):
+                raise RuntimeError(message)
+
+        self.a._app.data = Data()
+        self.a._app.activeDocument = types.SimpleNamespace(isSaved=True, dataFile=self.file('PCB', 'fbrd'))
+
+    def test_listing_falls_back_to_saved_document_project_on_sdk_id_error(self):
+        self.broken_active_project()
+        page = self.a.op_list_designs({'limit': 30})
+        self.assertEqual(page['project_id'], self.project.id)
+        self.assertEqual([row['data_file_id'] for row in page['libraries']], ['id-Library'])
+        self.assertEqual(self.files.array_calls, 1)
+
+    def test_exact_library_open_checks_project_when_sdk_active_project_fails(self):
+        self.broken_active_project()
+        library = self.files.items[2]
+        opened, looked_up = [], []
+        def find_file(file_id):
+            looked_up.append(file_id)
+            return library
+        self.a._app.data.findFileById = find_file
+        self.a._app.documents = types.SimpleNamespace(open=opened.append)
+        self.a._docs = lambda: []
+        self.a.op_context = lambda _: {}
+        args = {'name': 'Library', 'kind': 'library', 'data_file_id': library.id}
+        library.parentProject = types.SimpleNamespace(id='other-project', name=self.project.name)
+        with self.assertRaises(self.a.BridgeError):
+            self.a.op_open_design(args)
+        self.assertEqual(opened, [])
+        library.parentProject = self.project
+        self.a.op_open_design(args)
+        self.assertEqual(looked_up, [library.id, library.id])
+        self.assertEqual(opened, [library])
+        self.assertEqual(self.files.array_calls, 0)
+
+    def test_project_fallback_requires_saved_document_and_known_sdk_error(self):
+        self.broken_active_project()
+        self.a._app.activeDocument.isSaved = False
+        with self.assertRaises(self.a.BridgeError) as cm:
+            self.a.op_list_designs({})
+        self.assertEqual(cm.exception.code, 'project_unavailable')
+        self.broken_active_project('unrelated SDK failure')
+        with self.assertRaisesRegex(RuntimeError, 'unrelated SDK failure'):
+            self.a.op_list_designs({})
+        self.assertEqual(self.files.array_calls, 0)
+
     def test_listing_pages_all_files_and_returns_direct_open_ids(self):
         first = self.a.op_list_designs({'limit': 2})
         self.assertEqual(first['next_offset'], 2)

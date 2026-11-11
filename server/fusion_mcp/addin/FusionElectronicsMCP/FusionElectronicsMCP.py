@@ -1028,8 +1028,8 @@ def op_eagle_pair_import_status(args):
         return json.loads(json.dumps(_pair_import_records[rid]['public']))
 
 
-def _import_destination(args):
-    project = _app.data.activeProject
+def _import_destination(args, *, prior_folder=None):
+    project = _lookup_project(prior_folder=prior_folder)
     if project is None or not args.get('project_id') or project.id != args['project_id']:
         raise ValueError('The explicit destination project must be the active existing project')
     folder = project.rootFolder
@@ -1229,7 +1229,9 @@ def op_finish_eagle_pair_import(args):
             raise ValueError('Imported document identities changed before completion')
         record['first_save_documents'] = identities
         doc,sch_doc,brd_doc = family
-        destination = _import_destination(record['args']) if not doc.isSaved else record['folder']
+        destination = record['folder']
+        if not doc.isSaved:
+            destination = _import_destination(record['args'], prior_folder=destination)
         if destination.id != record['folder'].id: raise ValueError('Destination folder identity changed')
         if not doc.isSaved:
             if record.get('save_requested'):
@@ -1304,9 +1306,30 @@ def op_new_library(args):
     return op_context({})
 
 
+def _lookup_project(*, prior_folder=None):
+    try:
+        return getattr(getattr(_app, "data", None), "activeProject", None)
+    except RuntimeError as error:
+        if not str(error).endswith("InternalValidationError : id.size()"):
+            raise
+        # A saved document's project remains readable in the observed Fusion 2706.1.14 failure.
+        doc = _app.activeDocument
+        file = doc.dataFile if doc is not None and doc.isSaved else None
+        project = file.parentProject if file is not None else None
+        if project is None and prior_folder is not None:
+            # A verified imported family has no DataFile before its first save.
+            project = prior_folder.parentProject
+        if project is None:
+            raise BridgeError("project_unavailable", "Fusion could not resolve the active project. "
+                              "Open a saved document from the intended project and try again.") from error
+        return project
+
+
 def _project_folder(folder=None, project=None):
     """Resolve one folder path without enumerating siblings or walking the project tree."""
-    proj = _app.data.activeProject
+    proj = _lookup_project()
+    if proj is None:
+        raise BridgeError("project_unavailable", "Open the intended project in Fusion first")
     if project and project != proj.name:
         raise BridgeError("unsupported", "only the active project can be listed: walking another project's "
                           "folders froze Fusion (2705.1.15); open that project in Fusion first")
@@ -1450,7 +1473,7 @@ def op_open_design(args):
     folder = args.get("folder")
     ext = "flbr" if args.get("kind") == "library" else "fprj"
     kinds = ("library",) if ext == "flbr" else ("design", "board", "schematic")
-    active_project = getattr(getattr(_app, "data", None), "activeProject", None)
+    active_project = _lookup_project()
     project = active_project.name if active_project else None
     project_id = getattr(active_project, "id", None)
     if args.get("project") and args["project"] != project:
