@@ -153,47 +153,12 @@ fusion-electronics-mcp doctor
 
 ## Build with Electronics commands and scripts
 
-Start with `get_context` and read the target board, schematic, or library. Use
-the command-backed tools for supported edits so Fusion can batch and verify the
-work. Use the EAGLE column as a starting point when writing a `.scr`.
-
-| Editor and task | Prefer these MCP tools | EAGLE commands for scripts |
-| --- | --- | --- |
-| Schematic placement and wiring | Preview with `preview_schematic_edits` or `preview_circuit_block`. Apply the approved plan with `apply_schematic_plan`, inspect the drawing, and run ERC. | `EDIT .sN` selects an existing sheet. `ADD` places a device. `NET` connects pin endpoints. Use `LABEL` for nets that cross blocks or sheets. |
-| PCB placement | Preview with `move_parts(dry_run=true)`, then apply the batch. | `MOVE` sets position and `ROTATE` sets orientation. Quote reference designators. |
-| PCB routing | Use `route_net` for one net or preview a batch with `route_remaining(dry_run=true)`. Use `add_trace` and `add_via` when the geometry is known. Check airwires and DRC afterward. | Select the copper layer with `LAYER`. Use named-signal `WIRE` for explicit trace coordinates and `VIA` for layer transitions. |
-| PCB copper pours | Use `add_pour` and inspect the actual fill and net connectivity. | Select the layer with `LAYER`, draw the named-signal `POLYGON`, and recalculate with `RATSNEST`. |
-| PCB outline | Use `set_board_outline` for a rectangle. Verify that the outline is closed. | Use `LAYER 20` and `WIRE` for custom contours, as in the example below. |
-| Library devices and variants | Prepare the part with `create_library_part`, then build it in Fusion with `insert_library_part`. Use `add_library_variant` for a new package on an existing device. | Use `EDIT` to select the package, symbol, or device. Use `SMD` or `PAD` for the footprint, `PIN` for the symbol, and `PACKAGE` and `CONNECT` for device mappings. Give each pin's full pad list in one `CONNECT`. |
-
-For an edit the tools cannot express, write a short, inspectable `.scr` using
-the [Electronics command-line reference](https://help.autodesk.com/cloudhelp/ENU/Fusion-ECAD/files/ECD-CMD-LINE-CMDS.htm).
-Specify the target editor (and sheet for schematic edits), units, and exact
-part names, nets, and layers as applicable. See [known command behavior](docs/architecture.md#fusion-behaviours-the-tools-depend-on)
-for grid, quoting, and coordinate pitfalls. Run a small first batch with
-[Fusion's SCRIPT command](https://help.autodesk.com/cloudhelp/ENU/Fusion-ECAD/files/ECD-CLI-S.htm)
-on a disposable copy. Inspect the resulting objects and connectivity before
-using it on the target; a command returning without an error is insufficient.
-Keep saves and unrelated settings changes out of the script.
-
-For example, on a disposable PCB with no existing outline, the following
-draws a stepped outline that the rectangular `set_board_outline` tool cannot
-express. Verify that layer 20 (Dimension) contains one closed contour with the
-specified vertices.
-
-```text
-GRID MM 0.0001;
-LAYER 20;
-WIRE 0 (0 0) (30 0) (30 12) (20 12) (20 20) (0 20) (0 0);
-GRID LAST;
-```
-
-The MCP bridge uses commands and generated scripts internally. It exposes no
-general command or `.scr` runner. `inspect_fusion_commands` only inventories
-native UI commands, and `run_fusion_script` launches a known Fusion API program
-on explicit request. Use [registered ULPs](docs/registered-ulps.md) for live
-design queries or reviewed bulk attribute edits to existing objects. ULP edit
-plans cannot create or delete objects.
+Start with `get_context` to confirm the target design and editor. Call
+`get_eagle_command_guide` or read the [Fusion/EAGLE command guide](server/fusion_mcp/data/eagle-command-guide.md)
+to choose a verified MCP tool, write a `.scr`, or identify where a
+[registered ULP](docs/registered-ulps.md) or Fusion dialog fits. The guide
+covers schematics, PCBs and libraries, with examples and checks for each
+editor. The guide tool works without Fusion running.
 
 ## Read-only ULP probe
 

@@ -51,12 +51,8 @@ mcp = MCPServer(
         "prepare it with create_library_part and build it in Fusion with insert_library_part. "
         "insert_library_part and add_library_variant use generated EAGLE scripts. "
         "If no typed tool covers a deterministic edit, prepare a small reviewable EAGLE .scr "
-        "for the correct editor. For schematic builds, use EDIT .sN to select an existing sheet, "
-        "ADD to place devices and NET for pin-to-pin wiring. For PCBs, use MOVE/ROTATE for "
-        "placement, LAYER with named-signal WIRE and VIA for explicit routes, POLYGON then RATSNEST "
-        "for pours, and LAYER 20 with WIRE for the board outline. In libraries, use SMD/PAD for "
-        "footprints, PIN for symbols and PACKAGE/CONNECT for device mappings. Confirm argument "
-        "syntax in Autodesk's Electronics command-line reference. MCP has no "
+        "for the correct editor. Call get_eagle_command_guide for the editor-specific map of "
+        "tools, EAGLE commands, script examples and read-back checks. MCP has no "
         "arbitrary EAGLE command or .scr runner. Test unsupported scripts on a disposable copy "
         "and verify read-back before using them on the target. Use registered ULPs for design "
         "queries or reviewed batches that change attributes on existing objects; their edit plans "
@@ -233,6 +229,16 @@ def get_context() -> dict:
     out["server"] = {"version": __version__, "code_loaded": _time.strftime("%Y-%m-%d %H:%M",
                                                                          _time.localtime(staleness.STARTED))}
     return out
+
+
+@tool(READ)
+def get_eagle_command_guide() -> str:
+    """Read the Fusion/EAGLE command map for schematic, PCB and library builds.
+    Maps tasks to MCP tools and native commands, with script examples and verification steps.
+    Does not connect to Fusion or execute commands."""
+    from importlib.resources import files
+
+    return files("fusion_mcp").joinpath("data", "eagle-command-guide.md").read_text(encoding="utf-8")
 
 
 @tool(READ)
