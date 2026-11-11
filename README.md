@@ -151,6 +151,48 @@ With Fusion running:
 fusion-electronics-mcp doctor
 ```
 
+## Build with Electronics commands and scripts
+
+Start with `get_context` and read the target board, schematic, or library. Use
+the command-backed tools for supported edits so Fusion can batch and verify the
+work. For example:
+
+| Build task | Use |
+| --- | --- |
+| Place a set of PCB parts | Preview the moves with `move_parts(dry_run=true)`, then apply the batch. |
+| Route a board | Use `route_net` for a specific net or preview a batch with `route_remaining(dry_run=true)` before applying it; check airwires and DRC afterward. |
+| Build a schematic | Preview parts and wiring with `preview_schematic_edits` or repeat a reviewed circuit with `preview_circuit_block`; apply the approved plan with `apply_schematic_plan`, then inspect the drawing and run ERC. |
+| Build a library device | Prepare a missing part with `create_library_part`, then use `insert_library_part` to build it in the open Fusion library. Use `add_library_variant` for a new package on an existing device. Both Fusion edits use generated EAGLE scripts and verify the resulting library. |
+
+For an edit the tools cannot express, write a short, inspectable `.scr` using
+the [Electronics command-line reference](https://help.autodesk.com/cloudhelp/ENU/Fusion-ECAD/files/ECD-CMD-LINE-CMDS.htm).
+Specify the target editor (and sheet for schematic edits), units, and exact
+part names, nets, and layers as applicable. See [known command behavior](docs/architecture.md#fusion-behaviours-the-tools-depend-on)
+for grid, quoting, and coordinate pitfalls. Run a small first batch with
+[Fusion's SCRIPT command](https://help.autodesk.com/cloudhelp/ENU/Fusion-ECAD/files/ECD-CLI-S.htm)
+on a disposable copy. Inspect the resulting objects and connectivity before
+using it on the target; a command returning without an error is insufficient.
+Keep saves and unrelated settings changes out of the script.
+
+For example, on a disposable PCB with no existing outline, the following
+draws a stepped outline that the rectangular `set_board_outline` tool cannot
+express. Verify that layer 20 (Dimension) contains one closed contour with the
+specified vertices.
+
+```text
+GRID MM 0.0001;
+LAYER 20;
+WIRE 0 (0 0) (30 0) (30 12) (20 12) (20 20) (0 20) (0 0);
+GRID LAST;
+```
+
+The MCP bridge uses commands and generated scripts internally. It exposes no
+general command or `.scr` runner. `inspect_fusion_commands` only inventories
+native UI commands, and `run_fusion_script` launches a known Fusion API program
+on explicit request. Use [registered ULPs](docs/registered-ulps.md) for live
+design queries or reviewed bulk attribute edits to existing objects. ULP edit
+plans cannot create or delete objects.
+
 ## Read-only ULP probe
 
 `run_bundled_ulp(name="probe", design="PCB")` runs the reviewed, bundled probe
