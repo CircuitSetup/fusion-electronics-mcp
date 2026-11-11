@@ -214,11 +214,12 @@ def _evaluate(root, r, spec, evidence):
         # Conservative obstacle bounding boxes; a false collision is safer than an untested crossing.
         bad = []
         for o in stitch.board_obstacles(root)[0]:
-            if o.restrict_layer is not None: continue
+            if o.restrict_layer is not None or o.is_npth: continue
             if o.net in r.get('allowed_nets', []): continue
             if o.layers is not None and not set(o.layers) & set(r['layers']): continue
             ob = o.bounds
-            if ob[0] < box[2] and ob[2] > box[0] and ob[1] < box[3] and ob[3] > box[1]: bad.append(o.net or 'hole')
+            if ob[0] < box[2] and ob[2] > box[0] and ob[1] < box[3] and ob[3] > box[1]:
+                bad.append(o.net or 'unconnected copper')
         if bad: return 'fail', bad
         for sg in root.findall('.//board/signals/signal'):
             if sg.get('name') in r.get('allowed_nets', []): continue

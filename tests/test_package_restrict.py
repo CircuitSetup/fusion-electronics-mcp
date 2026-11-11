@@ -152,6 +152,25 @@ class PackageRestrictTest(unittest.TestCase):
                                                  'layers': [1, 16], 'allowed_nets': []}, {}, {})
         self.assertEqual(result[0], 'pass')
 
+    def test_copper_keepout_distinguishes_npth_from_unconnected_plated_pad(self):
+        rule = {'type': 'keepout', 'region_mm': [9, 9, 11, 11], 'layers': [2, 15], 'allowed_nets': []}
+        for package_hole in (False, True):
+            with self.subTest(package_hole=package_hole):
+                root = ET.fromstring(BOARD)
+                package = root.find('.//package[@name="RF"]')
+                parent = package if package_hole else root.find('.//board/plain')
+                position = '0' if package_hole else '10'
+                hole = ET.SubElement(parent, 'hole', x=position, y=position, drill='3.25')
+                g = grid(root)
+                point = g.ij(10, 10)
+                self.assertFalse(g.free(*point, 2))
+                self.assertTrue(g.via_blocked[point])
+                self.assertEqual(requirements._evaluate(root, rule, {}, {}), ('pass', []))
+
+                parent.remove(hole)
+                ET.SubElement(package, 'pad', name='SH', x='0', y='0', drill='3.25', diameter='4')
+                self.assertEqual(requirements._evaluate(root, rule, {}, {}), ('fail', ['unconnected copper']))
+
     def test_routing_requirement_detects_restrict_crossing(self):
         root = board()
         ET.SubElement(root.find('.//signal[@name="S"]'), 'wire', x1='2', y1='10', x2='18', y2='10', layer='1', width='.2')

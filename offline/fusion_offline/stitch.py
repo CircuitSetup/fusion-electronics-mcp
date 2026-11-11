@@ -51,6 +51,7 @@ class Obstacle:
     source_ref: str | None = None
     trace_holes: tuple = ()
     trace_holes_for: tuple | None = None
+    is_npth: bool = False
 
     @property
     def bounds(self):
@@ -273,7 +274,7 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
                 obs.append(Obstacle("circle", net_, True, (cx, cy, dia / 2)))
         for h in pk.iterfind("hole"):
             cx, cy = _xf(_f(h, "x"), _f(h, "y"), ex, ey, ang, mir)
-            obs.append(Obstacle("circle", None, True, (cx, cy, _f(h, "drill") / 2)))
+            obs.append(Obstacle("circle", None, True, (cx, cy, _f(h, "drill") / 2), is_npth=True))
         for shape in list(pk.findall('rectangle')) + list(pk.findall('polygonshape')):
             if shape.get('layer') in ('41', '42', '43'):
                 obs.append(_restrict_shape(shape, stack, el.get('name'),
@@ -287,7 +288,7 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
         if w.get("layer") == "20":
             outline.append((_f(w, "x1"), _f(w, "y1"), _f(w, "x2"), _f(w, "y2")))
     for h in board.iterfind("./plain/hole"):
-        obs.append(Obstacle("circle", None, True, (_f(h, "x"), _f(h, "y"), _f(h, "drill") / 2)))
+        obs.append(Obstacle("circle", None, True, (_f(h, "x"), _f(h, "y"), _f(h, "drill") / 2), is_npth=True))
     for c in board.iterfind("./plain/circle"):
         if c.get("layer") in ("41", "42", "43") and _f(c, "width") == 0:
             obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius")),
