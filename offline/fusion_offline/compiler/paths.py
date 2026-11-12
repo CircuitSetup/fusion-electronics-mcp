@@ -74,6 +74,13 @@ def _check_parents(path: Path) -> None:
 def read_pinned_file(path: str, sha256: str, max_bytes: int) -> bytes:
     if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
         raise ValueError("pin must be a 64-hex SHA-256")
+    data = _read_local_file(path, max_bytes)
+    if hash_bytes(data).hexdigest() != sha256.lower():
+        raise ValueError(f"pinned input SHA-256 mismatch: {path}")
+    return data
+
+
+def _read_local_file(path: str | Path, max_bytes: int) -> bytes:
     if type(max_bytes) is not int or max_bytes < 0:
         raise ValueError("size limit must be a nonnegative integer")
     source = _local_path(path, require_absolute=True)
@@ -93,8 +100,6 @@ def read_pinned_file(path: str, sha256: str, max_bytes: int) -> bytes:
         data = stream.read(max_bytes + 1)
     if len(data) > max_bytes:
         raise ValueError(f"pinned input exceeds size limit of {max_bytes} bytes: {source}")
-    if hash_bytes(data).hexdigest() != sha256.lower():
-        raise ValueError(f"pinned input SHA-256 mismatch: {source}")
     return data
 
 

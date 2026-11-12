@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-import xml.etree.ElementTree as ET
 
 from test_compiler_schema import minimal_design
 
@@ -74,26 +73,6 @@ class CompilerManifestTest(unittest.TestCase):
         self.assertEqual(list(output.iterdir()), [unrelated])
         self.assertEqual(unrelated.read_bytes(), b"protected")
 
-    def test_promotion_copies_saved_board_and_regenerates_validation(self):
-        from fusion_offline.compiler.compile import promote_candidate
-        from fusion_offline.compiler.manifest import load_candidate_manifest
-
-        base = self.compile("first")
-        self.source.unlink()
-        root = ET.fromstring(base.read_artifact("board"))
-        signal = root.find(".//signal[@name='VCC']")
-        ET.SubElement(signal, "wire", x1="4", y1="10", x2="14.05", y2="21", width="0.2", layer="1")
-        saved_board = ET.tostring(root)
-        routing_job = {"job_id": "a" * 64, "candidate_board_sha256": sha256(saved_board).hexdigest()}
-        promoted = promote_candidate(base, saved_board, self.root / "promoted", routing_job=routing_job)
-        self.assertEqual(promoted.read_artifact("board"), saved_board)
-        self.assertEqual(json.loads(promoted.read_artifact("report"))["airwires"], 4)
-        self.assertEqual(load_candidate_manifest(promoted.path, promoted.sha256).data, promoted.data)
-        self.assertNotEqual(promoted.data["candidate_id"], base.data["candidate_id"])
-        self.assertNotEqual(promoted.read_artifact("preview"), base.read_artifact("preview"))
-
-
-
     def test_manifest_binds_raw_spec_pin_and_release_version(self):
         first = self.compile("first")
         self.assertEqual(first.data["compiler_version"], "0.3.0+workflow.35")
@@ -104,32 +83,6 @@ class CompilerManifestTest(unittest.TestCase):
         second = self.compile("second")
         self.assertNotEqual(first.data["candidate_id"], second.data["candidate_id"])
         self.assertEqual(first.read_artifact("board"), second.read_artifact("board"))
-
-    def test_promotion_rejects_protected_nets_and_placement_changes(self):
-        from fusion_offline.compiler.compile import promote_candidate
-
-        design = json.loads(self.raw)
-        design["routing"]["protected_nets"] = ["VCC"]
-        self.raw = json.dumps(design).encode()
-        self.source.write_bytes(self.raw)
-        base = self.compile("first")
-
-        def change_copper(root):
-            signal = root.find(".//signal[@name='VCC']")
-            ET.SubElement(signal, "wire", x1="4", y1="10", x2="14.05", y2="21", width="0.2", layer="1")
-
-        def change_placement(root):
-            root.find(".//element[@name='J1']").set("x", "4.1")
-
-        for edit in (change_copper, change_placement):
-            with self.subTest(edit=edit):
-                root = ET.fromstring(base.read_artifact("board"))
-                edit(root)
-                board = ET.tostring(root)
-                job = {"job_id": "a" * 64, "candidate_board_sha256": sha256(board).hexdigest()}
-                with self.assertRaisesRegex(ValueError, "protected copper or non-routing"):
-                    promote_candidate(base, board, self.root / "forbidden", routing_job=job)
-                self.assertFalse((self.root / "forbidden").exists())
 
     def test_repinned_report_cannot_omit_or_downgrade_required_findings(self):
         from fusion_offline.compiler.compile import compile_candidate

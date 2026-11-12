@@ -1,6 +1,5 @@
 """Compile and publish deterministic offline EAGLE candidates."""
 from collections import Counter
-from hashlib import sha256
 import json
 import math
 import xml.etree.ElementTree as ET
@@ -8,8 +7,8 @@ import xml.etree.ElementTree as ET
 from .board import build_board
 from .canonical import canonical_json_bytes
 from .libraries import resolve_libraries
-from .manifest import CandidateManifest, load_candidate_manifest, publish_candidate
-from .model import ROUTING_BUDGET_DEFAULTS, _validate_source_xml, load_design_spec
+from .manifest import CandidateManifest, publish_candidate
+from .model import ROUTING_BUDGET_DEFAULTS, load_design_spec
 from .schematic import build_schematic
 from .validate import validate_candidate
 
@@ -67,15 +66,18 @@ def _preview(board_xml):
     return ET.tostring(svg, encoding="utf-8") + b"\n"
 
 
-def _publish(output_directory, inputs, schematic, board, routing_intent, routing_job=None):
-    report = validate_candidate(schematic, board, json.loads(routing_intent))
-    return publish_candidate(
-        output_directory, inputs=inputs, report=report, routing_job=routing_job,
-        artifacts={
-            "schematic": schematic, "board": board, "routing_intent": routing_intent,
-            "report": canonical_json_bytes(report), "preview": _preview(board),
-        },
-    )
+def _publish(output_directory, inputs, schematic, board, routing_intent, routing_job=None, *,
+             provenance=None, preview=None, routing_artifacts=None):
+    report = validate_candidate(schematic, board, json.loads(routing_intent), provenance=provenance)
+    artifacts = {
+        "schematic": schematic, "board": board, "routing_intent": routing_intent,
+        "report": canonical_json_bytes(report), "preview": _preview(board) if preview is None else preview,
+    }
+    if provenance is not None:
+        artifacts["routing_provenance"] = canonical_json_bytes(provenance)
+    artifacts.update(routing_artifacts or {})
+    return publish_candidate(output_directory, inputs=inputs, report=report,
+                             routing_job=routing_job, artifacts=artifacts)
 
 
 def compile_candidate(spec_path, expected_spec_sha256, output_directory) -> CandidateManifest:
@@ -98,18 +100,17 @@ def _structure(node):
             tuple(_structure(child) for child in node))
 
 
-def _compare_routed_board(original, routed, routing_intent):
+def _compare_routed_board(original, routed, selected_nets):
     roots = ET.fromstring(original), ET.fromstring(routed)
-    protected = set(routing_intent["routing"]["protected_nets"])
     copper = []
     for root in roots:
         signal_copper = {}
         for signal in root.findall("./drawing/board/signals/signal"):
             name = signal.get("name")
-            if name in protected or not routing_intent["nets"].get(name):
+            if name not in selected_nets:
                 continue
-            geometry = [node for node in signal if node.tag in ("wire", "via")]
-            signal_copper[name] = Counter(_structure(node) for node in geometry if node.get("layer") != "19")
+            geometry = [node for node in signal if node.tag in ("wire", "via") and node.get("layer") != "19"]
+            signal_copper[name] = Counter(_structure(node) for node in geometry)
             for node in geometry:
                 signal.remove(node)
         copper.append(signal_copper)
@@ -117,16 +118,3 @@ def _compare_routed_board(original, routed, routing_intent):
         raise ValueError("routing changed protected copper or non-routing board geometry")
     if any(before - copper[1][name] for name, before in copper[0].items()):
         raise ValueError("routing removed or changed pre-existing copper")
-
-
-def promote_candidate(base: CandidateManifest, candidate_board: bytes, output_directory, *,
-                      routing_job: dict) -> CandidateManifest:
-    """Publish exact saved routing output after verifying the pinned base and preservation."""
-    base = load_candidate_manifest(base.path, base.sha256)
-    schematic = base.read_artifact("schematic")
-    routing_intent = base.read_artifact("routing_intent")
-    if sha256(candidate_board).hexdigest() != routing_job.get("candidate_board_sha256"):
-        raise ValueError("routing job board SHA-256 does not match saved bytes")
-    _validate_source_xml(candidate_board, "routing candidate board")
-    _compare_routed_board(base.read_artifact("board"), candidate_board, json.loads(routing_intent))
-    return _publish(output_directory, base.data["inputs"], schematic, candidate_board, routing_intent, routing_job)

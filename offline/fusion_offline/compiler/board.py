@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 from ..design import parse_board_design, parse_schematic_design, transform
 from ..stitch import _inside_poly, _restrict_polygon, segments_intersect
-from .canonical import eagle_xml_bytes
+from .canonical import canonical_digest, eagle_xml_bytes
 from .libraries import ResolvedLibraries
 from .model import DesignSpec, ROUTING_BUDGET_DEFAULTS
 from .schematic import apply_net_classes
@@ -215,6 +215,30 @@ def _emit_preroute(signal, net, stack, routing, contact_centres):
         _append(signal, "wire", wire)
     for via in vias:
         _append(signal, "via", via)
+
+
+def route_geometry(node):
+    """Stable copper identity independent of attribute and child ordering."""
+    return {"tag": node.tag, "attributes": dict(node.attrib)}
+
+
+def route_owners(root, provenance):
+    """Verify ownership references against exact saved copper geometry."""
+    copper = {(signal.get("name"), canonical_digest(route_geometry(node)))
+              for signal in root.findall("./drawing/board/signals/signal")
+              for node in signal if node.tag in ("wire", "via") and node.get("layer") != "19"}
+    owners = {}
+    for owner, record in provenance.items():
+        if (not isinstance(owner, str) or not owner or not isinstance(record, dict)
+                or record.keys() != {"net", "geometry"} or not isinstance(record["net"], str)
+                or not isinstance(record["geometry"], list) or not record["geometry"]):
+            raise ValueError("invalid routing provenance record")
+        for geometry in record["geometry"]:
+            key = record["net"], canonical_digest(geometry)
+            if key not in copper or key in owners:
+                raise ValueError("routing provenance must reference unique saved copper geometry")
+            owners[key] = owner
+    return owners
 
 
 def build_board(

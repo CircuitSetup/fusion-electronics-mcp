@@ -16,6 +16,10 @@ _ARTIFACT_NAMES = {
     "schematic": "candidate.sch", "board": "candidate.brd", "report": "validation.json",
     "preview": "board.svg", "routing_intent": "routing-intent.json",
 }
+_ROUTING_ARTIFACT_NAMES = {
+    "routing_provenance": "routing-provenance.json", "routing_request": "routing-request.json",
+    "routing_routes": "routing-routes.json", "routing_diagnostics": "routing-diagnostics.json",
+}
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 _REQUIRED_CHECKS = ("pair_signature", "contacts", "outline", "placements", "routing_geometry", "keepouts")
@@ -27,10 +31,13 @@ def _pin(value):
 
 
 def _identity(inputs, routing_job):
-    return canonical_digest({
+    identity = {
         "inputs": inputs, "compiler_contract_version": COMPILER_CONTRACT_VERSION,
         "routing_candidate_sha256": routing_job["candidate_board_sha256"] if routing_job else None,
-    })
+    }
+    if routing_job:
+        identity["routing_job_manifest_sha256"] = routing_job["manifest_sha256"]
+    return canonical_digest(identity)
 
 
 def _checked_artifacts(artifacts):
@@ -76,8 +83,7 @@ def _checked_job(routing_job, board_pin):
     if routing_job is None:
         return
     if (not isinstance(routing_job, dict)
-            or not {"job_id", "candidate_board_sha256"} <= routing_job.keys()
-            or routing_job.keys() - {"job_id", "candidate_board_sha256", "manifest_sha256"}):
+            or routing_job.keys() != {"job_id", "candidate_board_sha256", "manifest_sha256"}):
         raise ValueError("invalid candidate routing job record")
     for value in routing_job.values():
         _pin(value)
@@ -100,6 +106,9 @@ def _checked_manifest(data):
     _checked_artifacts(data["artifacts"])
     _checked_inputs(data["inputs"])
     _checked_job(data["routing_job"], data["artifacts"]["board"]["sha256"])
+    routing_artifacts = _ROUTING_ARTIFACT_NAMES.keys() & data["artifacts"].keys()
+    if routing_artifacts != (_ROUTING_ARTIFACT_NAMES.keys() if data["routing_job"] else set()):
+        raise ValueError("candidate routing job and its artifacts must be present together")
     if data["candidate_id"] != _identity(data["inputs"], data["routing_job"]):
         raise ValueError("candidate identity does not match input pins")
     findings = data["findings"]
@@ -124,7 +133,7 @@ def _checked_manifest(data):
 
 
 @dataclass(frozen=True)
-class CandidateManifest:
+class ArtifactManifest:
     path: Path
     sha256: str
     _data: dict = field(repr=False)
@@ -136,6 +145,10 @@ class CandidateManifest:
     def read_artifact(self, key: str) -> bytes:
         entry = self._data["artifacts"][key]
         return read_pinned_file(self.path.parent / entry["path"], entry["sha256"], _MAX_ARTIFACT_BYTES)
+
+
+class CandidateManifest(ArtifactManifest):
+    """Handle to a verified candidate pair and its artifact pins."""
 
 
 def load_candidate_manifest(path: str | Path, expected_sha256: str) -> CandidateManifest:
@@ -169,7 +182,8 @@ def load_candidate_manifest(path: str | Path, expected_sha256: str) -> Candidate
 def publish_candidate(output_directory, *, inputs, artifacts, report, routing_job=None) -> CandidateManifest:
     """Publish the exact provided artifacts and their manifest in one rename."""
     target = _local_path(output_directory)
-    records = {key: {"path": _ARTIFACT_NAMES[key], "sha256": sha256(raw).hexdigest()}
+    names = {**_ARTIFACT_NAMES, **_ROUTING_ARTIFACT_NAMES}
+    records = {key: {"path": names[key], "sha256": sha256(raw).hexdigest()}
                for key, raw in artifacts.items()}
     data = {
         "manifest_version": MANIFEST_VERSION,

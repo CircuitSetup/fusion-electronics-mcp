@@ -13,6 +13,8 @@ from ..footprints import packages
 from ..pairs import _seg_dist
 from ..placement_check import pads as placed_pads
 from ..stitch import _inside_poly, _restrict_polygon, board_obstacles, segments_intersect
+from .board import route_geometry, route_owners
+from .canonical import canonical_digest
 from .manifest import finding_status
 from .model import _validate_source_xml
 
@@ -230,7 +232,7 @@ def _wire_junctions(wires, components):
     return tapped
 
 
-def _route_components(signal, pads, stack, allowed, via_limit, xml_vias, outline):
+def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline):
     """Return contact groups proved by pad centres, straight traces and through vias."""
     components = _Components()
     errors, unknown = [], []
@@ -266,7 +268,7 @@ def _route_components(signal, pads, stack, allowed, via_limit, xml_vias, outline
     tapped = set().union(*(_wire_junctions(wires, components) for wires in layer_wires.values()))
     via_points, via_nodes = set(), set()
     vias = []
-    for via, xml in zip(signal.vias, xml_vias):
+    for via, owner in zip(signal.vias, via_owners):
         point = via.x, via.y
         nodes = [(*point, layer) for layer in stack]
         if (via.extent != f"{stack[0]}-{stack[-1]}" or not set(stack) <= allowed
@@ -281,7 +283,7 @@ def _route_components(signal, pads, stack, allowed, via_limit, xml_vias, outline
             via_points.add(point)
             via_nodes.update(nodes)
             components.join(nodes)
-            vias.append((xml.get("mcp_conn"), nodes[0]))
+            vias.append((owner, nodes[0]))
             if outline and not _inside_outline(outline, point):
                 errors.append("via centre is outside the board outline")
     endpoints = anchors | via_nodes | tapped
@@ -405,7 +407,7 @@ def _keepouts(root, board, stack):
                 raise UnverifiedGeometry("polygon outline intersects a keepout; actual fill is unavailable")
 
 
-def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict) -> dict:
+def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict, *, provenance=None) -> dict:
     """Check paired bytes and return deterministic findings and physical contact groups."""
     _validate_source_xml(schematic_xml, "schematic")
     _validate_source_xml(board_xml, "board")
@@ -415,6 +417,7 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             or len(sch_root.findall("./drawing/schematic")) != 1
             or len(board_root.findall("./drawing/board")) != 1):
         raise ValueError("expected one flat EAGLE schematic and board")
+    owners = route_owners(board_root, provenance) if provenance else {}
     findings = [_check("pair_signature", lambda: signature(sch_root, board_root))]
     sch, design = parse_schematic_design(sch_root), parse_board_design(board_root)
     stack = tuple(design.copper_layers)
@@ -451,7 +454,9 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             routing_errors.append(f"{name}: polygon uses absent or disallowed copper layer")
         groups[name], errors, unknown = _route_components(
             signal, pads, stack, allowed & set(stack),
-            min(limit, policy.get("max_vias_per_connection", limit)), xml_signal.findall("via"), outline,
+            min(limit, policy.get("max_vias_per_connection", limit)),
+            [owners.get((name, canonical_digest(route_geometry(via)))) for via in xml_signal.findall("via")],
+            outline,
         )
         routing_errors.extend(f"{name}: {error}" for error in sorted(set(errors)))
         routing_unknown.extend(f"{name}: {reason}" for reason in sorted(set(unknown)))
