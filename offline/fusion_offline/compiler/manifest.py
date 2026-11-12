@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 
 from . import COMPILER_CONTRACT_VERSION, MANIFEST_VERSION, SPEC_VERSION
 from .canonical import canonical_digest, canonical_json_bytes
+from .model import _validate_source_xml
 from .paths import _local_path, atomic_directory, atomic_write, normalize_artifact_path, read_pinned_file
 
 COMPILER_VERSION = "0.3.0+workflow.35"
@@ -177,6 +178,8 @@ def load_candidate_manifest(path: str | Path, expected_sha256: str) -> Candidate
     manifest = CandidateManifest(path, expected_sha256.lower(), data)
     for key in data["artifacts"]:
         artifact = manifest.read_artifact(key)
+        if key in ("schematic", "board"):
+            _validate_source_xml(artifact, data["artifacts"][key]["path"])
         if key == "schematic":
             sheets = ET.fromstring(artifact).findall("./drawing/schematic/sheets/sheet")
             expected = {f"schematic_sheet_{number}" for number in range(1, len(sheets) + 1)}

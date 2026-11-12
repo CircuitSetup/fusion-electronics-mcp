@@ -5053,6 +5053,65 @@ def preview_circuit_block(block_path: str, instances: list[dict], port_connectio
         return preview(session,operations,expected_document_id,evidence=evidence)
 
 
+@mcp.tool(annotations=READ)
+def get_offline_compiler_workflow() -> dict[str, Any]:
+    """Get the offline EAGLE compiler schema, workspace, workflow and routing limits."""
+    from . import candidate_compiler
+    return candidate_compiler.workflow()
+
+
+@mcp.tool(annotations=ADDITIVE)
+def compile_eagle_candidate(spec_path: str, spec_sha256: str, output_directory: str) -> dict[str, Any]:
+    """Compile an exact local EAGLE design specification into a new immutable candidate.
+
+    Supply an absolute local spec path and its SHA-256. Output must be within the compiler workspace.
+    """
+    from . import candidate_compiler
+    return candidate_compiler.compile_eagle(spec_path, spec_sha256, output_directory)
+
+
+@mcp.tool(annotations=ADDITIVE)
+def plan_eagle_candidate_routing(manifest_path: str, manifest_sha256: str,
+                                 selected_nets: list[str] | None = None,
+                                 output_directory: str | None = None) -> dict[str, Any]:
+    """Plan selected nets from an exact pinned candidate and publish a local routing job.
+
+    Defaults to the pinned net selection and compiler workspace. Returns the saved job, preview,
+    and diagnostics even when some connections fail. Uses the pinned budget without increasing it.
+    """
+    from . import candidate_compiler
+    return candidate_compiler.plan_routing(manifest_path, manifest_sha256, selected_nets, output_directory)
+
+
+@mcp.tool(annotations=ADDITIVE)
+def promote_eagle_candidate_routing(manifest_path: str, manifest_sha256: str,
+                                    job_manifest_path: str, job_manifest_sha256: str,
+                                    output_directory: str) -> dict[str, Any]:
+    """Publish the exact saved routing result as a new candidate in the workspace.
+
+    Supply both absolute local manifest paths and SHA-256 pins. Promotion copies the persisted board
+    without rerunning the router and returns the resulting validation status.
+    """
+    from . import candidate_compiler
+    return candidate_compiler.promote_routing(manifest_path, manifest_sha256, job_manifest_path,
+                                              job_manifest_sha256, output_directory)
+
+
+@mcp.tool(annotations=READ)
+def render_eagle_candidate(manifest_path: str, manifest_sha256: str) -> dict[str, Any]:
+    """Verify a pinned local candidate and locate its published HTML/SVG review artifacts."""
+    from . import candidate_compiler
+    return candidate_compiler.render(manifest_path, manifest_sha256)
+
+
+@mcp.tool(annotations=READ)
+def validate_eagle_candidate(manifest_path: str, manifest_sha256: str) -> dict[str, Any]:
+    """Read the validation report and check the manifest and artifact SHA-256 pins."""
+    from . import candidate_compiler
+    return candidate_compiler.validate(manifest_path, manifest_sha256)
+
+
+
 def main() -> None:
     from .cli import main as cli_main
     raise SystemExit(cli_main())
