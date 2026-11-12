@@ -507,6 +507,16 @@ exact, as do MPN and local part IDs. Real package or mapping differences still f
 
 ## Using it
 
+### Compile a fresh board offline
+
+Use the [offline EAGLE compiler](docs/offline-compiler.md) to build a fresh schematic and
+board from a pinned design specification, empty templates and local EAGLE libraries.
+Call `get_offline_compiler_workflow` to find the schema and workspace, then compile with
+`compile_eagle_candidate`. If routing is needed, plan with `plan_eagle_candidate_routing`,
+inspect the saved job, and promote it with `promote_eagle_candidate_routing`. Review the
+preview and validation report before calling `import_eagle_candidate` for one passing
+candidate. Finish with native ERC, DRC and visual review.
+
 ### Package restrictions and header corridors
 
 Available in server `0.3.0+workflow.34`.

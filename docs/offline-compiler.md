@@ -1,0 +1,165 @@
+# Offline EAGLE compiler
+
+Compile a fresh design from a pinned specification into an EAGLE schematic and board, then review
+and optionally route the pair before importing it. Compilation, routing, rendering and validation
+work with Fusion closed. Import is a separate operation that creates a new linked Electronics
+Design, schematic and board in Fusion. Use the existing live edit tools for changes to an open
+design.
+
+The compiler is available in server version `0.3.0+workflow.35`.
+
+## Prepare a design specification
+
+1. Export an empty flat EAGLE schematic and its empty board as UTF-8 EAGLE XML. Use matching EAGLE
+   XML versions and keep the normal layers, classes and board design rules. The schematic needs
+   sheets with no parts, instances, nets, buses or module instances. The board needs empty element
+   and signal containers and no existing copper. Use a board template whose copper stack matches the
+   design. Declare the outline, holes and keepouts in the specification.
+2. Export each approved library to a local EAGLE XML `.lbr`. Pin each library and template by
+   absolute local path and exact file SHA-256. On Windows,
+   `(Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()` gives the pin. The library name
+   identifies it in the specification. Select exact deviceset, device, technology and gate names
+   from that library. The compiler resolves physical pads through the EAGLE gate and pin mappings
+   and embeds the selected definitions.
+3. Start with the complete [LED switch example](../tests/fixtures/compiler/minimal/design.json) and
+   its adjacent `empty.sch`, `empty.brd` and `project.lbr`. Replace its fixture paths with absolute
+   local paths and recompute the pins from your copies. The [version 1
+   schema](../server/fusion_mcp/data/offline-design.schema.json) describes the JSON fields. Use
+   `"version": 1` and `"units": "mm"`. Declare sheets, part placements, and nets by explicit part,
+   gate and pin. Use `"schematic_style": "wired"` for local connections and `"labels"` with an
+   explicit `"inter-block"` or `"inter-sheet"` port where needed. Set `routing.require_fully_routed`
+   to `true` to make unjoined board contacts block import. The [routed
+   fixture](../tests/fixtures/compiler/e2e/design.json) shows that policy and per-net routing
+   limits.
+4. Save the spec as UTF-8 JSON and hash that exact file. Keep the manifest paths and SHA-256 values
+   returned by the compiler and use those pins for subsequent operations.
+
+## Compile, route and review from the CLI
+
+The following PowerShell example expects a prepared `design.json` in the current directory. Choose
+fresh output directories under a writable parent. An unrouted base with required full routing can
+return exit 3 and still publish a candidate for planning.
+
+```powershell
+$spec = (Resolve-Path ./design.json).Path
+$specHash = (Get-FileHash -Algorithm SHA256 $spec).Hash.ToLowerInvariant()
+$base = fusion-electronics-mcp compile-candidate --spec $spec --spec-sha256 $specHash --output-directory ./candidate-base | ConvertFrom-Json
+
+$job = fusion-electronics-mcp route-candidate --manifest $base.manifest_path --manifest-sha256 $base.manifest_sha256 | ConvertFrom-Json
+$job.preview_path
+$job.diagnostics
+
+# Open the job preview and review the saved result before promotion.
+$final = fusion-electronics-mcp route-candidate --manifest $base.manifest_path --manifest-sha256 $base.manifest_sha256 --job-manifest $job.manifest_path --job-manifest-sha256 $job.manifest_sha256 --output-directory ./candidate-routed | ConvertFrom-Json
+fusion-electronics-mcp render-candidate --manifest $final.manifest_path --manifest-sha256 $final.manifest_sha256
+fusion-electronics-mcp validate-candidate --manifest $final.manifest_path --manifest-sha256 $final.manifest_sha256
+```
+
+Use the base manifest for review if you skip routing. For planning, repeat `--net NAME` to override
+the pinned selection, or omit it to use the specification's selection. `--output-directory` can
+place planning results under a different parent. By default the CLI uses the parent of the base
+candidate directory. Jobs are published at `routing-jobs/<job-id>/job-manifest.json` under that
+parent. Promotion requires both job flags and an output directory and accepts the selection already
+pinned in the job.
+
+| Exit code | Result |
+| --- | --- |
+| 0 | Pass |
+| 2 | Invalid input, including unreadable paths or mismatched hashes |
+| 3 | Failed or unverified |
+| 4 | Budget-limited partial routing |
+| 5 | Internal error |
+
+The candidate manifest pins the EAGLE pair, validation report, routing intent and review artifacts.
+`render-candidate` verifies the published files and returns the path to `index.html`.
+`validate-candidate` verifies the pins and returns the published report. A finding of `fail`
+identifies a detected violation. `unverified` means the offline checks could not establish the
+result. A required finding with either status blocks import. The report lists remaining airwires
+even when full routing is optional. A partial job can be promoted for review, and the resulting
+candidate must independently pass all required validation to qualify for import.
+
+## Routing limits and saved jobs
+
+Routing uses the policy pinned in `routing.budget`. It preserves existing copper and protected nets.
+The job records the selected connections, the proposed board, diagnostics and a review preview,
+including useful results when some connections stop early. Inspect termination reasons, attempted
+layers, via usage and reported blockers before changing your constraints. Planning with the same
+pinned request can reuse its published job. Promotion verifies the source candidate and job hashes
+and copies the saved result to a new candidate without rerunning the search.
+
+| Budget field | Default | Maximum |
+| --- | ---: | ---: |
+| `max_nodes_per_attempt` | 200,000 | 1,000,000 |
+| `max_nodes_per_connection` | 300,000 | 2,000,000 |
+| `max_attempts_per_connection` | 2 | 8 |
+| `max_seconds_per_attempt` | 15 | 60 |
+| `max_seconds_per_job` | 600 | 1,800 |
+| `max_vias_per_connection` | 2 | 8 |
+| `ripup_rounds` | 2 | 8 |
+
+Search allocation is also capped at 8,000,000 states. Limits bound work on difficult geometry and
+keep retries from silently changing the approved routing policy. Adjust the spec and compile a new
+candidate if you choose to change a limit or placement.
+
+## MCP workflow
+
+Call `get_offline_compiler_workflow()` for the installed schema path, workspace and limits. On
+Windows the workspace is `%LOCALAPPDATA%/fusion-electronics-mcp/offline-compiler`. On macOS it is
+under `~/Library/Application Support/fusion-electronics-mcp/offline-compiler`. On Linux it is under
+`${XDG_DATA_HOME:-~/.local/share}/fusion-electronics-mcp/offline-compiler`. For MCP outputs, use
+relative paths under that workspace or absolute paths contained in it, with existing parents. Use
+the returned absolute paths and hashes to pass results to the next tool.
+
+1. `compile_eagle_candidate(spec_path, spec_sha256, output_directory)`
+2. `plan_eagle_candidate_routing(manifest_path, manifest_sha256, selected_nets=None, output_directory=None)`
+   optionally saves a job. The default output parent is the compiler workspace.
+3. `promote_eagle_candidate_routing(manifest_path, manifest_sha256, job_manifest_path, job_manifest_sha256, output_directory)`
+   optionally publishes the saved job as a new candidate.
+4. `render_eagle_candidate(manifest_path, manifest_sha256)` and
+   `validate_eagle_candidate(manifest_path, manifest_sha256)` verify the candidate for review.
+5. `import_eagle_candidate(manifest_path, expected_manifest_sha256, request_id, project_id, name, folder="")`
+   imports one reviewed passing candidate.
+
+## Import one reviewed candidate
+
+Connect to the running Fusion add-in 0.14.23 or newer. Save all open Fusion documents and clear
+pending edits and dialogs. Supply the reviewed candidate's absolute manifest path and exact hash, a
+fresh 32-character lowercase hex request ID, an explicit active project ID and a new product name.
+Use an existing project-relative folder path, or `""` for the project root. The importer rechecks
+the pins and offline validation before staging the exact pair. It verifies the original documents
+and destination, the imported pair's electrical signature and the saved family's links and
+identities. `saved_linked` includes the saved native IDs.
+
+Each call can advance one native step. A resumed request performs at most one orchestration status
+read. The guarded picker helper performs its own preflight reads before a file submission. For
+`pending`, follow `next_action` when present and call the same tool again with identical arguments.
+On Windows the tool can submit the owned native pickers one at a time. On other platforms, select
+the returned staged schematic and then the staged board in Fusion before resuming. Reuse the request
+ID throughout, including when retrieving a saved result.
+
+A recorded `state_unknown` ends automation for that request. Inspect the existing ticket with
+`get_eagle_pair_import_status(request_id)` and review Fusion's dialogs and documents. Use the
+applicable low-level recovery procedure in [paired import
+documentation](../README.md#import-a-local-eagle-schematic-and-board). Resolve the existing ticket
+before starting another import.
+
+## Native acceptance
+
+The compiler supports flat designs and through vias. Hierarchical EAGLE modules, automatic part
+acquisition or substitution, blind or buried vias, arbitrary native slot verification and proof of
+filled polygon connectivity are outside its supported checks. After import, run native ERC and DRC
+and review their findings. Refill and check polygons where applicable, inspect placement,
+footprints, routing and the 3D view, and verify manufacturing and datasheet requirements
+independently.
+
+The live acceptance harness is opt-in and writes to the supplied disposable Fusion project. Run it
+from the repository on Windows with the authenticated add-in, an explicit disposable project ID and
+an unused product name. The harness checks the imported family's identity and name uniqueness before
+closing it through Fusion's name-based native close. It then reopens by the pinned saved product ID.
+Pass `--artifacts PATH` to save the report and exports under a new directory.
+
+```text
+python tests/live/e2e_compiled_import.py --disposable-project-id ID --name NEW_PRODUCT
+```
+
+Live acceptance is pending an explicit disposable project ID and new product name.

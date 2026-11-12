@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Server-only compiler workflow (workflow.35)
+
+- Compile hash-pinned EAGLE designs into deterministic schematic, board and review artifacts.
+- Save bounded offline routing jobs and promote the reviewed board without rerouting.
+- Import one passing candidate through the guarded paired importer and resume by request ID.
+- The Fusion add-in remains at 0.14.23.
+
 ### Import lifecycle review fixes
 
 - Scope first-save event verification to the import request and read all event pages.

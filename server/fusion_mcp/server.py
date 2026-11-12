@@ -5064,7 +5064,8 @@ def get_offline_compiler_workflow() -> dict[str, Any]:
 def compile_eagle_candidate(spec_path: str, spec_sha256: str, output_directory: str) -> dict[str, Any]:
     """Compile an exact local EAGLE design specification into a new immutable candidate.
 
-    Supply an absolute local spec path and its SHA-256. Output must be within the compiler workspace.
+    Supply an absolute local spec path and its SHA-256. Use get_offline_compiler_workflow
+    for the schema path and compiler workspace. Review the returned candidate before importing.
     """
     from . import candidate_compiler
     return candidate_compiler.compile_eagle(spec_path, spec_sha256, output_directory)
@@ -5121,9 +5122,10 @@ def import_eagle_candidate(manifest_path: str, expected_manifest_sha256: str, re
     the existing active project ID and the new product name. Folder is an existing
     project-relative path, with an empty string for the project root. Each call advances one
     native step at most. Resume pending results with identical arguments. On non-Windows,
-    select the returned staged schematic and board in Fusion. Use the existing low-level
-    status and recovery tools to inspect state_unknown. saved_linked returns verified
-    native identities and can be read again with the same pins.
+    select the returned staged schematic and board in Fusion. A recorded state_unknown ends
+    automated advancement for that request. Inspect the existing ticket with the low-level
+    status and recovery tools. saved_linked returns verified native identities and can be
+    read again with the same pins.
     """
     from .candidate_import import import_candidate
     return import_candidate(session.bridge, manifest_path, expected_manifest_sha256, request_id,
