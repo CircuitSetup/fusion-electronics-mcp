@@ -24,6 +24,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from dataclasses import dataclass, field
 
+from .routing_budget import MAX_SEARCH_STATES, BudgetStop, RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
 from .stitch import Obstacle, _mm, board_obstacles
 
 DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
@@ -43,6 +44,7 @@ class Route:
     via_diameter: float = 0.6
     via_tented: bool = False
     via_extent: tuple = (1, 16)
+    diagnostics: SearchDiagnostics | None = None
 
     def pieces(self, width: float):
         """(layer, points, width) per leg: the neck-downs at pads carry their own width."""
@@ -56,7 +58,8 @@ class Route:
                 "vias": [list(v) for v in self.vias], "length_mm": round(self.length_mm, 3), "ends_on": self.joined,
                 "problems": self.problems, "via_drill_mm": self.via_drill,
                 "via_diameter_mm": self.via_diameter, "via_tented": self.via_tented,
-                "via_extent": list(self.via_extent)}
+                "via_extent": list(self.via_extent),
+                **({"diagnostics": self.diagnostics.as_dict()} if self.diagnostics else {})}
 
 
 def copper_layers(root):
@@ -79,7 +82,7 @@ def _layer_ok(o: Obstacle, layer: int) -> bool:
     return o.layers is None or layer in o.layers
 
 
-def _dist_field(o: Obstacle, XX, YY):
+def _dist_field(o: Obstacle, XX, YY, checkpoint=None):
     """Distance from grid points (arrays) to an obstacle's copper (<= 0 inside), vectorised."""
     d = o.data
     if o.kind == "circle":
@@ -96,10 +99,14 @@ def _dist_field(o: Obstacle, XX, YY):
         points, half = d[2:]
         distance = np.full(np.shape(XX), np.inf)
         for a, b in zip(points, points[1:]+points[:1]):
+            if checkpoint:
+                checkpoint()
             distance = np.minimum(distance, _dist_field(Obstacle('seg', None, False, (*a, *b, 0)), XX, YY))
-        distance = np.where(_in_poly(points, XX, YY), -distance, distance) - half
+        distance = np.where(_in_poly(points, XX, YY, checkpoint), -distance, distance) - half
         for hole in o.trace_holes:
-            distance = np.maximum(distance, -_dist_field(hole, XX, YY))
+            if checkpoint:
+                checkpoint()
+            distance = np.maximum(distance, -_dist_field(hole, XX, YY, checkpoint))
         return distance
     x1, y1, x2, y2, half = d
     vx, vy = x2 - x1, y2 - y1
@@ -108,10 +115,12 @@ def _dist_field(o: Obstacle, XX, YY):
     return np.hypot(XX - (x1 + t * vx), YY - (y1 + t * vy)) - half
 
 
-def _in_poly(poly, XX, YY):
+def _in_poly(poly, XX, YY, checkpoint=None):
     """Even-odd point-in-polygon for grid arrays."""
     inside = np.zeros(XX.shape, dtype=bool)
     for (ax, ay), (bx, by) in zip(poly, poly[1:] + poly[:1]):
+        if checkpoint:
+            checkpoint()
         if ay == by:
             continue
         cond = (ay > YY) != (by > YY)
@@ -130,7 +139,8 @@ class Grid:
                  origin: tuple[float, float], layers=(1, 16), via_d: float = 0.6, window=None, cache=None,
                  soft_cost: float = 4.0, pour_cost: float = 30.0, plane_cost: float = 0.25,
                  soft_tags: set | None = None, rip_cost: float = 15.0, necks=(), neck_width: float | None = None,
-                 hug: float = 0.0):
+                 hug: float = 0.0, progress: SearchProgress | None = None, via_states: int = 1):
+        checkpoint = self.checkpoint = progress.checkpoint if progress else None
         obs, rules, outline = cache if cache else board_obstacles(root)
         obs = [replace(o, trace_holes=()) if o.trace_holes and o.trace_holes_for[0] != net else o for o in obs]
         self.rules, self.outline, self.net, self.step = rules, outline, net, step
@@ -156,6 +166,10 @@ class Grid:
         self.y0 = oy - math.floor((oy - min(ys)) / step) * step
         self.nx = int((max(xs) - self.x0) / step) + 1
         self.ny = int((max(ys) - self.y0) / step) + 1
+        if checkpoint:
+            checkpoint()
+            if self.nx * self.ny * len(layers) * 8 * via_states > MAX_SEARCH_STATES:
+                raise ValueError(f"Routing search state space exceeds {MAX_SEARCH_STATES:,} states")
         bx0, by0, bx1, by1 = min(xs), min(ys), max(xs), max(ys)
         self.outside = lambda x, y: x < bx0 - 1e-6 or x > bx1 + 1e-6 or y < by0 - 1e-6 or y > by1 + 1e-6
         self.layers = layers
@@ -166,15 +180,20 @@ class Grid:
         self.ripable = [o for o in others if o.tag and o.tag in st]
         self.other = [o for o in others if not (o.tag and o.tag in st)]
         self.own = [o for o in obs if o.net == net and near(o)]
+        if checkpoint:
+            checkpoint()
+            progress.blockers = _candidate_blockers(self.other, (bx0, by0, bx1, by1), layers, checkpoint)
         self.X = self.x0 + np.arange(self.nx) * step
         self.Y = self.y0 + np.arange(self.ny) * step
         XX, YY = np.meshgrid(self.X, self.Y, indexing="ij")
         # board edge: copper keeps the edge-clearance rule from the outline
         if outline:
             poly = [(s[0], s[1]) for s in outline]
-            inside = _in_poly(poly, XX, YY) if len(poly) >= 3 else np.ones(XX.shape, bool)
+            inside = _in_poly(poly, XX, YY, checkpoint) if len(poly) >= 3 else np.ones(XX.shape, bool)
             edist = np.full(XX.shape, np.inf)
             for s in outline:
+                if checkpoint:
+                    checkpoint()
                 edist = np.minimum(edist, _dist_field(Obstacle("seg", None, False, (s[0], s[1], s[2], s[3], 0.0)), XX, YY))
         else:
             inside, edist = np.ones(XX.shape, bool), np.full(XX.shape, np.inf)
@@ -202,6 +221,8 @@ class Grid:
         # extra cost per cell entered: through-hole pin fields, other nets' pours on that layer
         cost = {l: np.zeros(XX.shape) for l in layers}
         for _ref, (cx0, cy0, cx1, cy1) in _tht_bodies(root):
+            if checkpoint:
+                checkpoint()
             m = (XX >= cx0) & (XX <= cx1) & (YY >= cy0) & (YY <= cy1)
             for l in layers:
                 cost[l][m] += soft_cost
@@ -226,7 +247,7 @@ class Grid:
             if pnet == net:
                 continue
             ground = re.match(r"(?i)^(a|d|p)?gnd", pnet)
-            inside_p = _in_poly(poly, XX, YY)
+            inside_p = _in_poly(poly, XX, YY, checkpoint)
             if not ground and player in (copper_layers(root)[0], copper_layers(root)[-1]):
                 vb |= inside_p                 # no via punched through another net's outer power pour
                                                # (inner planes are made for vias to pass)
@@ -238,6 +259,8 @@ class Grid:
 
     def _band(self, grid, o: Obstacle, gap: float, width: float):
         """Mark cells between gap and gap + width from a trace (the lane beside it)."""
+        if self.checkpoint:
+            self.checkpoint()
         x1, y1, x2, y2, h = o.data
         m = gap + width + h
         i0, j0 = self.ij(min(x1, x2) - m, min(y1, y2) - m)
@@ -275,6 +298,8 @@ class Grid:
         return (int(round((x - self.x0) / self.step)), int(round((y - self.y0) / self.step)))
 
     def _mark(self, grid, o: Obstacle, margin: float):
+        if self.checkpoint:
+            self.checkpoint()
         bx0, by0, bx1, by1 = o.bounds
         i0, j0 = self.ij(bx0 - margin, by0 - margin)
         i1, j1 = self.ij(bx1 + margin, by1 + margin)
@@ -282,7 +307,7 @@ class Grid:
         if i1 < i0 or j1 < j0:
             return
         XX, YY = np.meshgrid(self.X[i0:i1 + 1], self.Y[j0:j1 + 1], indexing="ij")
-        grid[i0:i1 + 1, j0:j1 + 1] |= _dist_field(o, XX, YY) < margin - 1e-6
+        grid[i0:i1 + 1, j0:j1 + 1] |= _dist_field(o, XX, YY, self.checkpoint) < margin - 1e-6
 
     def free(self, i, j, layer):
         return 0 <= i < self.nx and 0 <= j < self.ny and not self.blocked[layer][i, j]
@@ -325,6 +350,20 @@ def _seg_dist(x, y, s):
     return math.hypot(x - (x1 + t * vx), y - (y1 + t * vy))
 
 
+def _candidate_blockers(obstacles, window, layers, checkpoint):
+    groups = {}
+    for o in obstacles:
+        checkpoint()
+        if not _obs_near(o, *window) or not any(_layer_ok(o, l) for l in layers):
+            continue
+        kind = ("keepout" if o.restrict_layer is not None else "hole" if o.is_npth else
+                "pad" if o.is_pad else "wire" if o.kind == "seg" else "via")
+        key = (kind, o.net or "", o.source_ref or "")
+        groups[key] = groups.get(key, 0) + 1
+    return tuple({"type": kind, "net": net or None, "reference": ref or None, "count": count}
+                 for (kind, net, ref), count in sorted(groups.items()))
+
+
 SQ2 = math.sqrt(2)
 
 
@@ -336,7 +375,9 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
           soft_cost: float = 4.0, tap_exclude: set | None = None, pour_cost: float = 30.0,
           plane_cost: float = 0.25, cache=None, h_weight: float = 1.0, soft_tags: set | None = None,
           rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
-          layers: tuple | None = None, via_spans: list | None = None) -> Route:
+          layers: tuple | None = None, via_spans: list | None = None, *,
+          budget: RoutingBudget | None = None, max_vias_per_connection: int | None = None,
+          clock=None, _progress: SearchProgress | None = None, _tap_exclude=None) -> Route:
     """Route `net` from pad centre `start` (on any of start_layers) to pad centre `goal`, or
     (join_existing) to whichever is nearer: the goal pad or any trace the net already has, which
     it taps where it meets it (Fusion connects a trace ending part-way along another, verified
@@ -347,6 +388,56 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     Neck-down: a trace wider than the pad it starts or ends on (a power trace on a fine-pitch
     pin) narrows to the pad's short side (or neck_width) within neck_len of the pad, as a person
     does it; the rest of the run keeps its width."""
+    progress = _progress
+    if progress is None and budget is None and max_vias_per_connection is not None:
+        budget = RoutingBudget(max_vias_per_connection=max_vias_per_connection)
+    if progress is None and budget is not None:
+        job = RoutingJob(budget) if clock is None else RoutingJob(budget, clock)
+        progress = SearchProgress(job, budget.max_vias_per_connection)
+    try:
+        if progress is not None:
+            if type(max_nodes) is not int or max_nodes <= 0:
+                raise ValueError("max_nodes must be a positive integer")
+            progress.begin(max_nodes)
+            if max_vias_per_connection is not None:
+                if type(max_vias_per_connection) is not int or max_vias_per_connection <= 0:
+                    raise ValueError("max_vias_per_connection must be a positive integer")
+                progress.via_limit = min(progress.via_limit, max_vias_per_connection)
+            if _tap_exclude is not None:
+                tap_exclude = _tap_exclude(progress.checkpoint)
+        result = _route(root, net, start, start_layers, goal, goal_layers, width, clearance,
+                        prefer_layer, vias, via_drill, via_d, step, turn_cost, via_cost, layer_cost,
+                        max_nodes, join_existing, margin_mm, soft_cost, tap_exclude, pour_cost, plane_cost,
+                        cache, h_weight, soft_tags, rip_cost, neck_width, neck_len, hug, layers, via_spans, progress)
+        if progress is not None:
+            progress.checkpoint()
+            termination = ("routed" if result.legs and not result.problems else
+                           "max_vias" if progress.via_pruned and not result.legs else "no_path")
+            result.diagnostics = progress.finish(termination, len(result.vias) if termination == "routed" else None)
+        return result
+    except (BudgetStop, ValueError, KeyError, OverflowError) as error:
+        if progress is None:
+            raise
+        termination = error.termination if isinstance(error, BudgetStop) else "unsupported_geometry"
+        return Route(net, problems=[str(error)], diagnostics=progress.finish(termination))
+
+
+def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers: tuple,
+          goal: tuple[float, float], goal_layers: tuple, width: float = 0.25, clearance: float | None = None,
+          prefer_layer: int | None = None, vias: bool = True, via_drill: float | None = None, via_d: float | None = None,
+          step: float = 0.127, turn_cost: float = 0.6, via_cost: float = 8.0, layer_cost: float = 0.15,
+          max_nodes: int = 2_000_000, join_existing: bool = False, margin_mm: float | None = None,
+          soft_cost: float = 4.0, tap_exclude: set | None = None, pour_cost: float = 30.0,
+          plane_cost: float = 0.25, cache=None, h_weight: float = 1.0, soft_tags: set | None = None,
+          rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
+          layers: tuple | None = None, via_spans: list | None = None, progress: SearchProgress | None = None) -> Route:
+    checkpoint = progress.checkpoint if progress else None
+    if checkpoint:
+        checkpoint()
+        if (not math.isfinite(step) or step <= 0 or
+                not all(math.isfinite(v) for v in (*start, *goal)) or
+                (margin_mm is not None and (not math.isfinite(margin_mm) or margin_mm < 0))):
+            raise ValueError("Invalid routing coordinates, grid step, or window margin")
     stack = copper_layers(root)
     if via_spans is not None and vias:
         if not via_spans:
@@ -354,11 +445,18 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
         elif any(tuple(span) != (stack[0], stack[-1]) for span in via_spans):
             raise ValueError('Unsupported via span/technology; only full-stack through vias can be routed')
     layers = tuple(layers) if layers is not None else stack
-    if not layers or len(set(layers)) != len(layers) or any(l not in stack for l in layers):
+    if (not layers or len(set(layers)) != len(layers)
+            or any(l not in stack or (progress and type(l) is not int) for l in layers)):
         raise ValueError('Routing layers must be unique configured copper layers')
     if prefer_layer is not None and prefer_layer not in layers:
         raise ValueError('Preferred layer is not allowed for this route')
-    start_layers = tuple(l for l in start_layers if l in layers)
+    if checkpoint:
+        layers = tuple(l for l in stack if l in layers)
+        progress.layers = layers
+        vias = vias and layers == stack  # Through vias occupy every configured copper layer.
+        start_layers = tuple(l for l in layers if l in start_layers)
+    else:
+        start_layers = tuple(l for l in start_layers if l in layers)
     goal_layers = tuple(l for l in goal_layers if l in layers)
     if not start_layers or not goal_layers:
         return Route(net, problems=['Endpoint inaccessible on allowed routing layers'])
@@ -367,7 +465,12 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
         step = 0.254
     m = margin_mm if margin_mm is not None else max(6.0, 0.6 * span)
     window = (min(start[0], goal[0]) - m, min(start[1], goal[1]) - m, max(start[0], goal[0]) + m, max(start[1], goal[1]) + m)
-    obs_all = cache if cache else board_obstacles(root)
+    if checkpoint:
+        checkpoint()
+    obs_all = cache if cache else board_obstacles(root, checkpoint=checkpoint)
+    if checkpoint:
+        checkpoint()
+        progress.step = step
     scope = (net, tuple(sorted((tuple(start), tuple(goal)))))
     obs_all = ([replace(o, trace_holes=()) if o.trace_holes and o.trace_holes_for != scope else o
                 for o in obs_all[0]], obs_all[1], obs_all[2])
@@ -389,18 +492,24 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
         raise ValueError(f'via diameter must be at least {minimum_diameter:g} mm under the board rules')
     necks, nw = [], neck_width
     for p in (start, goal):
-        short = _pad_short_side(obs_all[0], net, p)
+        short = _pad_short_side(obs_all[0], net, p, checkpoint)
         if short and short < width and neck_len > 0:
             necks.append((p[0], p[1], neck_len + short / 2))
             nw = min(nw or short, short)
+    via_limit = progress.via_limit if progress and vias and len(layers) > 1 else None
+    via_states = (via_limit + 1) if via_limit is not None else 1
     G = Grid(root, net, width, clearance, step, start, layers=layers, via_d=via_d, window=window, cache=obs_all,
              soft_cost=soft_cost, pour_cost=pour_cost, plane_cost=plane_cost, soft_tags=soft_tags, rip_cost=rip_cost,
-             necks=necks, neck_width=nw, hug=hug)
+             necks=necks, neck_width=nw, hug=hug, progress=progress, via_states=via_states)
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
     r = Route(net, via_drill=via_drill, via_diameter=via_d, via_extent=(stack[0], stack[-1]),
               via_tented=via_drill <= _mm(rules.get('mlViaStopLimit'), 0.0))
     ny, nx = G.ny, G.nx
+    if checkpoint:
+        checkpoint()
+        if not (0 <= si < nx and 0 <= sj < ny and 0 <= gi < nx and 0 <= gj < ny):
+            raise ValueError("Routing endpoint is outside the routing grid")
     for (pi, pj) in ((si, sj), (gi, gj)):  # the start/goal pad cells are free even if a neighbour's clearance reaches them
         if 0 <= pi < nx and 0 <= pj < ny:
             for l in G.layers:
@@ -415,10 +524,16 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     tgt = [(gi, gj)]
     for l, a, b in taps:
         n_ = max(1, int(math.dist(a, b) / (2 * step)))
-        tgt += [G.ij(a[0] + (b[0] - a[0]) * k / n_, a[1] + (b[1] - a[1]) * k / n_) for k in range(n_ + 1)]
+        for k in range(n_ + 1):
+            if checkpoint and k % 64 == 0:
+                checkpoint()
+            tgt.append(G.ij(a[0] + (b[0] - a[0]) * k / n_, a[1] + (b[1] - a[1]) * k / n_))
     II, JJ = np.meshgrid(np.arange(nx), np.arange(ny), indexing="ij")
     H = np.full((nx, ny), np.inf)
-    for ti, tj in set(tgt):
+    targets = set(tgt)
+    for ti, tj in (sorted(targets) if checkpoint else targets):
+        if checkpoint:
+            checkpoint()
         dx, dy = np.abs(II - ti), np.abs(JJ - tj)
         H = np.minimum(H, np.maximum(dx, dy) + (SQ2 - 1) * np.minimum(dx, dy))
     H = (H * h_weight).ravel().tolist()      # weighted A*: > 1 searches far less for a slightly longer path
@@ -430,9 +545,13 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
         for l in G.layers:
             mm = np.zeros((nx, ny), bool)
             for tl, a, b in taps:
+                if checkpoint:
+                    checkpoint()
                 if tl == l:
                     mm |= _dist_field(Obstacle("seg", None, False, (a[0], a[1], b[0], b[1], 0.0)), XX, YY) <= tol
             tapmask[l] = mm.ravel().tobytes()
+    if checkpoint:
+        checkpoint()
     G.freeze()
     B, VB, C = G.B, G.VB, G.C
     lidx = {l: k for k, l in enumerate(G.layers)}
@@ -445,16 +564,23 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
             pref_mult, turn_cost, via_cost, vias, max_nodes)
     # fast pass: one state per cell and layer (the direction lives in the parent); a tight spot it
     # cannot solve gets the exact search with the direction in the state
-    found = _search(*args, full=False)
+    found = _search(*args, full=False, progress=progress, via_limit=via_limit)
     if found[0] is None:
-        found = _search(*args, full=True)
+        if progress is not None and progress.expanded_nodes >= progress.attempt_node_end:
+            raise BudgetStop("node_limit", "Routing attempt node limit reached")
+        found = _search(*args, full=True, progress=progress, via_limit=via_limit)
     path, end_tap_cell, n, limited = found
     if path is None:
-        r.problems.append("no route found" + (" (search limit)" if limited else ""))
+        detail = " (search limit)" if limited else " (via limit)" if progress and progress.via_pruned else ""
+        r.problems.append("no route found" + detail)
         return r
+    if checkpoint:
+        checkpoint()
     cells = [(idx // ny, idx % ny, L[li]) for idx, li in path]
     legs, cur, cur_l = [], [], cells[0][2]
-    for (i, j, l) in cells:
+    for k, (i, j, l) in enumerate(cells):
+        if checkpoint and k % 64 == 0:
+            checkpoint()
         if l != cur_l:
             legs.append((cur_l, cur))
             r.vias.append(G.xy(i, j))
@@ -463,7 +589,7 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
         if not cur or cur[-1] != p:
             cur.append(p)
     legs.append((cur_l, cur))
-    legs = [(l, _corners(pts)) for l, pts in legs]
+    legs = [(l, _corners(pts, checkpoint)) for l, pts in legs]
     end_tap = None
     if end_tap_cell is not None:
         x, y = G.xy(*divmod(end_tap_cell, ny))
@@ -480,6 +606,8 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
     r.problems += check_route(G, r)
     # which route_all connections this route crosses (they must be ripped up for it)
     for o in G.ripable:
+        if checkpoint:
+            checkpoint()
         for l, pts in r.legs:
             if not _layer_ok(o, l):
                 continue
@@ -487,7 +615,9 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
                 n_ = max(2, int(math.dist(a, b) / 0.05))
                 t = np.linspace(0.0, 1.0, n_ + 1)
                 xs, ys = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
-                if (_dist_field(o, xs, ys) < G.half_at(xs, ys) + G.clear - 0.005).any():
+                if checkpoint:
+                    checkpoint()
+                if (_dist_field(o, xs, ys, checkpoint) < G.half_at(xs, ys) + G.clear - 0.005).any():
                     r.conflicts.add(o.tag)
                     break
         for x, y in r.vias:
@@ -507,14 +637,18 @@ def _seg_clear(G, l, a, b) -> bool:
     xs, ys = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
     h = G.half_at(xs, ys)
     for o in G.other + G.ripable:
-        if _layer_ok(o, l) and (_dist_field(o, xs, ys) < h + G.clear - 0.005).any():
+        if G.checkpoint:
+            G.checkpoint()
+        if _layer_ok(o, l) and (_dist_field(o, xs, ys, G.checkpoint) < h + G.clear - 0.005).any():
             return False
     return True
 
 
-def _pad_short_side(obs, net, p):
+def _pad_short_side(obs, net, p, checkpoint=None):
     """Short side of the net's own pad under point p (None when p is not on a pad)."""
     for o in obs:
+        if checkpoint:
+            checkpoint()
         if o.is_pad and o.net == net and o.distance(*p) <= 1e-6:
             if o.kind == "rect":
                 return 2 * min(o.data[2], o.data[3])
@@ -534,6 +668,8 @@ def _split_necks(G, legs):
         cur = [pts[0]]
         cur_in = inside(pts[0])
         for a, b in zip(pts, pts[1:]):
+            if G.checkpoint:
+                G.checkpoint()
             dx, dy = b[0] - a[0], b[1] - a[1]
             ts = []
             for cx, cy, r in G.necks:
@@ -565,6 +701,8 @@ def _seg_cost(G, l, a, b) -> float:
     c = G._cost[l]
     tot = 0.0
     for k in range(n):
+        if G.checkpoint and k % 64 == 0:
+            G.checkpoint()
         x = a[0] + (b[0] - a[0]) * (k + 0.5) / n
         y = a[1] + (b[1] - a[1]) * (k + 0.5) / n
         i, j = G.ij(x, y)
@@ -592,6 +730,8 @@ def _smooth(G, l, pts):
     while i < n - 1:
         done = False
         for j in range(n - 1, i + 1, -1):
+            if G.checkpoint:
+                G.checkpoint()
             old = sum(_seg_cost(G, l, p, q) for p, q in zip(pts[i:j], pts[i + 1:j + 1]))
             a, b = pts[i], pts[j]
             slack = 0.5                         # a pad exit's first step may sit in its own pin field
@@ -611,16 +751,19 @@ def _smooth(G, l, pts):
         if not done:
             out.append(pts[i + 1])
             i += 1
-    return _corners(out)
+    return _corners(out, G.checkpoint)
 
 
 def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, tapmask, steps,
-            pref_mult, turn_cost, via_cost, vias, max_nodes, full):
+            pref_mult, turn_cost, via_cost, vias, max_nodes, full, progress=None, via_limit=None):
     """A* over cells x layers (x 8 directions when full). Returns ([(cell, layer index)], the cell
     where it tapped an existing trace or None, expansions, hit the limit)."""
     S = 8 if full else 1
     nlay = len(L)
-    nst = nx * ny * nlay * S
+    V = (via_limit + 1) if via_limit is not None else 1
+    nst = nx * ny * nlay * S * V
+    if progress is not None:
+        progress.checkpoint()
     INF = 1e18
     best = array("d", [INF]) * nst
     came = array("q", [-1]) * nst
@@ -631,25 +774,31 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         if l in lidx:
             if full:
                 for d in range(8):
-                    st = ((sidx * nlay + lidx[l]) << 3) | d
+                    st = (((sidx * nlay + lidx[l]) << 3) | d) * V
                     best[st] = 0.0
                     push(open_, (H[sidx], 0.0, st))
             else:
-                st = sidx * nlay + lidx[l]
+                st = (sidx * nlay + lidx[l]) * V
                 best[st] = 0.0
                 push(open_, (H[sidx], 0.0, st))
     end, end_tap_cell = None, None
-    n = 0
+    n = pops = 0
+    gi, gj = divmod(gidx, ny)
     while open_:
+        if progress is not None:
+            if pops % 64 == 0:
+                progress.checkpoint()
+            pops += 1
         f, g, st = pop(open_)
         if g > best[st] + 1e-9:
             continue
+        base_state, via_count = divmod(st, V) if V > 1 else (st, 0)
         if full:
-            d = st & 7
-            rest = st >> 3
+            d = base_state & 7
+            rest = base_state >> 3
         else:
             d = dirs[st]
-            rest = st
+            rest = base_state
         idx, li = divmod(rest, nlay)
         l = L[li]
         if idx == gidx and l in goal_set:
@@ -658,10 +807,18 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         if g > 0 and tapmask and tapmask[l][idx]:
             end, end_tap_cell = st, idx
             break
+        if progress is not None:
+            if progress.expanded_nodes >= progress.attempt_node_end:
+                raise BudgetStop("node_limit", "Routing attempt node limit reached")
+            progress.expanded_nodes += 1
         n += 1
-        if n > max_nodes:
+        if progress is None and n > max_nodes:
             break
         i, j = divmod(idx, ny)
+        if progress is not None:
+            distance = (i - gi) ** 2 + (j - gj) ** 2
+            if progress.closest_squared is None or distance < progress.closest_squared:
+                progress.closest_squared = distance
         Bl, Cl = B[l], C[l]
         pm = pref_mult[l]
         for dd in ((-1, 0, 1) if d >= 0 else (0, 1, 2, 3, 4, 5, 6, 7)):
@@ -676,7 +833,7 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
             if di and dj and (Bl[idx + di * ny] or Bl[idx + dj]):
                 continue                           # no squeezing diagonally between two blocked cells
             ng = g + base * pm + (turn_cost if (d >= 0 and dd) else 0.0) + Cl[nidx] * base
-            ns = (((nidx * nlay + li) << 3) | nd) if full else nidx * nlay + li
+            ns = ((((nidx * nlay + li) << 3) | nd) if full else nidx * nlay + li) * V + via_count
             if ng < best[ns] - 1e-9:
                 best[ns] = ng
                 came[ns] = st
@@ -686,7 +843,11 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         if vias and not VB[idx]:
             for nli in range(nlay):
                 if nli != li and not B[L[nli]][idx]:
-                    ns = (((idx * nlay + nli) << 3) | (d & 7)) if full else idx * nlay + nli
+                    if via_count == via_limit:
+                        progress.via_pruned = True
+                        continue
+                    next_vias = via_count + 1 if via_limit is not None else 0
+                    ns = ((((idx * nlay + nli) << 3) | (d & 7)) if full else idx * nlay + nli) * V + next_vias
                     ng = g + via_cost
                     if ng < best[ns] - 1e-9:
                         best[ns] = ng
@@ -698,11 +859,15 @@ def _search(nx, ny, B, VB, C, H, L, lidx, start_layers, sidx, gidx, goal_set, ta
         return None, None, n, n > max_nodes
     path = [end]
     while came[path[-1]] >= 0:
+        if progress is not None and len(path) % 64 == 0:
+            progress.checkpoint()
         path.append(came[path[-1]])
     path.reverse()
+    if progress is not None and end_tap_cell is None:
+        progress.closest_squared = 0
     if full:
-        return [divmod(st >> 3, nlay) for st in path], end_tap_cell, n, False
-    return [divmod(st, nlay) for st in path], end_tap_cell, n, False
+        return [divmod((st // V) >> 3, nlay) for st in path], end_tap_cell, n, False
+    return [divmod(st // V, nlay) for st in path], end_tap_cell, n, False
 
 
 def _net_traces(root: ET.Element, net: str) -> list:
@@ -752,11 +917,13 @@ def _cross(pts, seg):
     return None
 
 
-def _corners(pts):
+def _corners(pts, checkpoint=None):
     if len(pts) <= 2:
         return pts
     out = [pts[0]]
-    for a, b, c in zip(pts, pts[1:], pts[2:]):
+    for i, (a, b, c) in enumerate(zip(pts, pts[1:], pts[2:])):
+        if checkpoint and i % 64 == 0:
+            checkpoint()
         d1 = (round(b[0] - a[0], 3), round(b[1] - a[1], 3))
         d2 = (round(c[0] - b[0], 3), round(c[1] - b[1], 3))
         if abs(d1[0] * d2[1] - d1[1] * d2[0]) > 1e-6:
@@ -795,19 +962,25 @@ def check_route(G: Grid, r: Route) -> list[str]:
     over sample points every 0.05 mm)."""
     for l, pts in r.legs:
         for a, b in zip(pts, pts[1:]):
+            if G.checkpoint:
+                G.checkpoint()
             n = max(2, int(math.dist(a, b) / 0.05))
             t = np.linspace(0.0, 1.0, n + 1)
             xs, ys = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
             for o in G.other:
+                if G.checkpoint:
+                    G.checkpoint()
                 if not _layer_ok(o, l):
                     continue
-                dd = _dist_field(o, xs, ys) - G.half_at(xs, ys)
+                dd = _dist_field(o, xs, ys, G.checkpoint) - G.half_at(xs, ys)
                 k = int(np.argmin(dd))
                 if dd[k] < G.clear - 0.005:
                     return [f"layer {l} near ({xs[k]:.2f}, {ys[k]:.2f}) is {dd[k]:.3f} mm from "
                             f"{o.net or 'a hole/keepout'}"]
     for x, y in r.vias:
         for o in G.other:
+            if G.checkpoint:
+                G.checkpoint()
             if o.distance(x, y) < G.via_r + G_via_clear(G, o) - 0.005:
                 return [f"via at ({x}, {y}) too close to {o.net or 'a hole/keepout'}"]
     return []
@@ -845,7 +1018,7 @@ def pad_target(root: ET.Element, ref: str, pad: str) -> tuple[float, float, tupl
 
 
 def fragment(root: ET.Element, net: str, start: tuple[float, float], start_layers=None,
-             include_layers=False) -> tuple[set, tuple]:
+             include_layers=False, checkpoint=None) -> tuple[set, tuple]:
     """The piece of `net`'s copper that touches `start`: its trace segments (as rounded end pairs)
     and the copper layers present at `start`. Traces join at shared ends and through vias."""
     key = lambda x, y: (round(float(x), 3), round(float(y), 3))
@@ -857,11 +1030,17 @@ def fragment(root: ET.Element, net: str, start: tuple[float, float], start_layer
             for w in sig.iterfind("wire") if int(w.get("layer")) in stack and not float(w.get('curve', '0'))]
     vias = {}
     for v in sig.iterfind('via'):
+        if checkpoint:
+            checkpoint()
         vias.setdefault(key(v.get('x'), v.get('y')), set()).update(via_layers(root, v))
     for c in sig.iterfind('contactref'):
+        if checkpoint:
+            checkpoint()
         x, y, ls, _ = pad_target(root, c.get('element'), c.get('pad'))
         if len(ls) > 1: vias.setdefault(key(x, y), set()).update(ls)
     def on(p, a, b):                       # p on segment a-b (a tap ending part-way along it)
+        if checkpoint:
+            checkpoint()
         return _seg_dist(p[0], p[1], (a[0], a[1], b[0], b[1])) <= 0.002
 
     s0 = key(*start)
@@ -875,6 +1054,8 @@ def fragment(root: ET.Element, net: str, start: tuple[float, float], start_layer
     while changed:
         changed = False
         for a, b, l in segs:
+            if checkpoint:
+                checkpoint()
             if (a, b, l) in visited:
                 continue
             if (a, l) in seen_pts or (b, l) in seen_pts or any(ll == l and on(p, a, b) for p, ll in seen_pts):

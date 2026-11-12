@@ -13,10 +13,11 @@ from __future__ import annotations
 import copy
 import math
 import xml.etree.ElementTree as ET
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from . import router as RT
+from .routing_budget import RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
 
 
 @dataclass
@@ -37,6 +38,7 @@ class Result:
     failed: dict = field(default_factory=dict)       # conn id -> reason
     rips: int = 0
     root: ET.Element | None = None
+    diagnostics: dict[str, SearchDiagnostics] = field(default_factory=dict)
 
 
 def _sig(root, net):
@@ -61,11 +63,13 @@ def _rip(root, ids: set):
                 sg.remove(el)
 
 
-def _not_joined(root, c: Conn) -> set:
-    frag, _ = RT.fragment(root, c.net, c.goal, c.goal_layers, include_layers=True)
+def _not_joined(root, c: Conn, checkpoint=None) -> set:
+    frag, _ = RT.fragment(root, c.net, c.goal, c.goal_layers, include_layers=True, checkpoint=checkpoint)
     key = lambda p: (round(p[0], 3), round(p[1], 3))
     out = set()
     for layer, a, b in RT._net_traces(root, c.net):
+        if checkpoint:
+            checkpoint()
         k = (layer, key(a), key(b))
         if k not in frag and (layer, k[2], k[1]) not in frag:
             out.add(k)
@@ -73,7 +77,12 @@ def _not_joined(root, c: Conn) -> set:
 
 
 def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: int = 3,
-              rip_cost: float = 15.0, policies=None, priorities=None, **kw) -> Result:
+              rip_cost: float = 15.0, policies=None, priorities=None, *,
+              budget: RoutingBudget | None = None, protected_nets=(), clock=None, **kw) -> Result:
+    if budget is not None:
+        job = RoutingJob(budget) if clock is None else RoutingJob(budget, clock)
+        return _bounded_route_all(root, conns, vias, rip_cost, policies or {}, priorities or {},
+                                  job, set(protected_nets), kw)
     work = copy.deepcopy(root)
     res = Result(root=work)
     by_id = {c.id: c for c in conns}
@@ -124,4 +133,70 @@ def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: in
             res.failed.pop(c.id, None)
         else:
             queue.append(c)
+    return res
+
+
+def _bounded_route_all(root, conns, vias, rip_cost, policies, priorities, job, protected, options):
+    work = copy.deepcopy(root)
+    res = Result(root=work)
+    by_id = {c.id: c for c in conns}
+    if len(by_id) != len(conns) or "" in by_id:
+        raise ValueError("Routing connection IDs must be nonempty and unique")
+
+    # Existing copper can carry tags from a previous job with the same IDs.
+    old_tags = [(el, tag) for el in work.iter() if (tag := el.get("mcp_conn")) in by_id]
+    for el, _ in old_tags:
+        el.set("mcp_conn", "")
+
+    progress = {c.id: SearchProgress(job, job.budget.max_vias_per_connection) for c in conns}
+    rip_rounds = Counter()
+    queue = deque(sorted(conns, key=lambda c: (-priorities.get(c.net, 0), c.id)))
+    while queue:
+        c = queue.popleft()
+        state = progress[c.id]
+        if c.net in protected:
+            res.failed[c.id] = f"Net {c.net} is protected from routing"
+            res.diagnostics[c.id] = state.finish("protected_net")
+            continue
+        kw = {**options, **policies.get(c.net, {})}
+        if "allowed_layers" in kw:
+            kw["layers"] = kw.pop("allowed_layers")
+        allow_vias = vias and kw.pop("vias", True)
+        kw.pop("cache", None)  # Always use current copper on the working board.
+        kw.pop("soft_tags", None)
+        kw.pop("tap_exclude", None)
+
+        def search(soft_tags=None):
+            return RT.route(work, c.net, c.start, c.start_layers, c.goal, c.goal_layers, width=c.width,
+                            vias=allow_vias, join_existing=True, soft_tags=soft_tags, rip_cost=rip_cost,
+                            _progress=state, _tap_exclude=lambda check: _not_joined(work, c, check), **kw)
+
+        route = search()
+        if route.diagnostics.termination in ("no_path", "max_vias") and state.can_attempt:
+            laid = {i for i in res.routes if by_id[i].net != c.net}
+            if laid and rip_rounds[c.id] < job.budget.ripup_rounds:
+                rip_rounds[c.id] += 1
+                route = search(laid)
+                if route.diagnostics.termination == "routed":
+                    # The checked path crosses only the reported soft obstacles. Remove whole
+                    # run-owned nets so no remaining route taps copper that was removed.
+                    hit_nets = {by_id[i].net for i in route.conflicts}
+                    rip = sorted(i for i in laid if by_id[i].net in hit_nets)
+                    if rip:
+                        _rip(work, set(rip))
+                    for i in rip:
+                        del res.routes[i]
+                        queue.append(by_id[i])
+                    res.rips += len(rip)
+
+        res.diagnostics[c.id] = route.diagnostics
+        if route.diagnostics.termination == "routed":
+            _commit(work, c, route)
+            res.routes[c.id] = route
+            res.failed.pop(c.id, None)
+        else:
+            res.failed[c.id] = (route.problems or ["no route"])[0]
+
+    for el, tag in old_tags:
+        el.set("mcp_conn", tag)
     return res

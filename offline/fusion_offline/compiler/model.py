@@ -12,28 +12,11 @@ from types import MappingProxyType
 from typing import Any
 from xml.parsers import expat
 
+from ..routing_budget import ROUTING_BUDGET_DEFAULTS, ROUTING_BUDGET_MAXIMUMS
 from . import SPEC_VERSION
 from .canonical import canonical_digest, canonical_json_bytes, normalize_mm
 from .paths import read_pinned_file
 
-ROUTING_BUDGET_DEFAULTS = {
-    "max_nodes_per_attempt": 200_000,
-    "max_nodes_per_connection": 300_000,
-    "max_attempts_per_connection": 2,
-    "max_seconds_per_attempt": 15,
-    "max_seconds_per_job": 600,
-    "max_vias_per_connection": 2,
-    "ripup_rounds": 2,
-}
-ROUTING_BUDGET_MAXIMUMS = {
-    "max_nodes_per_attempt": 1_000_000,
-    "max_nodes_per_connection": 2_000_000,
-    "max_attempts_per_connection": 8,
-    "max_seconds_per_attempt": 60,
-    "max_seconds_per_job": 1800,
-    "max_vias_per_connection": 8,
-    "ripup_rounds": 8,
-}
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.$@+!~-]+")
 _INVALID_XML_TEXT = re.compile(r"[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 

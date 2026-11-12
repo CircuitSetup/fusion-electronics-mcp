@@ -132,7 +132,7 @@ def segments_intersect(a, b, c, d):
     return cross(a, b, c)*cross(a, b, d) <= 1e-20 and cross(c, d, a)*cross(c, d, b) <= 1e-20
 
 
-def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False):
+def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False, *, checkpoint=None):
     try:
         points = tuple(transform(float(v.attrib['x']), float(v.attrib['y'])) for v in polygon.findall('vertex'))
         half = float(polygon.get('width', '0')) / 2
@@ -147,10 +147,15 @@ def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x
         if abs(area2) < 1e-10:
             raise ValueError('restrict polygon has no area')
         edges = list(zip(points, points[1:]+points[:1]))
+        checked = 0
         for i, (a, b) in enumerate(edges):
             for j in range(i+2, len(edges)):
                 if i == 0 and j == len(edges)-1:
                     continue
+                if checkpoint:
+                    if checked % 64 == 0:
+                        checkpoint()
+                    checked += 1
                 if segments_intersect(a, b, *edges[j]):
                     raise ValueError('restrict polygon intersects itself')
         layer = int(polygon.attrib['layer'])
@@ -163,7 +168,7 @@ def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x
                     restrict_layer=layer, source_ref=source_ref)
 
 
-def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False):
+def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False, *, checkpoint=None):
     """Normalize supported native filled outlines without changing the exported XML."""
     try:
         polygon = ET.Element('polygon', layer=shape.attrib['layer'])
@@ -191,7 +196,7 @@ def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y)
                 raise ValueError('native restrict outline must be a single matching closed contour')
             for vertex in objects:
                 ET.SubElement(polygon, 'vertex', vertex.attrib)
-        obstacle = _restrict_polygon(polygon, stack, source_ref, transform, mirror)
+        obstacle = _restrict_polygon(polygon, stack, source_ref, transform, mirror, checkpoint=checkpoint)
         mask = shape.get('restrictlayers')
         if mask is not None or shape.tag == 'polygonshape':
             # shortcut: only observed outer-layer masks are verified; reject inner masks until their native mapping is established.
@@ -208,7 +213,7 @@ def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y)
         raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None
 
 
-def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[float, float, float, float]]]:
+def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle], dict, list[tuple[float, float, float, float]]]:
     """(obstacles, rules, outline segments) from a board XML root."""
     board = root.find("./drawing/board")
     from .design import parse_board_design
@@ -218,9 +223,15 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
     # pad -> net from the signals' contactrefs
     pad_net = {}
     for s in board.iterfind("./signals/signal"):
+        if checkpoint:
+            checkpoint()
         for c in s.iterfind("contactref"):
+            if checkpoint:
+                checkpoint()
             pad_net[(c.get("element"), c.get("pad"))] = s.get("name")
         for w in s.iterfind("wire"):
+            if checkpoint:
+                checkpoint()
             if w.get("layer") in ("19",):
                 continue
             # arcs are kept as their chord, widened by the sagitta (conservative)
@@ -231,19 +242,29 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
                                 (_f(w, "x1"), _f(w, "y1"), _f(w, "x2"), _f(w, "y2"), _f(w, "width") / 2 + sag),
                                 frozenset({int(w.get("layer"))}), w.get("mcp_conn")))
         for v in s.iterfind("via"):
+            if checkpoint:
+                checkpoint()
             d = max(_f(v, "diameter"), _f(v, "drill") + 2 * _ring(rules, "Via", _f(v, "drill")))
             obs.append(Obstacle("circle", s.get("name"), False, (_f(v, "x"), _f(v, "y"), d / 2), None, v.get("mcp_conn")))
     pkgs = {}
     for lib in board.iterfind("./libraries/library"):
+        if checkpoint:
+            checkpoint()
         for pk in lib.iterfind("./packages/package"):
+            if checkpoint:
+                checkpoint()
             pkgs[(lib.get("name"), pk.get("name"))] = pk
     for el in board.iterfind("./elements/element"):
+        if checkpoint:
+            checkpoint()
         pk = pkgs.get((el.get("library"), el.get("package")))
         if pk is None:
             continue
         ang, mir = parse_rot(el.get("rot"))
         ex, ey = _f(el, "x"), _f(el, "y")
         for smd in pk.iterfind("smd"):
+            if checkpoint:
+                checkpoint()
             cx, cy = _xf(_f(smd, "x"), _f(smd, "y"), ex, ey, ang, mir)
             prot, _ = parse_rot(smd.get("rot"))
             a = (ang + prot) * (-1 if mir else 1)
@@ -255,6 +276,8 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
             else:
                 obs.append(Obstacle("rect", net_, True, (cx, cy, dx / 2, dy / 2, a), frozenset({side})))
         for pad in pk.iterfind("pad"):
+            if checkpoint:
+                checkpoint()
             LibraryPad.from_xml(pad).require_supported_geometry(el.get("name"))
             cx, cy = _xf(_f(pad, "x"), _f(pad, "y"), ex, ey, ang, mir)
             drill = _f(pad, "drill")
@@ -273,32 +296,48 @@ def board_obstacles(root: ET.Element) -> tuple[list[Obstacle], dict, list[tuple[
             else:
                 obs.append(Obstacle("circle", net_, True, (cx, cy, dia / 2)))
         for h in pk.iterfind("hole"):
+            if checkpoint:
+                checkpoint()
             cx, cy = _xf(_f(h, "x"), _f(h, "y"), ex, ey, ang, mir)
             obs.append(Obstacle("circle", None, True, (cx, cy, _f(h, "drill") / 2), is_npth=True))
         for shape in list(pk.findall('rectangle')) + list(pk.findall('polygonshape')):
+            if checkpoint:
+                checkpoint()
             if shape.get('layer') in ('41', '42', '43'):
                 obs.append(_restrict_shape(shape, stack, el.get('name'),
-                           lambda x, y: _xf(x, y, ex, ey, ang, mir), mir))
+                           lambda x, y: _xf(x, y, ex, ey, ang, mir), mir, checkpoint=checkpoint))
         for polygon in pk.findall('polygon'):
+            if checkpoint:
+                checkpoint()
             if polygon.get('layer') in ('41', '42', '43'):
                 obs.append(_restrict_polygon(polygon, stack, el.get('name'),
-                           lambda x, y: _xf(x, y, ex, ey, ang, mir), mir))
+                           lambda x, y: _xf(x, y, ex, ey, ang, mir), mir, checkpoint=checkpoint))
     outline = []
     for w in board.iterfind("./plain/wire"):
+        if checkpoint:
+            checkpoint()
         if w.get("layer") == "20":
             outline.append((_f(w, "x1"), _f(w, "y1"), _f(w, "x2"), _f(w, "y2")))
     for h in board.iterfind("./plain/hole"):
+        if checkpoint:
+            checkpoint()
         obs.append(Obstacle("circle", None, True, (_f(h, "x"), _f(h, "y"), _f(h, "drill") / 2), is_npth=True))
     for c in board.iterfind("./plain/circle"):
+        if checkpoint:
+            checkpoint()
         if c.get("layer") in ("41", "42", "43") and _f(c, "width") == 0:
             obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius")),
                                 restrict_layer=int(c.get('layer'))))
     for shape in list(board.findall('./plain/rectangle')) + list(board.findall('./plain/polygonshape')):
+        if checkpoint:
+            checkpoint()
         if shape.get('layer') in ('41', '42', '43'):
-            obs.append(_restrict_shape(shape, stack))
+            obs.append(_restrict_shape(shape, stack, checkpoint=checkpoint))
     for polygon in board.findall('./plain/polygon'):
+        if checkpoint:
+            checkpoint()
         if polygon.get('layer') in ('41', '42', '43'):
-            obs.append(_restrict_polygon(polygon, stack))
+            obs.append(_restrict_polygon(polygon, stack, checkpoint=checkpoint))
     return obs, rules, outline
 
 
