@@ -151,6 +151,15 @@ With Fusion running:
 fusion-electronics-mcp doctor
 ```
 
+## Build with Electronics commands and scripts
+
+Start with `get_context` to confirm the target design and editor. Call
+`get_eagle_command_guide` or read the [Fusion/EAGLE command guide](server/fusion_mcp/data/eagle-command-guide.md)
+to choose a verified MCP tool, write a `.scr`, or identify where a
+[registered ULP](docs/registered-ulps.md) or Fusion dialog fits. The guide
+covers schematics, PCBs and libraries, with examples and checks for each
+editor. The guide tool works without Fusion running.
+
 ## Read-only ULP probe
 
 `run_bundled_ulp(name="probe", design="PCB")` runs the reviewed, bundled probe

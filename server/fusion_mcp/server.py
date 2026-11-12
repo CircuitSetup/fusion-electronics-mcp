@@ -44,6 +44,20 @@ mcp = MCPServer(
         "MCP server turned on, Preferences > General > API, or the FusionElectronicsMCP add-in). "
         "Coordinates are millimetres. Reads reflect the design as "
         "exported at call time. Normal edits are verified by reading the design back. "
+        "Build in Fusion with command-backed tools before using UI clicks. Start with get_context "
+        "and read the target design. Batch repeated edits: use move_parts for PCB placement, "
+        "route_net/route_remaining for routing, and preview_schematic_edits or preview_circuit_block "
+        "with apply_schematic_plan for reviewed schematic builds. For a missing library device, "
+        "prepare it with create_library_part and build it in Fusion with insert_library_part. "
+        "insert_library_part and add_library_variant use generated EAGLE scripts. "
+        "If no typed tool covers a deterministic edit, prepare a small reviewable EAGLE .scr "
+        "for the correct editor. Call get_eagle_command_guide for the editor-specific map of "
+        "tools, EAGLE commands, script examples and read-back checks. MCP has no "
+        "arbitrary EAGLE command or .scr runner. Test unsupported scripts on a disposable copy "
+        "and verify read-back before using them on the target. Use registered ULPs for design "
+        "queries or reviewed batches that change attributes on existing objects; their edit plans "
+        "cannot create or delete objects. inspect_fusion_commands only lists native UI commands; "
+        "run_fusion_script controls installed Fusion API programs, not EAGLE .scr files. "
         "Organize schematics into complete functional blocks (power, control, sensing, communications) "
         "with signal flow left to right, supplies above and ground below. Place IC support parts beside "
         "the pins they serve, series parts inline "
@@ -215,6 +229,16 @@ def get_context() -> dict:
     out["server"] = {"version": __version__, "code_loaded": _time.strftime("%Y-%m-%d %H:%M",
                                                                          _time.localtime(staleness.STARTED))}
     return out
+
+
+@tool(READ)
+def get_eagle_command_guide() -> str:
+    """Read the Fusion/EAGLE command map for schematic, PCB and library builds.
+    Maps tasks to MCP tools and native commands, with script examples and verification steps.
+    Does not connect to Fusion or execute commands."""
+    from importlib.resources import files
+
+    return files("fusion_mcp").joinpath("data", "eagle-command-guide.md").read_text(encoding="utf-8")
 
 
 @tool(READ)
