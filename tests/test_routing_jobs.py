@@ -66,7 +66,7 @@ class RoutingJobsTest(unittest.TestCase):
             self.assertEqual(self.service.preview_routing_job(job.path, job.sha256), job.read_artifact("preview"))
             promoted = self.promote(base, job)
             self.assertEqual(promoted.read_artifact("board"), job.read_artifact("candidate_board"))
-            self.assertEqual(promoted.read_artifact("preview"), job.read_artifact("preview"))
+            self.assertEqual(promoted.read_artifact("board_svg"), job.read_artifact("preview"))
             self.assertEqual(promoted.data["routing_job"]["manifest_sha256"], job.sha256)
             self.assertEqual(json.loads(promoted.read_artifact("report"))["airwires_by_net"]["VCC"], 0)
             self.assertEqual(router.call_count, 1)

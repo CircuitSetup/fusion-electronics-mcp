@@ -8,6 +8,7 @@ import math
 from collections import Counter
 
 from .design import transform
+from .sch_layout import LABEL_SIZE, text_w
 
 SYM, WIRE, LBL, PWR, TXT, PIN = "#a3262a", "#2f8a3c", "#2456a6", "#6b4fa0", "#333", "#7a2a2a"
 
@@ -18,7 +19,7 @@ def _readable(angle: float) -> float:
 
 
 def render_svg(d, geo: dict, values: dict, supply_geo: dict, scale: float = 4.0, title: str = "",
-               pad: float = 6.0) -> str:
+               pad: float = 6.0, *, junctions=None) -> str:
     x0, y0, x1, y1 = d.extent()
     x0, y0, x1, y1 = x0 - pad, y0 - pad, x1 + pad, y1 + pad + (6 if title else 0)
     W, H = (x1 - x0) * scale, (y1 - y0) * scale
@@ -39,7 +40,8 @@ def render_svg(d, geo: dict, values: dict, supply_geo: dict, scale: float = 4.0,
                 if p[6]:
                     r = math.hypot(b[0] - a[0], b[1] - a[1]) / (2 * math.sin(math.radians(abs(p[6]) / 2)))
                     sweep = 0 if (p[6] > 0) != mir else 1
-                    o.append(f'<path d="M{X(a[0])},{Y(a[1])} A{r * scale:.2f},{r * scale:.2f} 0 0 {sweep} '
+                    large_arc = int(abs(p[6]) > 180)
+                    o.append(f'<path d="M{X(a[0])},{Y(a[1])} A{r * scale:.2f},{r * scale:.2f} 0 {large_arc} {sweep} '
                              f'{X(b[0])},{Y(b[1])}" fill="none" stroke="{color}" stroke-width="{max(p[5], 0.15) * scale:.2f}"/>')
                 else:
                     o.append(f'<line x1="{X(a[0])}" y1="{Y(a[1])}" x2="{X(b[0])}" y2="{Y(b[1])}" stroke="{color}" '
@@ -89,16 +91,18 @@ def render_svg(d, geo: dict, values: dict, supply_geo: dict, scale: float = 4.0,
         sx, sy, rot, mir = solve(g, pin.name, (x, y), (-facing[0], -facing[1]))
         draw_geo(g, sx, sy, rot, mir, {">VALUE": "GND" if kind == "gnd" else net}, PWR)
     count = Counter()
-    for net, pts in d.wires:
+    for _, pts in d.wires:
         o.append(f'<polyline points="{" ".join(f"{X(p[0])},{Y(p[1])}" for p in pts)}" fill="none" stroke="{WIRE}" '
                  f'stroke-width="{0.3 * scale}" stroke-linejoin="round"/>')
-        for i, p in enumerate(pts):
-            count[(round(p[0], 2), round(p[1], 2))] += 1 if i in (0, len(pts) - 1) else 2
-    for (px, py), c in count.items():
-        if c >= 3:
-            o.append(f'<circle cx="{X(px)}" cy="{Y(py)}" r="{0.6 * scale}" fill="{WIRE}"/>')
+        if junctions is None:
+            for i, p in enumerate(pts):
+                count[(round(p[0], 2), round(p[1], 2))] += 1 if i in (0, len(pts) - 1) else 2
+    if junctions is None:
+        junctions = (point for point, connections in count.items() if connections >= 3)
+    for px, py in junctions:
+        o.append(f'<circle cx="{X(px)}" cy="{Y(py)}" r="{0.6 * scale}" fill="{WIRE}"/>')
     for net, x, y, dr in d.labels:
-        w = len(net) * 1.27 * 0.78 + 2.0
+        w = text_w(net, LABEL_SIZE) + 2.0
         s = scale
         if dr > 0:
             path = f"M{X(x)},{Y(y)} l{1.2 * s},{-1.2 * s} h{(w - 1.2) * s} v{2.4 * s} h{-(w - 1.2) * s} z"
@@ -109,7 +113,7 @@ def render_svg(d, geo: dict, values: dict, supply_geo: dict, scale: float = 4.0,
             tx = X(x) - 1.6 * s
             anchor = "end"
         o.append(f'<path d="{path}" fill="#eef3fb" stroke="{LBL}" stroke-width="{0.2 * s}"/>')
-        o.append(f'<text x="{tx}" y="{Y(y) + 0.6 * s}" font-size="{1.27 * s:.1f}" fill="{LBL}" font-weight="600" '
+        o.append(f'<text x="{tx}" y="{Y(y) + 0.6 * s}" font-size="{LABEL_SIZE * s:.1f}" fill="{LBL}" font-weight="600" '
                  f'text-anchor="{anchor}">{html.escape(net)}</text>')
     o.append("</svg>")
     return "".join(o)

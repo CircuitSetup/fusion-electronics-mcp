@@ -31,7 +31,8 @@ class CompilerManifestTest(unittest.TestCase):
         self.assertEqual(first.path.read_bytes(), second.path.read_bytes())
         self.assertEqual(first.data, load_candidate_manifest(first.path, first.sha256).data)
         self.assertEqual(set(first.data["artifacts"]),
-                         {"schematic", "board", "report", "preview", "routing_intent"})
+                         {"schematic", "board", "report", "preview", "routing_intent", "board_svg",
+                          "schematic_sheet_1", "routing_diagnostics", "summary"})
         self.assertNotIn(str(self.source).encode(), first.path.read_bytes())
         for key, record in first.data["artifacts"].items():
             with self.subTest(key=key):

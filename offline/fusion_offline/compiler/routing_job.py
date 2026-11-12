@@ -13,7 +13,8 @@ from ..routing_budget import RoutingBudget
 from . import ROUTER_CONTRACT_VERSION
 from .board import route_geometry, route_owners
 from .canonical import canonical_digest, canonical_json_bytes, eagle_xml_bytes
-from .compile import _compare_routed_board, _preview, _publish
+from .board_svg import render_board_svg
+from .compile import _compare_routed_board, _publish
 from .manifest import ArtifactManifest, CandidateManifest, _MAX_MANIFEST_BYTES, _pin, load_candidate_manifest
 from .model import _validate_source_xml
 from .paths import _check_parents, _local_path, _read_local_file, atomic_directory, atomic_write, read_pinned_file
@@ -279,7 +280,8 @@ def plan_routing_job(manifest_path, expected_manifest_sha256, selected_nets=None
     for row in diagnostics.values():
         del row["elapsed_ms"]
     artifacts = {
-        "input_board": original, "request": request_bytes, "candidate_board": board, "preview": _preview(board),
+        "input_board": original, "request": request_bytes, "candidate_board": board,
+        "preview": render_board_svg(board, policy, request, diagnostics),
         "routes": canonical_json_bytes({"routes": routes, "failed": result.failed, "rips": result.rips,
                                        "provenance": provenance}),
         "diagnostics": canonical_json_bytes(diagnostics),
@@ -336,6 +338,6 @@ def promote_routing_job(candidate_manifest_path, expected_candidate_sha256, job_
     }
     return _publish(output, base.data["inputs"], base.read_artifact("schematic"),
                     job.read_artifact("candidate_board"), base.read_artifact("routing_intent"), record,
-                    provenance=provenance, preview=job.read_artifact("preview"),
+                    provenance=provenance, board_svg=job.read_artifact("preview"),
                     routing_artifacts={f"routing_{name}": job.read_artifact(name)
                                        for name in ("request", "routes", "diagnostics")})

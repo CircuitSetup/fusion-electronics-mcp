@@ -82,6 +82,9 @@ class Drawing:
             xs += [a, c]; ys += [b, d]
         for _, pts in self.wires:
             xs += [p[0] for p in pts]; ys += [p[1] for p in pts]
+        for label in self.labels:
+            a, b, c, d, _ = label_box(*label)
+            xs += [a, c]; ys += [b, d]
         if not xs:
             return (0.0, 0.0, 0.0, 0.0)
         return (min(xs), min(ys), max(xs), max(ys))

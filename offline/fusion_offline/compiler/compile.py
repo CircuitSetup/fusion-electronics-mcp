@@ -1,14 +1,15 @@
 """Compile and publish deterministic offline EAGLE candidates."""
 from collections import Counter
 import json
-import math
 import xml.etree.ElementTree as ET
 
 from .board import build_board
+from .board_svg import render_board_svg
 from .canonical import canonical_json_bytes
 from .libraries import resolve_libraries
-from .manifest import CandidateManifest, publish_candidate
+from .manifest import CandidateManifest, _identity, publish_candidate
 from .model import ROUTING_BUDGET_DEFAULTS, load_design_spec
+from .render import review_artifacts
 from .schematic import build_schematic
 from .validate import validate_candidate
 
@@ -28,54 +29,21 @@ def _routing_intent(spec):
     }
 
 
-def _preview(board_xml):
-    """Render the saved straight outline, explicit traces, vias and placement centres."""
-    board = ET.fromstring(board_xml).find("./drawing/board")
-    outline = board.findall("./plain/wire[@layer='20']")
-    traces = [wire for wire in board.findall("./signals/signal/wire") if wire.get("layer") != "19"]
-    svg = ET.Element("svg", xmlns="http://www.w3.org/2000/svg")
-    drawing = ET.SubElement(svg, "g", transform="scale(1,-1)", fill="none")
-    points = []
-
-    def position(node, x, y):
-        point = float(node.attrib[x]), float(node.attrib[y])
-        if not all(math.isfinite(value) for value in point):
-            return None
-        points.append(point)
-        return point
-
-    for wires, color in ((outline, "#334155"), (traces, "#b45309")):
-        group = ET.SubElement(drawing, "g", stroke=color)
-        for wire in wires:
-            if float(wire.get("curve", "0")):
-                continue
-            start, end = position(wire, "x1", "y1"), position(wire, "x2", "y2")
-            if start is not None and end is not None:
-                ET.SubElement(group, "line", x1=str(start[0]), y1=str(start[1]),
-                              x2=str(end[0]), y2=str(end[1]), **{"stroke-width": "0.18"})
-    for nodes, color in ((board.findall("./elements/element"), "#2563eb"),
-                         (board.findall("./signals/signal/via"), "#b45309")):
-        group = ET.SubElement(drawing, "g", fill=color)
-        for node in nodes:
-            point = position(node, "x", "y")
-            if point is not None:
-                ET.SubElement(group, "circle", cx=str(point[0]), cy=str(point[1]), r="0.32")
-    if points:
-        xs, ys = zip(*points)
-        svg.set("viewBox", f"{min(xs) - 1:g} {-max(ys) - 1:g} {max(xs) - min(xs) + 2:g} {max(ys) - min(ys) + 2:g}")
-    return ET.tostring(svg, encoding="utf-8") + b"\n"
-
-
 def _publish(output_directory, inputs, schematic, board, routing_intent, routing_job=None, *,
-             provenance=None, preview=None, routing_artifacts=None):
-    report = validate_candidate(schematic, board, json.loads(routing_intent), provenance=provenance)
+             provenance=None, board_svg=None, routing_artifacts=None):
+    intent = json.loads(routing_intent)
+    report = validate_candidate(schematic, board, intent, provenance=provenance)
     artifacts = {
         "schematic": schematic, "board": board, "routing_intent": routing_intent,
-        "report": canonical_json_bytes(report), "preview": _preview(board) if preview is None else preview,
+        "report": canonical_json_bytes(report), "routing_diagnostics": b"{}",
     }
     if provenance is not None:
         artifacts["routing_provenance"] = canonical_json_bytes(provenance)
     artifacts.update(routing_artifacts or {})
+    artifacts["board_svg"] = (render_board_svg(board, intent["routing"], {}, {})
+                              if board_svg is None else board_svg)
+    artifacts.update(review_artifacts(_identity(inputs, routing_job), inputs, schematic, board, intent,
+                                      report, artifacts))
     return publish_candidate(output_directory, inputs=inputs, report=report,
                              routing_job=routing_job, artifacts=artifacts)
 

@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
+import xml.etree.ElementTree as ET
 
 from . import COMPILER_CONTRACT_VERSION, MANIFEST_VERSION, SPEC_VERSION
 from .canonical import canonical_digest, canonical_json_bytes
@@ -14,11 +15,12 @@ COMPILER_VERSION = "0.3.0+workflow.35"
 MANIFEST_FILENAME = "candidate-manifest.json"
 _ARTIFACT_NAMES = {
     "schematic": "candidate.sch", "board": "candidate.brd", "report": "validation.json",
-    "preview": "board.svg", "routing_intent": "routing-intent.json",
+    "preview": "index.html", "board_svg": "board.svg", "routing_intent": "routing-intent.json",
+    "summary": "candidate-summary.json", "routing_diagnostics": "routing-diagnostics.json",
 }
 _ROUTING_ARTIFACT_NAMES = {
     "routing_provenance": "routing-provenance.json", "routing_request": "routing-request.json",
-    "routing_routes": "routing-routes.json", "routing_diagnostics": "routing-diagnostics.json",
+    "routing_routes": "routing-routes.json",
 }
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
@@ -40,16 +42,29 @@ def _identity(inputs, routing_job):
     return canonical_digest(identity)
 
 
+def _artifact_filename(key):
+    sheet = re.fullmatch(r"schematic_sheet_([1-9][0-9]*)", key)
+    if sheet:
+        return f"schematic-sheet-{sheet[1]}.svg"
+    return (_ARTIFACT_NAMES | _ROUTING_ARTIFACT_NAMES)[key]
+
+
 def _checked_artifacts(artifacts):
     if not isinstance(artifacts, dict) or not _ARTIFACT_NAMES.keys() <= artifacts.keys():
         raise ValueError("candidate manifest is missing required artifacts")
     seen = {MANIFEST_FILENAME.casefold()}
-    for entry in artifacts.values():
+    for key, entry in artifacts.items():
         if not isinstance(entry, dict) or entry.keys() != {"path", "sha256"}:
             raise ValueError("invalid candidate artifact record")
         path = entry["path"]
         if not isinstance(path, str) or normalize_artifact_path(path) != path:
             raise ValueError("candidate artifact path must be normalized and relative")
+        try:
+            expected = _artifact_filename(key)
+        except KeyError:
+            raise ValueError(f"unknown candidate artifact: {key}") from None
+        if path != expected:
+            raise ValueError(f"candidate artifact {key} must use {expected}")
         if path.casefold() in seen:
             raise ValueError("candidate artifact paths must be unique")
         seen.add(path.casefold())
@@ -162,6 +177,13 @@ def load_candidate_manifest(path: str | Path, expected_sha256: str) -> Candidate
     manifest = CandidateManifest(path, expected_sha256.lower(), data)
     for key in data["artifacts"]:
         artifact = manifest.read_artifact(key)
+        if key == "schematic":
+            sheets = ET.fromstring(artifact).findall("./drawing/schematic/sheets/sheet")
+            expected = {f"schematic_sheet_{number}" for number in range(1, len(sheets) + 1)}
+            if not expected or expected != {key for key in data["artifacts"] if key.startswith("schematic_sheet_")}:
+                raise ValueError("candidate must include a preview for each schematic sheet")
+        if key == "routing_diagnostics" and not data["routing_job"] and artifact != b"{}":
+            raise ValueError("base candidate routing diagnostics must be empty")
         if key == "report":
             report = json.loads(artifact)
             if not isinstance(report, dict) or any(
@@ -182,8 +204,7 @@ def load_candidate_manifest(path: str | Path, expected_sha256: str) -> Candidate
 def publish_candidate(output_directory, *, inputs, artifacts, report, routing_job=None) -> CandidateManifest:
     """Publish the exact provided artifacts and their manifest in one rename."""
     target = _local_path(output_directory)
-    names = {**_ARTIFACT_NAMES, **_ROUTING_ARTIFACT_NAMES}
-    records = {key: {"path": names[key], "sha256": sha256(raw).hexdigest()}
+    records = {key: {"path": _artifact_filename(key), "sha256": sha256(raw).hexdigest()}
                for key, raw in artifacts.items()}
     data = {
         "manifest_version": MANIFEST_VERSION,
