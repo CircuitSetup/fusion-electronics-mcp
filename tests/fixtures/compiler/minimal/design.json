@@ -176,7 +176,8 @@
         {"part":"J1","gate":"G$1","pin":"3"},
         {"part":"Q1","gate":"G$1","pin":"B"}
       ],
-      "schematic_style": "wired",
+      "schematic_style": "labels",
+      "port": "inter-block",
       "route": true
     },
     {
