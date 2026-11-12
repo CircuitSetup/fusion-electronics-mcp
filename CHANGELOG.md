@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Server-only compiler workflow (workflow.35)
+### Server-only compiler workflow (0.4.0)
 
 - Compile hash-pinned EAGLE designs into deterministic schematic, board and review artifacts.
 - Save bounded offline routing jobs and promote the reviewed board without rerouting.

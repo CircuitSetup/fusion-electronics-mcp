@@ -12,7 +12,8 @@ from .canonical import canonical_digest, canonical_json_bytes
 from .model import _validate_source_xml
 from .paths import _local_path, atomic_directory, atomic_write, normalize_artifact_path, read_pinned_file
 
-COMPILER_VERSION = "0.3.0+workflow.35"
+COMPILER_VERSION = "0.4.0"
+_SUPPORTED_COMPILER_VERSIONS = (COMPILER_VERSION, "0.3.0+workflow.35")
 MANIFEST_FILENAME = "candidate-manifest.json"
 _ARTIFACT_NAMES = {
     "schematic": "candidate.sch", "board": "candidate.brd", "report": "validation.json",
@@ -117,7 +118,7 @@ def _checked_manifest(data):
               "inputs", "artifacts", "routing_job", "findings"}
     if (not isinstance(data, dict) or data.keys() != fields
             or type(data["manifest_version"]) is not int or data["manifest_version"] != MANIFEST_VERSION
-            or data["compiler_version"] != COMPILER_VERSION):
+            or data["compiler_version"] not in _SUPPORTED_COMPILER_VERSIONS):
         raise ValueError("unsupported candidate manifest shape or version")
     _checked_artifacts(data["artifacts"])
     _checked_inputs(data["inputs"])

@@ -76,7 +76,7 @@ class CompilerManifestTest(unittest.TestCase):
 
     def test_manifest_binds_raw_spec_pin_and_release_version(self):
         first = self.compile("first")
-        self.assertEqual(first.data["compiler_version"], "0.3.0+workflow.35")
+        self.assertEqual(first.data["compiler_version"], "0.4.0")
         self.assertEqual(first.data["inputs"]["spec_sha256"], sha256(self.raw).hexdigest())
         self.assertEqual(first.data["artifacts"]["board"]["path"], "candidate.brd")
         self.raw += b"\n"
@@ -84,6 +84,19 @@ class CompilerManifestTest(unittest.TestCase):
         second = self.compile("second")
         self.assertNotEqual(first.data["candidate_id"], second.data["candidate_id"])
         self.assertEqual(first.read_artifact("board"), second.read_artifact("board"))
+
+    def test_previous_workflow_manifest_retains_its_original_pin(self):
+        from fusion_offline.compiler.canonical import canonical_json_bytes
+        from fusion_offline.compiler.manifest import load_candidate_manifest
+
+        candidate = self.compile("previous")
+        manifest = candidate.data
+        manifest["compiler_version"] = "0.3.0+workflow.35"
+        raw = canonical_json_bytes(manifest)
+        candidate.path.write_bytes(raw)
+        previous = load_candidate_manifest(candidate.path, sha256(raw).hexdigest())
+        self.assertEqual(previous.data, manifest)
+        self.assertEqual(previous.path.read_bytes(), raw)
 
     def test_repinned_report_cannot_omit_or_downgrade_required_findings(self):
         from fusion_offline.compiler.compile import compile_candidate
