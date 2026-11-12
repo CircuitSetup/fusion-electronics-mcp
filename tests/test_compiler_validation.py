@@ -1,0 +1,229 @@
+"""Offline validation over saved EAGLE bytes."""
+from hashlib import sha256
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+import xml.etree.ElementTree as ET
+
+from test_compiler_schema import minimal_design
+
+
+class CompilerValidationTest(unittest.TestCase):
+    def setUp(self):
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.data = minimal_design()
+
+    def compile(self):
+        from fusion_offline.compiler.compile import compile_candidate
+
+        source = self.root / "design.json"
+        raw = json.dumps(self.data).encode()
+        source.write_bytes(raw)
+        return compile_candidate(source, sha256(raw).hexdigest(), self.root / "candidate")
+
+    def set_asset(self, row, root):
+        path = self.root / Path(row["path"]).name
+        data = ET.tostring(root)
+        path.write_bytes(data)
+        row.update(path=str(path), sha256=sha256(data).hexdigest())
+
+    def report(self, manifest, modify_board=None):
+        from fusion_offline.compiler.validate import validate_candidate
+
+        board = manifest.read_artifact("board")
+        if modify_board:
+            root = ET.fromstring(board)
+            modify_board(root)
+            board = ET.tostring(root)
+        return validate_candidate(manifest.read_artifact("schematic"), board,
+                                  json.loads(manifest.read_artifact("routing_intent")))
+
+    def test_full_routing_counts_unconnected_contacts_without_layer_19_wires(self):
+        self.data["routing"]["require_fully_routed"] = True
+        candidate = self.compile()
+        board = ET.fromstring(candidate.read_artifact("board"))
+        self.assertFalse(board.findall(".//signal/wire[@layer='19']"))
+        report = self.report(candidate)
+        self.assertEqual(report["airwires"], 5)
+        self.assertEqual(report["status"], "fail")
+        self.assertEqual(candidate.data["status"], "fail")
+
+    def add_preroute(self):
+        self.data["nets"][0].update(wires=[
+            {"x1": 4, "y1": 10, "x2": 8, "y2": 16, "layer": 16, "width": 0.4},
+            {"x1": 8, "y1": 16, "x2": 14.05, "y2": 21, "layer": 1, "width": 0.3},
+        ], vias=[{"x": 8, "y": 16, "extent": "1-16", "drill": 0.3, "diameter": 0.6}])
+
+    def test_via_connects_layers_and_endpoint_mismatch_is_rejected(self):
+        self.add_preroute()
+        candidate = self.compile()
+        self.assertEqual(self.report(candidate)["airwires_by_net"]["VCC"], 0)
+
+        def move_endpoint(root):
+            root.find(".//signal[@name='VCC']/wire[@layer='1']").set("x2", "14.0501")
+
+        report = self.report(candidate, move_endpoint)
+        self.assertEqual(report["airwires_by_net"]["VCC"], 1)
+        self.assertEqual(report["status"], "fail")
+
+    def test_contactrefs_require_exact_pad_names_and_unique_signals(self):
+        candidate = self.compile()
+
+        def rename_pad(root):
+            root.find(".//signal[@name='LED_A']/contactref[@element='D1']").set("pad", "a")
+
+        def duplicate_signal(root):
+            ET.SubElement(root.find(".//signals"), "signal", name="LED_A")
+
+        for edit in (rename_pad, duplicate_signal):
+            with self.subTest(edit=edit):
+                self.assertEqual(self.report(candidate, edit)["status"], "fail")
+
+    def test_template_outline_governs_placement_when_spec_omits_outline(self):
+        self.data["board"]["outline"] = []
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "placements")
+        self.assertEqual(finding["status"], "fail")
+
+    def test_open_template_outline_fails(self):
+        self.data["board"]["outline"] = []
+        row = self.data["templates"]["board"]
+        board = ET.parse(row["path"]).getroot()
+        plain = board.find(".//board/plain")
+        plain.remove(plain.find("wire"))
+        self.set_asset(row, board)
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "outline")
+        self.assertEqual(finding["status"], "fail")
+
+    def test_copper_width_hits_keepout_even_when_centerline_misses(self):
+        self.add_preroute()
+        self.data["board"]["keepouts"] = [
+            {"layers": [16], "vertices": [[6, 12.5], [7, 12.5], [7, 12.75], [6, 12.75]]},
+        ]
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "keepouts")
+        self.assertEqual(finding["status"], "fail")
+
+    def test_native_checks_are_informational_but_unverified_slots_block(self):
+        row = self.data["libraries"][0]
+        library = ET.parse(row["path"]).getroot()
+        library.find(".//package[@name='HEADER3']/pad").set("shape", "slot")
+        self.set_asset(row, library)
+        candidate = self.compile()
+        report = self.report(candidate)
+        findings = {finding["check"]: finding for finding in report["findings"]}
+        for name, required in (("native_erc", False), ("native_drc", False), ("keepouts", True)):
+            with self.subTest(name=name):
+                self.assertEqual(findings[name]["status"], "unverified")
+                self.assertIs(findings[name]["required"], required)
+        self.assertEqual(report["status"], "unverified")
+        self.assertIn(b'shape="slot"', candidate.read_artifact("board"))
+
+
+    def test_square_pad_corner_intersects_keepout(self):
+        self.data["board"]["keepouts"] = [
+            {"layers": [1], "vertices": [[4.75, 10.75], [4.85, 10.75], [4.85, 10.85], [4.75, 10.85]]},
+        ]
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "keepouts")
+        self.assertEqual(finding["status"], "fail")
+
+    def test_full_routing_ignores_stale_layer_19_markers(self):
+        self.data["routing"]["require_fully_routed"] = True
+        candidate = self.compile()
+
+        def route_all(root):
+            endpoints = {
+                "VCC": ((4, 10), (14.05, 21)), "CTRL": ((4, 15.08), (28.05, 10)),
+                "GND": ((4, 12.54), (29.95, 10)), "LED_A": ((23.05, 21), (15.95, 21)),
+                "LED_K": ((24.95, 21), (29, 12)),
+            }
+            for signal in root.findall(".//signal"):
+                a, b = endpoints[signal.attrib["name"]]
+                attributes = dict(x1=str(a[0]), y1=str(a[1]), x2=str(b[0]), y2=str(b[1]), width="0.2")
+                ET.SubElement(signal, "wire", attributes, layer="1")
+                ET.SubElement(signal, "wire", attributes, layer="19")
+
+        report = self.report(candidate, route_all)
+        self.assertEqual(report["airwires"], 0)
+        self.assertEqual(report["status"], "pass")
+
+    def test_disallowed_layer_and_excess_vias_fail_after_board_emission(self):
+        self.add_preroute()
+        self.data["routing"]["policies"]["VCC"] = {"max_vias_per_connection": 1}
+        candidate = self.compile()
+
+        def change_layers(root):
+            root.find(".//signal[@name='VCC']/wire[@layer='1']").set("layer", "5")
+
+        def add_via(root):
+            signal = root.find(".//signal[@name='VCC']")
+            ET.SubElement(signal, "via", x="4", y="10", extent="1-16", drill="0.3", diameter="0.6")
+
+        for edit, phrase in ((change_layers, "disallowed layer"), (add_via, "via budget")):
+            with self.subTest(edit=edit):
+                report = self.report(candidate, edit)
+                finding = next(row for row in report["findings"] if row["check"] == "routing_geometry")
+                self.assertEqual(finding["status"], "fail")
+                self.assertIn(phrase, finding["detail"])
+
+
+    def test_bottom_pad_restring_enlarges_keepout_copper(self):
+        row = self.data["templates"]["board"]
+        board = ET.parse(row["path"]).getroot()
+        rules = board.find(".//designrules")
+        ET.SubElement(rules, "param", name="rvPadBottom", value="1")
+        ET.SubElement(rules, "param", name="rlMaxPadBottom", value="2mm")
+        self.set_asset(row, board)
+        self.data["board"]["keepouts"] = [
+            {"layers": [16], "vertices": [[5.2, 9.9], [5.3, 9.9], [5.3, 10.1], [5.2, 10.1]]},
+        ]
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "keepouts")
+        self.assertEqual(finding["status"], "fail")
+
+    def test_smd_on_extended_bottom_layer_intersects_bottom_keepout(self):
+        for row in self.data["templates"].values():
+            template = ET.parse(row["path"]).getroot()
+            template.find("./drawing/layers/layer[@number='16']").set("number", "304")
+            setup = template.find(".//designrules/param[@name='layerSetup']")
+            if setup is not None:
+                setup.set("value", "(1*304)")
+            self.set_asset(row, template)
+        asset = self.data["libraries"][0]
+        library = ET.parse(asset["path"]).getroot()
+        library.find(".//package[@name='RES_0805']/smd[@name='1']").set("layer", "304")
+        self.set_asset(asset, library)
+        self.data["board"]["keepouts"] = [
+            {"layers": [304], "vertices": [[14, 20.8], [14.2, 20.8], [14.2, 21.1], [14, 21.1]]},
+        ]
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "keepouts")
+        self.assertEqual(finding["status"], "fail")
+
+    def test_trace_cannot_leave_a_concave_outline_between_inside_endpoints(self):
+        self.data["board"]["outline"] = [[0, 0], [40, 0], [40, 30], [11, 30],
+                                         [11, 12], [7, 12], [7, 30], [0, 30]]
+        self.data["nets"][0]["wires"] = [
+            {"x1": 4, "y1": 10, "x2": 14.05, "y2": 21, "layer": 1, "width": 0.3},
+        ]
+        report = self.report(self.compile())
+        finding = next(row for row in report["findings"] if row["check"] == "routing_geometry")
+        self.assertEqual(finding["status"], "fail")
+        self.assertIn("trace leaves the board outline", finding["detail"])
+
+    def test_via_and_drill_centres_must_be_inside_the_outline(self):
+        self.add_preroute()
+        self.data["nets"][0]["vias"][0]["x"] = -2
+        self.data["nets"][0]["wires"][0]["x2"] = -2
+        self.data["nets"][0]["wires"][1]["x1"] = -2
+        self.data["board"]["holes"] = [{"x": -1, "y": 10, "drill": 1}]
+        report = self.report(self.compile())
+        findings = {row["check"]: row for row in report["findings"]}
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("via centre is outside the board outline", findings["routing_geometry"]["detail"])
+        self.assertIn("drill centre is outside the board outline", findings["outline"]["detail"])
