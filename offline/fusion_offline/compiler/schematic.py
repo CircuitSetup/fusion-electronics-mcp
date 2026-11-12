@@ -3,8 +3,10 @@ from copy import deepcopy
 import xml.etree.ElementTree as ET
 
 from .. import sch_wiring
-from ..design import parse_schematic_design
-from .canonical import eagle_xml_bytes
+from ..design import parse_schematic_design, transform
+from ..eagle import parse_rot
+from ..symbols import Geo, symbol_pins, symbol_prims
+from .canonical import eagle_xml_bytes, normalize_mm
 from .libraries import ResolvedLibraries
 from .model import DesignSpec
 
@@ -74,6 +76,26 @@ def _prepare_sheets(document, declarations):
     return sheets
 
 
+def emit_part_labels(parent, definition, position, layers, bounds, *, size, gap):
+    """Write native presentation fields bound to the owning part name and value."""
+    x, y, angle, mirror = position
+    left, bottom, _, top = bounds
+    placeholders = {}
+    for text in definition.findall("text"):
+        placeholders.setdefault((text.text or "").strip().upper(), text.attrib)
+    parent.set("smashed", "yes")
+    for name, layer, fallback_y in zip(("NAME", "VALUE"), layers, (top + gap, bottom - gap - size)):
+        style = placeholders.get(f">{name}", {})
+        px, py = transform(float(style.get("x", left)), float(style.get("y", fallback_y)), x, y, angle, mirror)
+        local_angle, local_mirror = parse_rot(style.get("rot"))
+        rotation = normalize_mm((local_angle + (-angle if local_mirror else angle)) % 360) % 360
+        flags = ("S" if "S" in style.get("rot", "").upper() else "") + ("M" if mirror != local_mirror else "")
+        attrs = {key: style[key] for key in ("align", "font", "ratio") if key in style}
+        ET.SubElement(parent, "attribute", name=name, x=str(normalize_mm(px)), y=str(normalize_mm(py)),
+                      size=style.get("size", str(size)), layer=str(layer), rot=f"{flags}R{rotation:g}",
+                      display="value", **attrs)
+
+
 def build_schematic(spec: DesignSpec, template_xml: bytes, libraries: ResolvedLibraries) -> bytes:
     """Emit the declared units and gate-qualified nets as standalone EAGLE XML."""
     root = ET.fromstring(template_xml)
@@ -109,9 +131,13 @@ def build_schematic(spec: DesignSpec, template_xml: bytes, libraries: ResolvedLi
         for name, value in row["attributes"].items():
             ET.SubElement(part, "attribute", name=name, value=value)
         for unit in row["units"]:
-            ET.SubElement(sheets[unit["sheet"]].find("instances"), "instance",
-                          part=ref, gate=unit["gate"], x=str(unit["x"]), y=str(unit["y"]),
-                          rot=f'R{unit["rotation"]:g}')
+            instance = ET.SubElement(sheets[unit["sheet"]].find("instances"), "instance",
+                                     part=ref, gate=unit["gate"], x=str(unit["x"]), y=str(unit["y"]),
+                                     rot=f'R{unit["rotation"]:g}')
+            symbol = resolved.gates[unit["gate"]].symbol
+            body = Geo(symbol.attrib["name"], symbol_pins(symbol), {}, symbol_prims(symbol)).body()
+            emit_part_labels(instance, symbol, (unit["x"], unit["y"], unit["rotation"], False),
+                             (95, 96), body, size=1.27, gap=0.508)
 
     pins = {(pin.part, pin.gate, pin.pin): pin for pin in parse_schematic_design(root).pins}
     # Place requested label stubs first so wired routes see their geometry.
@@ -130,4 +156,4 @@ def build_schematic(spec: DesignSpec, template_xml: bytes, libraries: ResolvedLi
         for sheet in sorted({pin.sheet for pin in targets}):
             node = sheets[sheet].find(f"./nets/net[@name='{name}']")
             node.set("class", classes[class_name])
-    return eagle_xml_bytes(root, template_xml)
+    return eagle_xml_bytes(root, template_xml, align_50mil=spec.align_50mil)

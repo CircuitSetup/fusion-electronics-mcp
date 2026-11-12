@@ -18,8 +18,6 @@ from .canonical import canonical_digest
 from .manifest import finding_status
 from .model import _validate_source_xml
 
-# Router taps round to four decimals when landing in a trace interior.
-_TAP_TOLERANCE = math.sqrt(2) * 0.00005 + 1e-10
 _RESTRICT = {"41", "42", "43"}
 
 
@@ -198,27 +196,7 @@ class _Components:
             self.parents[self.root(point)] = root
 
 
-def _wire_junctions(wires, components):
-    """Join same-layer intersections and four-decimal interior taps."""
-    tapped = set()
-    active = []
-    wires = sorted(wires, key=lambda ends: min(ends[0][0], ends[1][0]))
-    for a, b in wires:
-        left = min(a[0], b[0]) - _TAP_TOLERANCE
-        active = [(c, d) for c, d in active if max(c[0], d[0]) >= left]
-        for c, d in active:
-            if {a, b} & {c, d}:
-                continue
-            on = {p for p, q, r in ((a, c, d), (b, c, d), (c, a, b), (d, a, b))
-                  if _seg_dist(p[:2], p[:2], q[:2], r[:2]) <= _TAP_TOLERANCE}
-            if on or segments_intersect(a[:2], b[:2], c[:2], d[:2]):
-                components.join((a, c))
-                tapped.update(on)
-        active.append((a, b))
-    return tapped
-
-
-def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline):
+def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules):
     """Return contact groups proved by pad centres, straight traces and through vias."""
     components = _Components()
     errors, unknown = [], []
@@ -228,7 +206,6 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
         components.join(centers)
         anchors.update(centers)
 
-    layer_wires = defaultdict(list)
     degree = Counter()
     seen_wires = set()
     for wire in signal.wires:
@@ -247,11 +224,9 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
             seen_wires.add(frozenset((a, b)))
             components.join((a, b))
             degree.update((a, b))
-            layer_wires[wire.layer].append((a, b))
             if outline and not _trace_inside(outline, a[:2], b[:2]):
                 errors.append("trace leaves the board outline")
 
-    tapped = set().union(*(_wire_junctions(wires, components) for wires in layer_wires.values()))
     via_points, via_nodes = set(), set()
     vias = []
     for via, owner in zip(signal.vias, via_owners):
@@ -266,13 +241,16 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
         elif not degree.keys() & set(nodes):
             errors.append("via has no trace endpoint at its centre")
         else:
+            minimum = annular_copper(rules, "Via", via.drill, 0, inner=False)["outer"]
+            if 0 < via.diameter < minimum - 1e-6:
+                errors.append(f"explicit via diameter is smaller than the {minimum:g} mm board-rule diameter")
             via_points.add(point)
             via_nodes.update(nodes)
             components.join(nodes)
             vias.append((owner, nodes[0]))
             if outline and not _inside_outline(outline, point):
                 errors.append("via centre is outside the board outline")
-    endpoints = anchors | via_nodes | tapped
+    endpoints = anchors | via_nodes
     if any(count == 1 and node not in endpoints for node, count in degree.items()):
         errors.append("trace endpoint misses its pad, via or joined trace")
     anchor_roots = {components.root(node) for node in anchors}
@@ -379,9 +357,11 @@ def _keepouts(root, board, stack):
         for copper in obstacles:
             if copper.restrict_layer or copper.is_pad:
                 continue
-            if copper.layers is not None and not any(
-                _restricts_layer(restriction, layer, stack) for layer in copper.layers
-            ):
+            if restriction.restrict_layer == 43:
+                if not copper.is_via:
+                    continue
+            elif copper.layers is not None and not any(
+                    _restricts_layer(restriction, layer, stack) for layer in copper.layers):
                 continue
             if _copper_hits(copper, restriction):
                 raise ValueError(f"{copper.net or 'unassigned pad'} overlaps restrict layer {restriction.restrict_layer}")
@@ -427,6 +407,7 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
     findings.append(_check("placements", lambda: _placements(board, outline, routing_intent["allow_outside"])))
     routing = routing_intent["routing"]
     groups, routing_errors, routing_unknown = {}, [], []
+    poured = set()
     for name, signal in sorted(design.signals.items()):
         if not set(signal.contacts) <= pads.keys():
             routing_unknown.append(f"{name}: board pad centres could not be resolved")
@@ -437,13 +418,15 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             routing_errors.append(f"{name}: policy names absent copper layers")
         limit = routing["budget"]["max_vias_per_connection"]
         xml_signal = next(s for s in board.findall("./signals/signal") if s.get("name") == name)
+        if xml_signal.find("polygon") is not None:
+            poured.add(name)
         if any(int(p.attrib["layer"]) not in allowed for p in xml_signal.findall("polygon")):
             routing_errors.append(f"{name}: polygon uses absent or disallowed copper layer")
         groups[name], errors, unknown = _route_components(
             signal, pads, stack, allowed & set(stack),
             min(limit, policy.get("max_vias_per_connection", limit)),
             [owners.get((name, canonical_digest(route_geometry(via)))) for via in xml_signal.findall("via")],
-            outline,
+            outline, design.rules,
         )
         routing_errors.extend(f"{name}: {error}" for error in sorted(set(errors)))
         routing_unknown.extend(f"{name}: {reason}" for reason in sorted(set(unknown)))
@@ -454,9 +437,12 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
     findings.append(_check("keepouts", lambda: _keepouts(board_root, board, stack)))
     airwires_by_net = {name: max(0, len(contacts) - 1) for name, contacts in groups.items()}
     airwires = sum(airwires_by_net.values())
+    pending_pours = sorted(name for name in poured if airwires_by_net[name])
+    unrouted = sum(count for name, count in airwires_by_net.items() if name not in poured)
     findings.append(_finding(
-        "full_routing", "fail" if airwires else "unverified" if routing_unknown else "pass",
-        f"{airwires} unjoined contact pairs from proven copper",
+        "full_routing", "fail" if unrouted else "unverified" if routing_unknown or pending_pours else "pass",
+        f"{airwires} unjoined contact pairs from serialized traces and vias"
+        + (f". Native fill connectivity required for {', '.join(pending_pours)}" if pending_pours else ""),
         routing["require_fully_routed"],
     ))
     for check in ("native_erc", "native_drc", "native_polygon_refill", "native_3d", "manufacturing_review"):

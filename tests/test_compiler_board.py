@@ -53,7 +53,7 @@ class CompilerBoardTest(unittest.TestCase):
         self.data["nets"][0]["class"] = "power"
         self.data["parts"][2]["board"].update(side="bottom", rotation=90)
         template, root, xml = self.build()
-        for tag in ("settings", "grid", "layers", "board/designrules"):
+        for tag in ("settings", "grid", "layers"):
             self.assertEqual(ET.tostring(template.find(f"./drawing/{tag}")),
                              ET.tostring(root.find(f"./drawing/{tag}")))
         board = parse_board(xml)
@@ -70,6 +70,9 @@ class CompilerBoardTest(unittest.TestCase):
         ])
         self.assertEqual(root.find(".//element[@name='J1']").get("locked"), "yes")
         design = parse_board_design(root)
+        original_rules = parse_board_design(template).rules
+        self.assertEqual({name: design.rules[name] for name in original_rules}, original_rules)
+        self.assertEqual(design.rules["rlMinViaOuter"], "8mil")
         self.assertEqual(design.classes[0].name, "default")
         self.assertEqual(design.classes[3].clearances, {"0": 0.2})
         self.assertEqual(design.signals["VCC"].net_class, "power")
@@ -135,7 +138,31 @@ class CompilerBoardTest(unittest.TestCase):
                          [(4, 10, 8, 16, 16, 0.4), (8, 16, 10, 20, 1, 0.3),
                           (10, 20, 14.05, 21, 1, 0.3)])
         self.assertEqual([(v.x, v.y, v.extent, v.drill, v.diameter) for v in route.vias],
-                         [(8, 16, "1-16", 0.3, 0.6)])
+                         [(8, 16, "1-16", 0.3, 0.7064)])
+
+    def test_emits_shared_tee_and_via_endpoints(self):
+        net = self.add_preroute()
+        net["wires"][0].update(x2=8.0069, y2=15.9931)
+        net["wires"].append({"x1": 9, "y1": 18, "x2": 14.05, "y2": 21,
+                             "layer": 1, "width": 0.3})
+        _, root, _ = self.build()
+        wires = parse_board_design(root).signals["VCC"].wires
+        self.assertEqual((wires[0].x2, wires[0].y2), (8, 16))
+        self.assertEqual(sum((9, 18) in ((w.x1, w.y1), (w.x2, w.y2)) for w in wires), 3)
+
+    def test_through_via_ring_round_trips_into_copper_obstacles(self):
+        net = self.add_preroute()
+        net["vias"][0]["diameter"] = 0.65
+
+        def preset(root):
+            ET.SubElement(root.find(".//designrules"), "param", name="rlMinViaOuter", value="0.22mm")
+
+        _, root, xml = self.build(mutate_template=preset)
+        design = parse_board_design(ET.fromstring(xml))
+        self.assertEqual(design.rules["rlMinViaOuter"], "0.22mm")
+        self.assertEqual(design.signals["VCC"].vias[0].diameter, 0.74)
+        via = next(o for o in board_obstacles(root)[0] if o.net == "VCC" and o.kind == "circle" and not o.is_pad)
+        self.assertAlmostEqual(via.data[2], 0.37)
 
     def test_rejects_invalid_preroute_copper(self):
         net = self.add_preroute()
@@ -156,7 +183,7 @@ class CompilerBoardTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "endpoint"):
             self.build()
         net["wires"][-1]["x2"] = 14.05
-        net["wires"][1]["x1"] = 8.0001
+        net["wires"][1]["x1"] = 8.02
         with self.assertRaisesRegex(ValueError, "endpoint"):
             self.build()
 

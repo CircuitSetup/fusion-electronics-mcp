@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_HALF_UP
 import json
 from pathlib import PurePosixPath, PureWindowsPath
 import re
@@ -241,6 +242,7 @@ def _net_geometry(net):
 
 def _nets(rows, parts, physical):
     nets, names, assigned_pins = {}, set(), set()
+    board_nets = set()
     for net in _list(rows, "nets"):
         _object(net, "net", "name class pins schematic_style route", "port wires vias")
         name = net["name"]
@@ -268,13 +270,15 @@ def _nets(rows, parts, physical):
             pin_sheets.add(parts[ref][gate])
         if net["route"] and not has_physical_pin:
             raise ValueError(f"routed net {name} needs physical contacts")
+        if has_physical_pin:
+            board_nets.add(name)
         if net["schematic_style"] == "labels" and (
             "port" not in net or (net["port"] == "inter-sheet" and len(pin_sheets) < 2)
         ):
             raise ValueError("labels require an explicit inter-block or inter-sheet port")
         _net_geometry(net)
         nets[name] = net
-    return nets
+    return nets, board_nets
 
 
 def _pours(rows, nets):
@@ -298,8 +302,39 @@ def _pours(rows, nets):
                 _boolean(pour[field], field)
 
 
-def _routing(routing, nets):
-    _object(routing, "routing", "selected_nets protected_nets policies budget", "require_fully_routed")
+def _matched_pairs(rows, board_nets):
+    declared = set()
+    for row in _list(rows, "matched_pairs"):
+        if len(_list(row, "matched_pairs entry", 2)) != 2:
+            raise ValueError("matched_pairs entries must be [positive_net, negative_net]")
+        positive, negative = row
+        for name in row:
+            _identifier(name, "matched pair net")
+            if name not in board_nets:
+                raise ValueError(f"matched pair net {name} needs physical board contacts")
+        folded = positive.casefold()
+        if len(folded) <= 2 or not folded.endswith("_p") or negative.casefold() != folded[:-2] + "_n":
+            raise ValueError("matched_pairs entries must use a common stem and ordered _P/_N suffixes")
+        _unique((positive, negative), declared, "matched pair")
+
+    by_name = {name.casefold(): name for name in board_nets}
+    unintended = []
+    for folded, positive in sorted(by_name.items()):
+        if len(folded) > 2 and folded.endswith("_p"):
+            negative = by_name.get(folded[:-2] + "_n")
+            if negative is not None and (positive, negative) not in declared:
+                unintended.append(f"{positive}/{negative}")
+    if unintended:
+        raise ValueError(
+            f"Unintended Fusion automatic pairs: {', '.join(unintended)}. "
+            "Declare intentional pairs in routing.matched_pairs or use _POS/_NEG for analog polarity."
+        )
+
+
+def _routing(routing, nets, *, board_nets):
+    _object(routing, "routing", "selected_nets protected_nets policies budget",
+            "require_fully_routed matched_pairs")
+    _matched_pairs(routing.get("matched_pairs", []), board_nets)
     if "require_fully_routed" in routing:
         _boolean(routing["require_fully_routed"], "require_fully_routed")
     listed = set()
@@ -338,7 +373,10 @@ def _budget_value(field, value):
 
 def parse_design_spec(data: object) -> dict:
     """Check the JSON shape. Pinned asset and exact physical-pad checks follow."""
-    _object(data, "design", "version name units templates libraries parts schematic board nets routing")
+    _object(data, "design", "version name units templates libraries parts schematic board nets routing",
+            "align_50mil")
+    if "align_50mil" in data:
+        _boolean(data["align_50mil"], "align_50mil")
     if type(data["version"]) is not int or data["version"] != SPEC_VERSION:
         raise ValueError("version must be 1")
     if data["units"] != "mm":
@@ -357,9 +395,9 @@ def parse_design_spec(data: object) -> dict:
     parts = _parts(data["parts"], libraries, sheets)
     physical = {part["ref"] for part in data["parts"] if part["board"] is not None}
     _board(data["board"], parts, physical)
-    nets = _nets(data["nets"], parts, physical)
+    nets, board_nets = _nets(data["nets"], parts, physical)
     _pours(data["board"]["pours"], nets)
-    _routing(data["routing"], nets)
+    _routing(data["routing"], nets, board_nets=board_nets)
     return data
 
 
@@ -376,7 +414,7 @@ _SORT_KEYS = {
     "placements": ("ref",),
     "net_classes": ("number",),
 }
-_SORTED_VALUES = frozenset(("selected_nets", "protected_nets", "allowed_layers", "layers"))
+_SORTED_VALUES = frozenset(("selected_nets", "protected_nets", "allowed_layers", "layers", "matched_pairs"))
 _VERTICES = frozenset(("outline", "vertices"))
 
 
@@ -404,10 +442,12 @@ class DesignSpec:
     board: Mapping[str, Any]
     nets: tuple[Mapping[str, Any], ...]
     routing: Mapping[str, Any]
+    align_50mil: bool = False
 
     def to_canonical(self) -> dict[str, object]:
         """Use asset pins and names as identity independent of their local paths."""
         return {
+            **({"align_50mil": True} if self.align_50mil else {}),
             "version": self.version,
             "name": self.name,
             "units": self.units,
@@ -461,6 +501,32 @@ def _freeze(value, field_name=""):
     return value
 
 
+def _align_placements_50mil(data):
+    grid = Decimal("1.27")
+
+    def snap(row):
+        moved = False
+        for axis in ("x", "y"):
+            steps = (Decimal(str(row[axis])) / grid).to_integral_value(rounding=ROUND_HALF_UP)
+            coordinate = normalize_mm(float(steps * grid))
+            moved |= normalize_mm(row[axis]) != coordinate
+            row[axis] = coordinate
+        return moved
+
+    overridden = {placement["ref"] for placement in data["board"]["placements"]}
+    board_moved = False
+    for part in data["parts"]:
+        for unit in part["units"]:
+            snap(unit)
+        if part["board"] is not None:
+            moved = snap(part["board"])
+            board_moved |= moved and part["ref"] not in overridden
+    for placement in data["board"]["placements"]:
+        board_moved |= snap(placement)
+    if board_moved and any(net.get("wires") or net.get("vias") for net in data["nets"]):
+        raise ValueError("50 mil alignment would move board placements with explicit preroutes")
+
+
 def _unique_json_object(pairs):
     result = {}
     for key, value in pairs:
@@ -501,6 +567,9 @@ def load_design_spec(path: str, expected_sha256: str) -> DesignSpec:
     except (UnicodeDecodeError, RecursionError) as exc:
         raise ValueError("design must be a UTF-8 JSON document") from exc
     parse_design_spec(data)
+    align_50mil = data.get("align_50mil", False)
+    if align_50mil:
+        _align_placements_50mil(data)
     remaining = _MAX_TOTAL_XML_BYTES
 
     def load_asset(row):
@@ -524,4 +593,5 @@ def load_design_spec(path: str, expected_sha256: str) -> DesignSpec:
         parts=_freeze(data["parts"], "parts"), schematic=_freeze(data["schematic"]),
         board=_freeze(data["board"]), nets=_freeze(data["nets"], "nets"),
         routing=_freeze(data["routing"]),
+        align_50mil=align_50mil,
     )

@@ -17,6 +17,7 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from . import router as RT
+from .junctions import canonicalize_signal
 from .routing_budget import RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
 
 
@@ -43,6 +44,16 @@ class Result:
 
 def _sig(root, net):
     return next(s for s in root.iterfind("./drawing/board/signals/signal") if s.get("name") == net)
+
+
+def canonicalize_routed_signals(root, nets):
+    for net in sorted(set(nets)):
+        signal = _sig(root, net)
+        anchors = []
+        for contact in signal.findall("contactref"):
+            x, y, layers, _ = RT.pad_target(root, contact.attrib["element"], contact.attrib["pad"])
+            anchors.extend((x, y, layer) for layer in layers)
+        canonicalize_signal(signal, anchors)
 
 
 def _commit(root, c: Conn, r):
@@ -78,11 +89,20 @@ def _not_joined(root, c: Conn, checkpoint=None) -> set:
 
 def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: int = 3,
               rip_cost: float = 15.0, policies=None, priorities=None, *,
-              budget: RoutingBudget | None = None, protected_nets=(), clock=None, **kw) -> Result:
+              budget: RoutingBudget | None = None, protected_nets=(), clock=None,
+              canonicalize=True, **kw) -> Result:
     if budget is not None:
         job = RoutingJob(budget) if clock is None else RoutingJob(budget, clock)
-        return _bounded_route_all(root, conns, vias, rip_cost, policies or {}, priorities or {},
-                                  job, set(protected_nets), kw)
+        result = _bounded_route_all(root, conns, vias, rip_cost, policies or {}, priorities or {},
+                                    job, set(protected_nets), kw)
+    else:
+        result = _legacy_route_all(root, conns, vias, rounds, rip_cost, policies, priorities, **kw)
+    if canonicalize:
+        canonicalize_routed_signals(result.root, (route.net for route in result.routes.values()))
+    return result
+
+
+def _legacy_route_all(root, conns, vias, rounds, rip_cost, policies, priorities, **kw):
     work = copy.deepcopy(root)
     res = Result(root=work)
     by_id = {c.id: c for c in conns}

@@ -279,7 +279,9 @@ def parse_board(xml_bytes: bytes) -> Board:
 
     for el in board_node.iterfind("elements/element"):
         angle, mirror = parse_rot(el.get("rot"))
-        attrs = {a.get("name", ""): a.get("value", "") for a in el.iterfind("attribute")}
+        attrs = {a.get("name", ""): a.get("value", "") for a in el.iterfind("attribute")
+                 if not (a.get("name") in ("NAME", "VALUE") and a.get("x") is not None
+                         and a.get("value") is None)}
         b.elements.append(Element(
             name=el.get("name", ""), value=el.get("value", ""),
             library=el.get("library", ""), package=el.get("package", ""),

@@ -9,6 +9,7 @@
     "version": {"type":"integer","const":1},
     "name": {"$ref":"#/$defs/identifier"},
     "units": {"const":"mm"},
+    "align_50mil": {"type":"boolean","default":false,"description":"Align schematic and board component origins to the 50 mil placement grid."},
     "templates": {
       "type": "object",
       "required": ["schematic","board"],
@@ -247,6 +248,17 @@
       "properties": {
         "selected_nets": {"type":"array","items":{"$ref":"#/$defs/identifier"},"uniqueItems":true},
         "protected_nets": {"type":"array","items":{"$ref":"#/$defs/identifier"},"uniqueItems":true},
+        "matched_pairs": {
+          "description": "Intentional Fusion automatic pairs, ordered as positive _P and negative _N net names.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"$ref":"#/$defs/identifier"}
+          }
+        },
         "policies": {
           "type": "object",
           "propertyNames": {"$ref":"#/$defs/identifier"},

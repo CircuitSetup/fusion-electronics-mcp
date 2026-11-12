@@ -34,9 +34,9 @@ def _pin(value):
         raise ValueError("invalid canonical SHA-256 pin")
 
 
-def _identity(inputs, routing_job):
+def _identity(inputs, routing_job, *, contract_version=COMPILER_CONTRACT_VERSION):
     identity = {
-        "inputs": inputs, "compiler_contract_version": COMPILER_CONTRACT_VERSION,
+        "inputs": inputs, "compiler_contract_version": contract_version,
         "routing_candidate_sha256": routing_job["candidate_board_sha256"] if routing_job else None,
     }
     if routing_job:
@@ -126,7 +126,10 @@ def _checked_manifest(data):
     routing_artifacts = _ROUTING_ARTIFACT_NAMES.keys() & data["artifacts"].keys()
     if routing_artifacts != (_ROUTING_ARTIFACT_NAMES.keys() if data["routing_job"] else set()):
         raise ValueError("candidate routing job and its artifacts must be present together")
-    if data["candidate_id"] != _identity(data["inputs"], data["routing_job"]):
+    if data["candidate_id"] not in {
+        _identity(data["inputs"], data["routing_job"], contract_version=version)
+        for version in (1, COMPILER_CONTRACT_VERSION)
+    }:
         raise ValueError("candidate identity does not match input pins")
     findings = data["findings"]
     if (not isinstance(findings, list) or not findings or any(

@@ -262,6 +262,21 @@ class RoutingJobsTest(unittest.TestCase):
         query = ".//signal[@name='VCC']"
         self.assertEqual(ET.tostring(before.find(query)), ET.tostring(after.find(query)))
 
+    def test_a_new_tap_splits_prior_copper_without_losing_its_owner(self):
+        from fusion_offline.compiler.board import route_geometry, route_owners
+
+        base = ET.fromstring(self.compile().read_artifact("board"))
+        signal = base.find(".//signal[@name='VCC']")
+        original = ET.SubElement(signal, "wire", x1="4", y1="10", x2="14.05", y2="21",
+                                 layer="1", width="0.2")
+        branch = ET.Element("wire", x1="9.025", y1="15.5", x2="12", y2="18", layer="1", width="0.18")
+        prior = {"old": {"net": "VCC", "geometry": [route_geometry(original)]}}
+        additions = {"new": {"net": "VCC", "geometry": [route_geometry(branch)]}}
+        raw, owners = self.service._canonical_board(ET.tostring(base), additions, prior)
+        self.assertEqual(raw, self.service._canonical_board(ET.tostring(base), additions)[0])
+        self.assertEqual(len(owners["old"]["geometry"]), 2)
+        self.assertEqual(len(route_owners(ET.fromstring(raw), owners)), 3)
+
     def test_external_provenance_bounds_vias_per_connection(self):
         from fusion_offline.compiler.board import route_geometry
         from fusion_offline.compiler.validate import validate_candidate
@@ -274,7 +289,7 @@ class RoutingJobsTest(unittest.TestCase):
         for a, b, layer in (((4, 10), (8, 10), 1), ((8, 10), (8, 21), 16), ((8, 21), (14.05, 21), 1)):
             ET.SubElement(signal, "wire", x1=str(a[0]), y1=str(a[1]), x2=str(b[0]), y2=str(b[1]),
                           width="0.25", layer=str(layer))
-        vias = [ET.SubElement(signal, "via", x="8", y=str(y), extent="1-16", drill="0.3", diameter="0.6")
+        vias = [ET.SubElement(signal, "via", x="8", y=str(y), extent="1-16", drill="0.3", diameter="0.7064")
                 for y in (10, 21)]
         provenance = {f"connection-{index}": {"net": "VCC", "geometry": [route_geometry(via)]}
                       for index, via in enumerate(vias)}

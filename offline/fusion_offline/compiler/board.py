@@ -4,12 +4,15 @@ from copy import deepcopy
 from decimal import Decimal
 import xml.etree.ElementTree as ET
 
+from ..annular import copper as annular_copper
 from ..design import parse_board_design, parse_schematic_design, transform
+from ..junctions import canonicalize_signal
 from ..stitch import _inside_poly, _restrict_polygon, segments_intersect
+from ..symbols import Geo, symbol_prims
 from .canonical import canonical_digest, eagle_xml_bytes
 from .libraries import ResolvedLibraries
 from .model import DesignSpec, ROUTING_BUDGET_DEFAULTS
-from .schematic import apply_net_classes
+from .schematic import apply_net_classes, emit_part_labels
 
 
 def _append(parent, tag, row, exclude=()):
@@ -70,6 +73,23 @@ def _emit_plain(plain, board, stack, layers):
             _restrict_polygon(polygon, stack)
 
 
+def _package_label_bounds(package):
+    # Keep fallback labels near the component body, even if the footprint has large keepouts.
+    artwork = ET.Element("artwork")
+    artwork.extend(node for node in package if node.get("layer") in ("21", "22", "51", "52"))
+    primitives = symbol_prims(artwork)
+    for pad in package:
+        if pad.tag not in ("pad", "smd"):
+            continue
+        x, y = (float(pad.get(axis, "0")) for axis in ("x", "y"))
+        if pad.tag == "smd":
+            radius = max(float(pad.get(axis, "0")) for axis in ("dx", "dy")) / 2
+        else:
+            radius = max(float(pad.get("diameter", "0")), float(pad.get("drill", "0")) * 1.5) / 2
+        primitives.append(("circle", x, y, radius, 0))
+    return Geo(package.attrib["name"], {}, {}, primitives).body()
+
+
 def _emit_elements(elements, spec, libraries, stack):
     separate = {row["ref"]: row for row in spec.board["placements"]}
     outline = spec.board["outline"]
@@ -100,8 +120,11 @@ def _emit_elements(elements, spec, libraries, stack):
             "rot": f'{"M" if mirror else ""}R{Decimal(str(angle)):f}',
         })
         for name, value in sorted((dict(part.attributes) | dict(row["attributes"])).items()):
-            _append(element, "attribute", dict(name=name, value=value, display="off"))
+            if name.upper() not in ("NAME", "VALUE"):
+                _append(element, "attribute", dict(name=name, value=value, display="off"))
         package = packages[part.library, part.package]
+        emit_part_labels(element, package, (x, y, angle, mirror), (26, 28) if mirror else (25, 27),
+                         _package_label_bounds(package), size=0.8, gap=0.4)
         for pad in package:
             if pad.tag not in ("pad", "smd"):
                 continue
@@ -142,7 +165,7 @@ def _contacts(net, parts):
     return sorted(contacts)
 
 
-def _emit_preroute(signal, net, stack, routing, contact_centres):
+def _emit_preroute(signal, net, stack, routing, contact_centres, rules):
     wires, vias = net.get("wires", ()), net.get("vias", ())
     if not wires and not vias:
         return
@@ -152,14 +175,20 @@ def _emit_preroute(signal, net, stack, routing, contact_centres):
     allowed = set(policy.get("allowed_layers", stack))
     if not allowed <= set(stack):
         raise ValueError(f"{name}: policy includes an absent copper layer")
+    anchors = set().union(*contact_centres)
+    for wire in wires:
+        _append(signal, "wire", wire)
+    for via in vias:
+        _append(signal, "via", via)
+    canonicalize_signal(signal, anchors)
     wire_graph = defaultdict(set)
     degree = Counter()
-    for wire in wires:
-        layer = wire["layer"]
+    for wire in signal.findall("wire"):
+        layer = int(wire.attrib["layer"])
         if layer not in allowed:
             raise ValueError(f"{name}: wire copper layer {layer} is absent or disallowed")
-        start = wire["x1"], wire["y1"], layer
-        end = wire["x2"], wire["y2"], layer
+        start = float(wire.attrib["x1"]), float(wire.attrib["y1"]), layer
+        end = float(wire.attrib["x2"]), float(wire.attrib["y2"]), layer
         if start == end or end in wire_graph[start]:
             raise ValueError(f"{name}: zero-length or duplicate wire")
         wire_graph[start].add(end)
@@ -185,7 +214,6 @@ def _emit_preroute(signal, net, stack, routing, contact_centres):
         for node in touched:
             wire_graph[node].update(touched - {node})
 
-    anchors = set().union(*contact_centres)
     if any(count == 1 and node not in anchors and node not in via_nodes for node, count in degree.items()):
         raise ValueError(f"{name}: trace endpoint must meet a pad or via centre or another trace vertex")
     for pad in contact_centres:
@@ -211,10 +239,21 @@ def _emit_preroute(signal, net, stack, routing, contact_centres):
         # shortcut: an explicit copper component has no per-connection ownership; count its vias together.
         if len({node[:2] for node in component} & via_points) > limit:
             raise ValueError(f"{name}: explicit connection exceeds its via budget of {limit}")
-    for wire in wires:
-        _append(signal, "wire", wire)
-    for via in vias:
-        _append(signal, "via", via)
+    for via in signal.findall("via"):
+        diameter = float(via.get("diameter", "0"))
+        effective = annular_copper(rules, "Via", float(via.attrib["drill"]), diameter, inner=False)["outer"]
+        if 0 < diameter < effective:
+            via.set("diameter", str(effective))
+
+
+def _via_rules(board):
+    rules = board.find("designrules")
+    values = {row.attrib["name"]: row.attrib["value"] for row in rules.findall("param")}
+    for name, default in (("rvViaOuter", "0.25"), ("rlMinViaOuter", "8mil"), ("rlMaxViaOuter", "20mil")):
+        if name not in values:
+            ET.SubElement(rules, "param", name=name, value=default)
+            values[name] = default
+    return values
 
 
 def route_geometry(node):
@@ -262,6 +301,7 @@ def build_board(
     if len(elements) or len(signals) or document.find(".//moduleinst") is not None:
         raise ValueError("board template must be empty and flat")
     stack, layers = _check_stack(root, sch_root, spec.board.get("copper_layers"))
+    rules = _via_rules(document)
 
     copper_layers = {str(layer) for layer in stack}
     if any(node.get("layer") in copper_layers for node in plain):
@@ -299,7 +339,7 @@ def build_board(
         board_signals[name] = signal
         for ref, pad in contacts:
             ET.SubElement(signal, "contactref", element=ref, pad=pad)
-        _emit_preroute(signal, nets[name], stack, spec.routing, [centres[contact] for contact in contacts])
+        _emit_preroute(signal, nets[name], stack, spec.routing, [centres[contact] for contact in contacts], rules)
     for pour in spec.board["pours"]:
         name = pour["net"]
         if name not in board_signals:
@@ -309,4 +349,4 @@ def build_board(
             raise ValueError(f"{name}: pour uses absent copper layer {pour['layer']}")
         polygon = _polygon(board_signals[name], pour["vertices"], pour, ("net", "vertices"))
         _restrict_polygon(polygon, stack, f"{name} pour")
-    return eagle_xml_bytes(root, template_xml)
+    return eagle_xml_bytes(root, template_xml, align_50mil=spec.align_50mil)

@@ -69,6 +69,40 @@ class CompilerValidationTest(unittest.TestCase):
         self.assertEqual(report["airwires_by_net"]["VCC"], 1)
         self.assertEqual(report["status"], "fail")
 
+    def test_saved_unsplit_tee_and_offset_via_do_not_prove_continuity(self):
+        self.add_preroute()
+        candidate = self.compile()
+
+        def unsplit(root):
+            signal = root.find(".//signal[@name='VCC']")
+            top = signal.find("wire[@layer='1']")
+            top.set("x2", "12")
+            top.set("y2", "19.2")
+            ET.SubElement(signal, "wire", x1="10", y1="17.6", x2="14.05", y2="21", layer="1", width="0.3")
+
+        def move_landing(root):
+            root.find(".//signal[@name='VCC']/wire[@layer='16']").attrib.update(x2="8.0069", y2="15.9931")
+
+        for edit in (unsplit, move_landing):
+            with self.subTest(edit=edit.__name__):
+                report = self.report(candidate, edit)
+                self.assertEqual(report["airwires_by_net"]["VCC"], 1)
+                self.assertEqual(report["status"], "fail")
+
+    def test_pour_outline_is_pending_native_fill(self):
+        candidate = self.compile()
+
+        def add_pour(root):
+            signal = root.find(".//signal[@name='VCC']")
+            polygon = ET.SubElement(signal, "polygon", layer="1", width="0.2")
+            for x, y in ((1, 1), (39, 1), (39, 29), (1, 29)):
+                ET.SubElement(polygon, "vertex", x=str(x), y=str(y))
+
+        report = self.report(candidate, add_pour)
+        self.assertEqual(report["airwires_by_net"]["VCC"], 1)
+        finding = next(row for row in report["findings"] if row["check"] == "full_routing")
+        self.assertIn("Native fill connectivity required for VCC", finding["detail"])
+
     def test_contactrefs_require_exact_pad_names_and_unique_signals(self):
         candidate = self.compile()
 
@@ -203,6 +237,22 @@ class CompilerValidationTest(unittest.TestCase):
         report = self.report(self.compile())
         finding = next(row for row in report["findings"] if row["check"] == "keepouts")
         self.assertEqual(finding["status"], "fail")
+
+    def test_larger_inner_via_ring_does_not_block_outer_only_keepout(self):
+        for row in self.data["templates"].values():
+            template = ET.parse(row["path"]).getroot()
+            ET.SubElement(template.find("./drawing/layers"), "layer", number="2", name="Inner")
+            rules = template.find(".//designrules")
+            if rules is not None:
+                rules.find("param[@name='layerSetup']").set("value", "(1*2*16)")
+                ET.SubElement(rules, "param", name="rlMinViaInner", value="0.5mm")
+            self.set_asset(row, template)
+        self.add_preroute()
+        self.data["board"]["keepouts"] = [
+            {"layers": [1], "vertices": [[7.85, 16.5], [8.15, 16.5], [8.15, 16.6], [7.85, 16.6]]},
+        ]
+        report = self.report(self.compile())
+        self.assertEqual(next(row for row in report["findings"] if row["check"] == "keepouts")["status"], "pass")
 
     def test_smd_on_extended_bottom_layer_intersects_bottom_keepout(self):
         for row in self.data["templates"].values():

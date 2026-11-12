@@ -125,3 +125,24 @@ class RestrictRectanglesTest(unittest.TestCase):
                 root.find('.//param[@name="layerSetup"]').set('value', '(1*2*16*64)')
                 with self.assertRaises(UnverifiedGeometry):
                     board_obstacles(root)
+
+    def test_coincident_native_outer_and_via_rectangles_preserve_each_restriction(self):
+        trace = '<rectangle x1="90.04" y1="0" x2="97.96" y2="107" layer="41" restrictlayers="1,16"/>'
+        via = '<rectangle x1="90.04" y1="0" x2="97.96" y2="107" layer="43"/>'
+        for shapes, masks in ((trace + via, {41: {1, 16}, 43: set()}), (via, {43: set()})):
+            with self.subTest(masks=masks):
+                root = board(shapes)
+                root.find('.//param[@name="layerSetup"]').set('value', '(1*2*15*16)')
+                original = ET.tostring(root)
+                obstacles, _, _ = board_obstacles(root)
+                self.assertEqual(len(obstacles), len(masks))
+                self.assertEqual({o.restrict_layer: o.layers for o in obstacles}, masks)
+                self.assertEqual({o.bounds for o in obstacles}, {(90.04, 0, 97.96, 107)})
+                grid = Grid(root, 'N', .2, .1, .5, (94, 53.5), layers=(1, 2, 15, 16),
+                            window=(84, 49, 100, 58))
+                for layer in grid.layers:
+                    self.assertEqual(_seg_clear(grid, layer, (88, 53.5), (99, 53.5)),
+                                     layer not in masks.get(41, ()))
+                self.assertTrue(grid.via_blocked[grid.ij(94, 53.5)])
+                self.assertFalse(grid.via_blocked[grid.ij(88, 53.5)])
+                self.assertEqual(ET.tostring(root), original)

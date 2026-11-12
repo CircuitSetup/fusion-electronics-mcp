@@ -139,7 +139,8 @@ class Grid:
                  origin: tuple[float, float], layers=(1, 16), via_d: float = 0.6, window=None, cache=None,
                  soft_cost: float = 4.0, pour_cost: float = 30.0, plane_cost: float = 0.25,
                  soft_tags: set | None = None, rip_cost: float = 15.0, necks=(), neck_width: float | None = None,
-                 hug: float = 0.0, progress: SearchProgress | None = None, via_states: int = 1):
+                 hug: float = 0.0, progress: SearchProgress | None = None, via_states: int = 1,
+                 via_radii=None):
         checkpoint = self.checkpoint = progress.checkpoint if progress else None
         obs, rules, outline = cache if cache else board_obstacles(root)
         obs = [replace(o, trace_holes=()) if o.trace_holes and o.trace_holes_for[0] != net else o for o in obs]
@@ -155,6 +156,7 @@ class Grid:
         self.necks = [n for n in necks if neck_width and neck_width < width]
         self.half_n = (neck_width / 2) if self.necks else self.half
         self.via_r = via_d / 2
+        self.via_radii = via_radii or {}
         xs = [v for s in outline for v in (s[0], s[2])] or [0, 100]
         ys = [v for s in outline for v in (s[1], s[3])] or [0, 100]
         if window:                         # only the area around the connection (much faster)
@@ -215,10 +217,10 @@ class Grid:
             blocked[l] = b
         vb = ~inside | (edist < self.edge + self.via_r)
         for o in self.other:
-            self._mark(vb, o, self.via_r + G_via_clear(self, o))
+            self._mark(vb, o, self.via_radius(o) + G_via_clear(self, o))
         for o in self.own:                       # no via in the net's own pads
             if o.is_pad:
-                self._mark(vb, o, self.via_r + G_via_clear(self, o))
+                self._mark(vb, o, self.via_radius(o) + G_via_clear(self, o))
         for l in layers:
             vb |= blocked[l]
         # extra cost per cell entered: through-hole pin fields, other nets' pours on that layer
@@ -259,6 +261,11 @@ class Grid:
         self.blocked = blocked
         self.via_blocked = vb
         self._cost = cost
+
+    def via_radius(self, obstacle):
+        if not obstacle.layers:
+            return self.via_r
+        return max((self.via_radii.get(layer, self.via_r) for layer in obstacle.layers), default=self.via_r)
 
     def _band(self, grid, o: Obstacle, gap: float, width: float):
         """Mark cells between gap and gap + width from a trace (the lane beside it)."""
@@ -489,8 +496,9 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     via_drill = max(.3, minimum_drill) if via_drill is None else via_drill
     if not math.isfinite(via_drill) or via_drill <= 0 or (vias and via_drill < minimum_drill - 1e-6):
         raise ValueError(f'via drill must be positive and at least {minimum_drill:g} mm under the board rules')
+    inner = len(stack) > 2
     minimum_diameter = max(annular.required_diameter(via_drill),
-                          *annular.copper(rules, 'Via', via_drill, 0).values())
+                           annular.copper(rules, 'Via', via_drill, 0, False)['outer'])
     via_d = max(.6, minimum_diameter) if via_d is None else via_d
     if not math.isfinite(via_d) or via_d <= 0 or (vias and via_d < minimum_diameter - 1e-6):
         raise ValueError(f'via diameter must be at least {minimum_diameter:g} mm under the board rules')
@@ -502,9 +510,13 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
             nw = min(nw or short, short)
     via_limit = progress.via_limit if progress and vias and len(layers) > 1 else None
     via_states = (via_limit + 1) if via_limit is not None else 1
-    G = Grid(root, net, width, clearance, step, start, layers=layers, via_d=via_d, window=window, cache=obs_all,
+    diameters = annular.copper(rules, 'Via', via_drill, via_d, inner)
+    via_radii = {layer: diameters['inner' if layer in stack[1:-1] else 'outer'] / 2 for layer in stack}
+    effective_diameter = max(diameters.values())
+    G = Grid(root, net, width, clearance, step, start, layers=layers, via_d=effective_diameter, window=window, cache=obs_all,
              soft_cost=soft_cost, pour_cost=pour_cost, plane_cost=plane_cost, soft_tags=soft_tags, rip_cost=rip_cost,
-             necks=necks, neck_width=nw, hug=hug, progress=progress, via_states=via_states)
+             necks=necks, neck_width=nw, hug=hug, progress=progress, via_states=via_states,
+             via_radii=via_radii)
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
     r = Route(net, via_drill=via_drill, via_diameter=via_d, via_extent=(stack[0], stack[-1]),
@@ -625,7 +637,7 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
                     r.conflicts.add(o.tag)
                     break
         for x, y in r.vias:
-            if o.distance(x, y) < G.via_r + G_via_clear(G, o) - 0.005:
+            if o.distance(x, y) < G.via_radius(o) + G_via_clear(G, o) - 0.005:
                 r.conflicts.add(o.tag)
     return r
 
@@ -1003,7 +1015,7 @@ def check_route(G: Grid, r: Route) -> list[str]:
         for o in G.other:
             if G.checkpoint:
                 G.checkpoint()
-            if o.distance(x, y) < G.via_r + G_via_clear(G, o) - 0.005:
+            if o.distance(x, y) < G.via_radius(o) + G_via_clear(G, o) - 0.005:
                 return [f"via at ({x}, {y}) too close to {o.net or 'a hole/keepout'}"]
     return []
 

@@ -2659,7 +2659,8 @@ def route_remaining(width_mm: float = 0.25, widths: dict[str, float] | None = No
     from . import design_requirements as DR
     for c in conns:
         c.width = DR.route_options(constraints, c.net, c.width)[0]
-    res = RA.route_all(root, conns, vias=allow_vias,
+    # The native writer and read-back below use these unmodified route legs.
+    res = RA.route_all(root, conns, vias=allow_vias, canonicalize=False,
                        policies={c.net: DR.route_options(constraints, c.net, c.width)[1] for c in conns},
                        priorities={c.net: RQ.routing_policy(constraints[0] if constraints else None, c.net).get('priority', 0) for c in conns})
     by_id = {c.id: c for c in conns}

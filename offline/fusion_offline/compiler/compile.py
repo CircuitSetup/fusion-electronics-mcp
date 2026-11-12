@@ -1,7 +1,5 @@
 """Compile and publish deterministic offline EAGLE candidates."""
-from collections import Counter
 import json
-import xml.etree.ElementTree as ET
 
 from .board import build_board
 from .board_svg import render_board_svg
@@ -61,28 +59,3 @@ def compile_candidate(spec_path, expected_spec_sha256, output_directory) -> Cand
         "libraries": [{"name": asset.name, "sha256": asset.sha256} for asset in spec.libraries],
     }
     return _publish(output_directory, inputs, schematic, board, canonical_json_bytes(_routing_intent(spec)))
-
-
-def _structure(node):
-    return (node.tag, tuple(sorted(node.attrib.items())), node.text if (node.text or "").strip() else "",
-            tuple(_structure(child) for child in node))
-
-
-def _compare_routed_board(original, routed, selected_nets):
-    roots = ET.fromstring(original), ET.fromstring(routed)
-    copper = []
-    for root in roots:
-        signal_copper = {}
-        for signal in root.findall("./drawing/board/signals/signal"):
-            name = signal.get("name")
-            if name not in selected_nets:
-                continue
-            geometry = [node for node in signal if node.tag in ("wire", "via") and node.get("layer") != "19"]
-            signal_copper[name] = Counter(_structure(node) for node in geometry)
-            for node in geometry:
-                signal.remove(node)
-        copper.append(signal_copper)
-    if _structure(roots[0]) != _structure(roots[1]):
-        raise ValueError("routing changed protected copper or non-routing board geometry")
-    if any(before - copper[1][name] for name, before in copper[0].items()):
-        raise ValueError("routing removed or changed pre-existing copper")

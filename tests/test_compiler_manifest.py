@@ -87,11 +87,12 @@ class CompilerManifestTest(unittest.TestCase):
 
     def test_previous_workflow_manifest_retains_its_original_pin(self):
         from fusion_offline.compiler.canonical import canonical_json_bytes
-        from fusion_offline.compiler.manifest import load_candidate_manifest
+        from fusion_offline.compiler.manifest import _identity, load_candidate_manifest
 
         candidate = self.compile("previous")
         manifest = candidate.data
         manifest["compiler_version"] = "0.3.0+workflow.35"
+        manifest["candidate_id"] = _identity(manifest["inputs"], manifest["routing_job"], contract_version=1)
         raw = canonical_json_bytes(manifest)
         candidate.path.write_bytes(raw)
         previous = load_candidate_manifest(candidate.path, sha256(raw).hexdigest())

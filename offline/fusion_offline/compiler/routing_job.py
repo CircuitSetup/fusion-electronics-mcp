@@ -1,5 +1,4 @@
 """Persist bounded routing outcomes and promote the exact saved board."""
-from collections import Counter
 from dataclasses import asdict
 from hashlib import sha256
 from itertools import pairwise
@@ -7,14 +6,14 @@ import json
 import xml.etree.ElementTree as ET
 
 from ..design import parse_schematic_design
-from ..route_all import Conn, _commit, route_all
+from ..route_all import Conn, _commit, canonicalize_routed_signals, route_all
 from ..router import Route, copper_layers
 from ..routing_budget import RoutingBudget
 from . import ROUTER_CONTRACT_VERSION
 from .board import route_geometry, route_owners
 from .canonical import canonical_digest, canonical_json_bytes, eagle_xml_bytes
 from .board_svg import render_board_svg
-from .compile import _compare_routed_board, _publish
+from .compile import _publish
 from .manifest import ArtifactManifest, CandidateManifest, _MAX_MANIFEST_BYTES, _pin, load_candidate_manifest
 from .model import _validate_source_xml
 from .paths import _check_parents, _local_path, _read_local_file, atomic_directory, atomic_write, read_pinned_file
@@ -172,7 +171,37 @@ def _candidate(result, original, connections):
                 provenance[owner]["geometry"].append(route_geometry(node))
     for row in provenance.values():
         row["geometry"].sort(key=canonical_json_bytes)
-    return (eagle_xml_bytes(result.root, original) if provenance else original), provenance
+    return _canonical_board(original, provenance)[0], provenance
+
+
+def _canonical_board(original, additions, prior=None):
+    """Rebuild exact emitted copper and transfer ownership through wire subdivision."""
+    prior = prior or {}
+    if not additions:
+        return original, prior
+    root = ET.fromstring(original)
+    owners = route_owners(root, prior)
+    signals = {node.attrib["name"]: node for node in root.findall("./drawing/board/signals/signal")}
+    for name, signal in signals.items():
+        for node in signal:
+            if (owner := owners.get((name, canonical_digest(route_geometry(node))))) is not None:
+                node.set("mcp_conn", owner)
+    selected = set()
+    for owner, row in sorted(additions.items()):
+        name = row["net"]
+        selected.add(name)
+        for geometry in row["geometry"]:
+            attributes = dict(sorted(geometry["attributes"].items()))
+            ET.SubElement(signals[name], geometry["tag"], {**attributes, "mcp_conn": owner})
+    canonicalize_routed_signals(root, selected)
+    final = {}
+    for name, signal in signals.items():
+        for node in signal:
+            if (owner := node.attrib.pop("mcp_conn", None)) is not None:
+                final.setdefault(owner, {"net": name, "geometry": []})["geometry"].append(route_geometry(node))
+    for row in final.values():
+        row["geometry"].sort(key=canonical_json_bytes)
+    return eagle_xml_bytes(root, original), final
 
 
 def _prior_provenance(base):
@@ -217,21 +246,13 @@ def _verify_board_delta(original, routed, request, provenance):
     changed_nets = set(selected) - set(protected)
     _validate_source_xml(original, "routing job input board")
     _validate_source_xml(routed, "routing job candidate board")
-    _compare_routed_board(original, routed, changed_nets)
-    before, after = (ET.fromstring(raw) for raw in (original, routed))
-    if any("mcp_conn" in node.attrib for node in after.iter()):
-        raise ValueError("routing job candidate contains internal routing attributes")
-    owners = route_owners(after, provenance)
     connections = {row["id"]: row.get("net") for row in request["connections"]}
     if any(row["net"] != connections[key] or row["net"] not in changed_nets for key, row in provenance.items()):
         raise ValueError("routing provenance assigns copper outside its selected connection")
-
-    def geometry(root):
-        return Counter((signal.get("name"), canonical_digest(route_geometry(node)))
-                       for signal in root.findall("./drawing/board/signals/signal")
-                       for node in signal if node.tag in ("wire", "via") and node.get("layer") != "19")
-    if geometry(after) - geometry(before) != Counter(owners.keys()):
-        raise ValueError("routing provenance does not account for all added copper")
+    expected, owners = _canonical_board(original, provenance)
+    if expected != routed:
+        raise ValueError("saved board differs from canonical routing provenance")
+    route_owners(ET.fromstring(routed), owners)
 
 
 def plan_routing_job(manifest_path, expected_manifest_sha256, selected_nets=None, *,
@@ -270,7 +291,7 @@ def plan_routing_job(manifest_path, expected_manifest_sha256, selected_nets=None
         return existing()
     result = route_all(
         root, connections, budget=RoutingBudget(**policy["budget"]), policies=policy["policies"],
-        protected_nets=policy["protected_nets"], clock=clock,
+        protected_nets=policy["protected_nets"], clock=clock, canonicalize=False,
     )
     board, provenance = _candidate(result, original, {conn.id: conn.net for conn in connections})
     routes = {key: route.as_dict() for key, route in result.routes.items()}
@@ -331,13 +352,15 @@ def promote_routing_job(candidate_manifest_path, expected_candidate_sha256, job_
     outcome = _canonical_object(job.read_artifact("routes"))
     if prior.keys() & outcome["provenance"].keys():
         raise ValueError("routing job overlaps pre-existing connection provenance")
-    provenance = {**prior, **outcome["provenance"]}
+    board, provenance = _canonical_board(original, outcome["provenance"], prior)
+    if board != job.read_artifact("candidate_board"):
+        raise ValueError("canonical routing changed the pinned board during promotion")
     record = {
         "job_id": job.data["job_id"], "candidate_board_sha256": job.data["candidate_board_sha256"],
         "manifest_sha256": job.sha256,
     }
     return _publish(output, base.data["inputs"], base.read_artifact("schematic"),
-                    job.read_artifact("candidate_board"), base.read_artifact("routing_intent"), record,
+                    board, base.read_artifact("routing_intent"), record,
                     provenance=provenance, board_svg=job.read_artifact("preview"),
                     routing_artifacts={f"routing_{name}": job.read_artifact(name)
                                        for name in ("request", "routes", "diagnostics")})

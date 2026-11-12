@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -48,6 +49,55 @@ class CompilerSchemaTest(unittest.TestCase):
 
     def test_minimal_design_passes(self):
         self.parse(self.data)
+
+    def test_unintended_automatic_pairs_are_flagged_with_analog_alternative(self):
+        self.data["nets"][0]["name"] = "CT1_P"
+        self.data["nets"][1]["name"] = "ct1_n"
+        with self.assertRaisesRegex(ValueError, r"CT1_P.*ct1_n.*_POS/_NEG"):
+            self.parse(self.data)
+
+    def test_analog_polarity_and_unpaired_suffixes_are_allowed(self):
+        for net, name in zip(self.data["nets"], ("CT1_POS", "CT1_NEG", "OTHER_P", "SENSE_POS", "SENSE_NEG")):
+            net["name"] = name
+        self.assertEqual(self.parse(self.data), self.data)
+
+    def test_schematic_only_partner_does_not_form_a_board_pair(self):
+        for part in self.data["parts"][:2]:
+            part["board"] = None
+        self.data["nets"][0].update(name="SENSE_P", route=False)
+        self.data["nets"][1]["name"] = "SENSE_N"
+        self.assertEqual(self.parse(self.data), self.data)
+
+    def test_declared_matched_pair_is_preserved_in_compiled_schematic_and_board(self):
+        from fusion_offline.compiler.compile import compile_candidate
+
+        self.data["nets"][0]["name"] = "CLK_P"
+        self.data["nets"][1]["name"] = "CLK_N"
+        self.data["routing"]["matched_pairs"] = [["CLK_P", "CLK_N"]]
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "design.json"
+            raw = json.dumps(self.data).encode()
+            source.write_bytes(raw)
+            candidate = compile_candidate(source, hashlib.sha256(raw).hexdigest(), root / "candidate")
+            for kind, pattern in (
+                ("schematic", "./drawing/schematic/sheets/sheet/nets/net"),
+                ("board", "./drawing/board/signals/signal"),
+            ):
+                names = {node.get("name") for node in ET.fromstring(candidate.read_artifact(kind)).findall(pattern)}
+                self.assertTrue({"CLK_P", "CLK_N"} <= names, kind)
+            intent = json.loads(candidate.read_artifact("routing_intent"))
+            self.assertEqual(intent["routing"]["matched_pairs"], [["CLK_P", "CLK_N"]])
+
+    def test_matched_pair_declarations_require_exact_names_and_polarity_order(self):
+        self.data["nets"][0]["name"] = "CLK_P"
+        self.data["nets"][1]["name"] = "CLK_N"
+        for pairs in (
+            [["CLK_N", "CLK_P"]], [["CLK_P", "MISSING_N"]], [["CLK_P"]], [["clk_p", "CLK_N"]],
+            [["CLK_P", "CLK_N"], ["CLK_P", "CLK_N"]],
+        ):
+            with self.subTest(pairs=pairs):
+                self.reject_change(("routing", "matched_pairs"), pairs, "matched_pairs|matched pair")
 
     def test_requires_version_one_and_mm(self):
         for version in (0, 2, True, "1", 1.0):

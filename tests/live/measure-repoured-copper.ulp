@@ -1,0 +1,33 @@
+#usage "Measure repoured copper and live airwires on the acceptance board."
+if (argc != 1 || !board) exit(1);
+
+output(MCP_OUTPUT, "wt") {
+  int airwires = 0, pours = 0;
+  printf("{\"schema\":1,\"mode\":\"read\",\"editor\":\"board\",\"data\":{\"fills\":[");
+  board(B) {
+    B.signals(S) {
+      S.wires(W) {
+        if (W.layer == 19) airwires++;
+      }
+      S.polypours(P) {
+        int contour_wires = 0;
+        real twice_area = 0.0;
+        P.contours(W) {
+          contour_wires++;
+          twice_area += u2mm(W.x1) * u2mm(W.y2) - u2mm(W.x2) * u2mm(W.y1);
+          if (W.arc) {
+            real angle = W.curve * 0.017453292519943295;
+            real radius = u2mm(W.arc.radius);
+            twice_area += radius * radius * (angle - sin(angle));
+          }
+        }
+        // Autodesk directs outer fill contours clockwise and void contours counterclockwise.
+        if (pours++) printf(",");
+        printf("{\"net\":\"%s\",\"layer\":%d,\"contour_wires\":%d,\"area_mm2\":%.9f}",
+               S.name, P.layer, contour_wires, -0.5 * twice_area);
+      }
+    }
+  }
+  printf("],\"airwires\":%d},\"complete\":true}", airwires);
+}
+exit(0);

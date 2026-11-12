@@ -53,6 +53,7 @@ class Obstacle:
     trace_holes: tuple = ()
     trace_holes_for: tuple | None = None
     is_npth: bool = False
+    is_via: bool = False
 
     @property
     def bounds(self):
@@ -220,6 +221,7 @@ def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y)
 def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle], dict, list[tuple[float, float, float, float]]]:
     """(obstacles, rules, outline segments) from a board XML root."""
     board = root.find("./drawing/board")
+    from .annular import copper as annular_copper
     from .design import parse_board_design
     stack = parse_board_design(root).copper_layers
     rules = {p.get("name"): p.get("value") for p in board.iterfind("./designrules/param")}
@@ -248,8 +250,12 @@ def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle
         for v in s.iterfind("via"):
             if checkpoint:
                 checkpoint()
-            d = max(_f(v, "diameter"), _f(v, "drill") + 2 * _ring(rules, "Via", _f(v, "drill")))
-            obs.append(Obstacle("circle", s.get("name"), False, (_f(v, "x"), _f(v, "y"), d / 2), None, v.get("mcp_conn")))
+            diameters = annular_copper(rules, "Via", _f(v, "drill"), _f(v, "diameter"), len(stack) > 2)
+            for side, layers in (("outer", (stack[0], stack[-1])), ("inner", stack[1:-1])):
+                if layers:
+                    obs.append(Obstacle("circle", s.get("name"), False,
+                                        (_f(v, "x"), _f(v, "y"), diameters[side] / 2),
+                                        frozenset(layers), v.get("mcp_conn"), is_via=True))
     pkgs = {}
     for lib in board.iterfind("./libraries/library"):
         if checkpoint:

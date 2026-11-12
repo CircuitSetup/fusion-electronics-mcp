@@ -2,6 +2,7 @@
   "version": 1,
   "name": "passive-routing-acceptance",
   "units": "mm",
+  "align_50mil": true,
   "templates": {
     "schematic": {
       "path": "../minimal/empty.sch",

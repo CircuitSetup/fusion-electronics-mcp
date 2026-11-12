@@ -33,8 +33,16 @@ def normalize_mm(value: int | float) -> float:
     return round(float(value), 4) or 0.0
 
 
-def eagle_xml_bytes(root: ET.Element, template_xml: bytes) -> bytes:
+def eagle_xml_bytes(root: ET.Element, template_xml: bytes, *, align_50mil: bool = False) -> bytes:
     """Serialize UTF-8 EAGLE XML with the pinned template's original prolog."""
+    if align_50mil:
+        drawing = root.find("drawing")
+        grid = drawing.find("grid")
+        if grid is None:
+            grid = ET.Element("grid", style="lines", display="no", altdistance="0.01",
+                              altunitdist="inch", altunit="inch")
+            drawing.insert(int(drawing.find("settings") is not None), grid)
+        grid.attrib.update(distance="50", unitdist="mil", unit="mil", multiple="1")
     prolog = re.match(
         rb"(?:\xef\xbb\xbf)?(?:\s+|<\?.*?\?>|<!--.*?-->|<!DOCTYPE\s+eagle\b[^>]*>)*",
         template_xml, flags=re.DOTALL,

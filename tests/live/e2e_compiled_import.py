@@ -3,12 +3,16 @@
     python tests/live/e2e_compiled_import.py --disposable-project-id ID --name NEW_PRODUCT
 
 Make the disposable project active in Fusion and leave all open documents saved
-and unmodified. The imported family remains saved and open. The report and
-exports are retained under --artifacts (a new directory), or in a new temp folder.
+and unmodified. Enable Polygon calculation for RATSNEST in Fusion. The imported
+family remains saved and open. The report and exports are retained under
+--artifacts (a new directory), or in a new temp folder.
 """
 import argparse
+from collections import Counter
 from contextlib import contextmanager
+from hashlib import sha256
 import json
+from math import isfinite
 import os
 from pathlib import Path
 import sys
@@ -170,6 +174,51 @@ def pair_signatures(schematic, board):
             "physical_pair": eagle_import.signature(sch, brd)}
 
 
+def verify_active(server, kind, doc, operation):
+    context = server.get_context()
+    require(is_active_member(context, kind, doc)
+            and context["active_document"]["document_id"] == doc["document_id"],
+            f"Active document changed during native {operation}")
+
+
+def native_repour(server, saved, request_id, phase):
+    doc = active_member(server, "board", saved)
+    source = Path(__file__).with_name("measure-repoured-copper.ulp")
+    digest = sha256(source.read_bytes()).hexdigest()
+    name = f"compiler-repour-{request_id}"
+    server.register_ulp(name, str(source), "read", ["board"], 0, digest)
+    try:
+        phase["command"] = server.session.bridge.call("run", {
+            "commands": "RATSNEST;", "editor": "board", "expected_document_id": doc["document_id"],
+        })
+        unexpected = [row for row in phase["command"].get("dialogs", ()) if not row.get("expected")]
+        require(not unexpected, f"Unexpected native RATSNEST dialog: {unexpected}")
+        verify_active(server, "board", doc, "RATSNEST")
+        observed = server.run_registered_ulp(name, [], doc["document_id"])
+        verify_active(server, "board", doc, "repoured copper measurement")
+    finally:
+        server.unregister_ulp(name)
+    require(observed["document"]["document_id"] == doc["document_id"],
+            "Repoured copper measurement was returned for a different document")
+    require(observed["sha256"] == digest, "Native fill measurement used an unexpected ULP source")
+    phase["measurement_document_id"] = doc["document_id"]
+    phase["measurement_ulp_sha256"] = digest
+    phase["measurement"] = observed["data"]
+
+
+def require_measured_fills(board, measurement):
+    expected = Counter((signal.attrib["name"], int(polygon.attrib["layer"]))
+                       for signal in ET.fromstring(board).findall(".//signal")
+                       for polygon in signal.findall("polygon"))
+    fills = measurement["fills"]
+    require(expected and Counter((row["net"], row["layer"]) for row in fills) == expected,
+            "Native fill measurements do not match the candidate's declared pours")
+    require(all(type(row["contour_wires"]) is int and row["contour_wires"] > 0
+                and type(row["area_mm2"]) in (int, float)
+                and isfinite(row["area_mm2"]) and row["area_mm2"] > 0 for row in fills),
+            "The repoured board has a polygon without positive measured filled area")
+
+
 def native_check(server, kind, command, saved):
     doc = active_member(server, kind, saved)
     result = server.session.bridge.call("run", {
@@ -179,15 +228,10 @@ def native_check(server, kind, command, saved):
         unexpected = [row for row in result.get("dialogs", ()) if not row.get("expected")]
         require(not unexpected, f"Unexpected native ERC dialog: {unexpected}")
 
-    def verify_active():
-        context = server.get_context()
-        require(is_active_member(context, kind, doc)
-                and context["active_document"]["document_id"] == doc["document_id"],
-                f"Active document changed during native {command.rstrip(';')}")
-
-    verify_active()
+    operation = command.rstrip(";")
+    verify_active(server, kind, doc, operation)
     findings = server.session.errors(kind)
-    verify_active()
+    verify_active(server, kind, doc, operation)
     return {"command": result, "findings": findings}
 
 
@@ -196,7 +240,7 @@ def run_acceptance(server, report, build, materialize):
 
     project_id, name = report.data["project_id"], report.data["name"]
     bridge = server.session.bridge
-    with report.phase("compile") as phase:
+    with report.phase("offline_compile_validate") as phase:
         _, job, candidate = build(report.root, materialize(report.root))
         validation = json.loads(candidate.read_artifact("report"))
         phase.update(candidate_id=candidate.data["candidate_id"], manifest=str(candidate.path),
@@ -238,21 +282,28 @@ def run_acceptance(server, report, build, materialize):
                 active_member(server, kind, saved)
                 actual[kind] = server.session.export(kind)
                 (report.root / f"reopened.{suffix}").write_bytes(actual[kind])
-            comparison["expected"] = pair_signatures(candidate.read_artifact("schematic"),
-                                                     candidate.read_artifact("board"))
+            candidate_board = candidate.read_artifact("board")
+            comparison["expected"] = pair_signatures(candidate.read_artifact("schematic"), candidate_board)
             comparison["exported"] = pair_signatures(actual["schematic"], actual["board"])
             comparison["matches"] = comparison["expected"] == comparison["exported"]
-            comparison["exported_airwires"] = len(ET.fromstring(actual["board"]).findall(".//signal/wire[@layer='19']"))
+            comparison["raw_export_layer_19_spans"] = len(
+                ET.fromstring(actual["board"]).findall(".//signal/wire[@layer='19']")
+            )
         with report.phase("native_erc") as erc:
             erc.update(native_check(server, "schematic", "ERC;", saved))
+        with report.phase("native_repour_airwires") as repour:
+            native_repour(server, saved, report.data["request_id"], repour)
         with report.phase("native_drc") as drc:
             drc.update(native_check(server, "board", "DRC;", saved))
             drc["summary"] = summarize(drc["findings"]["errors"])
         with report.phase("acceptance"):
             unchanged(original, server.get_context())
             require(comparison["matches"], "Reopened electrical or physical contact signature differs")
-            require(comparison["exported_airwires"] == drc["summary"]["airwires"] == 0,
-                    "The reopened board has native airwires")
+            measurement = repour["measurement"]
+            require(type(measurement["airwires"]) is int
+                    and measurement["airwires"] == drc["summary"]["airwires"] == 0,
+                    "The repoured board has native airwires")
+            require_measured_fills(candidate_board, measurement)
             for result in (erc, drc):
                 require(result["findings"]["count"] == 0 and result["findings"]["errors"] == [],
                         f"Unexpected native {result['findings']['kind']} findings")

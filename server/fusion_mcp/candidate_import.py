@@ -48,7 +48,8 @@ def _validate(manifest_path, manifest_sha256, args):
             or not isinstance(exemptions, list) or any(not isinstance(ref, str) for ref in exemptions)
             or exemptions != sorted(set(exemptions)) or not set(exemptions) <= set(signature["elements"])):
         raise ValueError("Candidate routing intent has invalid nets or placement exemptions")
-    _routing(intent["routing"], {net: {"route": enabled} for net, enabled in nets.items()})
+    _routing(intent["routing"], {net: {"route": enabled} for net, enabled in nets.items()},
+             board_nets={net for net, _, _ in signature["contacts"]})
     if intent["routing"]["budget"].keys() != ROUTING_BUDGET_DEFAULTS.keys():
         raise ValueError("Candidate routing intent must pin the complete routing budget")
     provenance = (json.loads(candidate.read_artifact("routing_provenance"))
