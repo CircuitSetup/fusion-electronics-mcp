@@ -12,7 +12,7 @@ from ..eagle import UnverifiedGeometry, parse_rot
 from ..footprints import packages
 from ..pairs import _seg_dist
 from ..placement_check import pads as placed_pads
-from ..stitch import _inside_poly, _restrict_polygon, board_obstacles, segments_intersect
+from ..stitch import _inside_poly, _restrict_polygon, board_obstacles, outline_vertices, segments_intersect
 from .board import route_geometry, route_owners
 from .canonical import canonical_digest
 from .manifest import finding_status
@@ -97,23 +97,9 @@ def _outline(board):
         raise UnverifiedGeometry("outline requires a straight, single closed wire contour")
     if len(contour) < 3:
         raise ValueError("outline must have at least three segments")
-    neighbors = defaultdict(set)
-    for edge in contour:
-        a, b = _point(edge, "x1", "y1"), _point(edge, "x2", "y2")
-        if a == b or b in neighbors[a]:
-            raise ValueError("outline contains a zero-length or repeated segment")
-        neighbors[a].add(b)
-        neighbors[b].add(a)
-    if any(len(row) != 2 for row in neighbors.values()):
-        raise ValueError("outline is open or branched")
-    start = min(neighbors)
-    vertices = [start]
-    previous, cursor = start, min(neighbors[start])
-    while cursor != start:
-        vertices.append(cursor)
-        previous, cursor = cursor, next(iter(neighbors[cursor] - {previous}))
-    if len(vertices) != len(neighbors):
-        raise UnverifiedGeometry("outline has more than one closed contour")
+    vertices = outline_vertices(
+        (*_point(edge, "x1", "y1"), *_point(edge, "x2", "y2")) for edge in contour
+    )
     polygon = ET.Element("polygon", layer="41")
     for x, y in vertices:
         ET.SubElement(polygon, "vertex", x=str(x), y=str(y))
@@ -121,7 +107,7 @@ def _outline(board):
         _restrict_polygon(polygon, (1, 16), "outline")
     except UnverifiedGeometry as exc:
         raise ValueError(str(exc)) from exc
-    return tuple(vertices)
+    return vertices
 
 
 def _inside_outline(outline, point):

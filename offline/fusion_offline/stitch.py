@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import re
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from dataclasses import dataclass
 
 from .eagle import parse_rot, Pad as LibraryPad, UnverifiedGeometry
@@ -161,11 +162,14 @@ def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x
         layer = int(polygon.attrib['layer'])
     except (ValueError, KeyError, TypeError) as error:
         raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None
-    # An empty trace-layer set marks vRestrict: vias still check every obstacle.
-    layers = frozenset() if layer == 43 else frozenset({stack[0] if (layer == 41) != mirror else stack[-1]})
     center = tuple(sum(p[i] for p in points)/len(points) for i in (0, 1))
-    return Obstacle('polygon', None, False, (*center, points, half), layers,
+    return Obstacle('polygon', None, False, (*center, points, half), _restrict_layers(layer, stack, mirror),
                     restrict_layer=layer, source_ref=source_ref)
+
+
+def _restrict_layers(layer, stack, mirror=False):
+    # An empty trace-layer set marks vRestrict: vias still check every obstacle.
+    return frozenset() if layer == 43 else frozenset({stack[0] if (layer == 41) != mirror else stack[-1]})
 
 
 def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False, *, checkpoint=None):
@@ -326,8 +330,9 @@ def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle
         if checkpoint:
             checkpoint()
         if c.get("layer") in ("41", "42", "43") and _f(c, "width") == 0:
+            layer = int(c.attrib["layer"])
             obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius")),
-                                restrict_layer=int(c.get('layer'))))
+                                _restrict_layers(layer, stack), restrict_layer=layer))
     for shape in list(board.findall('./plain/rectangle')) + list(board.findall('./plain/polygonshape')):
         if checkpoint:
             checkpoint()
@@ -339,6 +344,32 @@ def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle
         if polygon.get('layer') in ('41', '42', '43'):
             obs.append(_restrict_polygon(polygon, stack, checkpoint=checkpoint))
     return obs, rules, outline
+
+
+def outline_vertices(segments, *, checkpoint=None):
+    """Walk a single closed contour from unordered straight Dimension segments."""
+    neighbors = defaultdict(set)
+    for x1, y1, x2, y2 in segments:
+        if checkpoint:
+            checkpoint()
+        a, b = (x1, y1), (x2, y2)
+        if a == b or b in neighbors[a]:
+            raise ValueError("outline contains a zero-length or repeated segment")
+        neighbors[a].add(b)
+        neighbors[b].add(a)
+    if len(neighbors) < 3 or any(len(row) != 2 for row in neighbors.values()):
+        raise ValueError("outline is open or branched")
+    start = min(neighbors)
+    vertices = [start]
+    previous, cursor = start, min(neighbors[start])
+    while cursor != start:
+        if checkpoint:
+            checkpoint()
+        vertices.append(cursor)
+        previous, cursor = cursor, next(iter(neighbors[cursor] - {previous}))
+    if len(vertices) != len(neighbors):
+        raise UnverifiedGeometry("outline has more than one closed contour")
+    return tuple(vertices)
 
 
 def _inside_poly(poly, x, y) -> bool:

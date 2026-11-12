@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "name": "passive-routing-acceptance",
+  "units": "mm",
+  "templates": {
+    "schematic": {
+      "path": "../minimal/empty.sch",
+      "sha256": "4a2fa9eabd025e833d821b44f7bd2b08f45a9ad1db003c041a6540b76ad6eaa0"
+    },
+    "board": {
+      "path": "../minimal/empty.brd",
+      "sha256": "073df9cdfaf3f8914d3c2cd9c453fa95aed37d14bfe871e3c60f8bcfdfdafc42"
+    }
+  },
+  "libraries": [
+    {
+      "name": "ACCEPTANCE",
+      "path": "acceptance.lbr",
+      "sha256": "bbe2f8c96ab6402b7aab84d9c839c4896082e26ebb6b790cc7a2643791fa0865"
+    }
+  ],
+  "parts": [
+    {"ref":"R1","library":"ACCEPTANCE","deviceset":"RESISTOR","device":"SMD","technology":"","value":"1k","attributes":{},"units":[{"gate":"G$1","sheet":1,"x":10.16,"y":25.4,"rotation":0}],"board":{"x":9,"y":8,"rotation":0,"side":"top","fixed":true}},
+    {"ref":"R2","library":"ACCEPTANCE","deviceset":"RESISTOR","device":"SMD","technology":"","value":"1k","attributes":{},"units":[{"gate":"G$1","sheet":1,"x":30.48,"y":25.4,"rotation":0}],"board":{"x":17,"y":8,"rotation":0,"side":"top","fixed":false}},
+    {"ref":"R3","library":"ACCEPTANCE","deviceset":"RESISTOR","device":"SMD","technology":"","value":"1k","attributes":{},"units":[{"gate":"G$1","sheet":1,"x":50.8,"y":25.4,"rotation":0}],"board":{"x":25,"y":8,"rotation":0,"side":"top","fixed":false}},
+    {"ref":"R4","library":"ACCEPTANCE","deviceset":"RESISTOR","device":"SMD","technology":"","value":"1k","attributes":{},"units":[{"gate":"G$1","sheet":1,"x":71.12,"y":25.4,"rotation":0}],"board":{"x":30,"y":14,"rotation":90,"side":"top","fixed":false}},
+    {"ref":"R5","library":"ACCEPTANCE","deviceset":"RESISTOR","device":"SMD","technology":"","value":"1k","attributes":{},"units":[{"gate":"G$1","sheet":1,"x":91.44,"y":25.4,"rotation":0}],"board":{"x":25,"y":20,"rotation":180,"side":"top","fixed":false}},
+    {"ref":"R6","library":"ACCEPTANCE","deviceset":"RESISTOR","device":"THT","technology":"","value":"1k","attributes":{},"units":[{"gate":"G$1","sheet":1,"x":111.76,"y":25.4,"rotation":0}],"board":{"x":17,"y":20,"rotation":180,"side":"top","fixed":false}},
+    {"ref":"U1","library":"ACCEPTANCE","deviceset":"DUAL_TERMINAL","device":"","technology":"","value":"Dual terminal","attributes":{},"units":[{"gate":"A","sheet":1,"x":132.08,"y":25.4,"rotation":0},{"gate":"B","sheet":1,"x":10.16,"y":10.16,"rotation":0}],"board":{"x":9,"y":20,"rotation":0,"side":"bottom","fixed":false}}
+  ],
+  "schematic": {
+    "sheets": [
+      {
+        "number": 1,
+        "description": "Passive routing acceptance"
+      }
+    ]
+  },
+  "board": {
+    "outline": [
+      [
+        0,
+        0
+      ],
+      [
+        38,
+        0
+      ],
+      [
+        38,
+        28
+      ],
+      [
+        0,
+        28
+      ]
+    ],
+    "holes": [],
+    "keepouts": [
+      {
+        "vertices": [
+          [
+            18,
+            12
+          ],
+          [
+            22,
+            12
+          ],
+          [
+            22,
+            16
+          ],
+          [
+            18,
+            16
+          ]
+        ],
+        "layers": [
+          1
+        ]
+      }
+    ],
+    "placements": [],
+    "net_classes": [],
+    "pours": [
+      {
+        "net": "N1",
+        "layer": 1,
+        "vertices": [
+          [
+            10.4,
+            7
+          ],
+          [
+            15.6,
+            7
+          ],
+          [
+            15.6,
+            9
+          ],
+          [
+            10.4,
+            9
+          ]
+        ],
+        "width": 0.25,
+        "isolate": 0.4,
+        "thermals": false,
+        "orphans": false
+      }
+    ]
+  },
+  "nets": [
+    {"name":"BRIDGE","class":"default","pins":[{"part":"R1","gate":"G$1","pin":"1"},{"part":"U1","gate":"B","pin":"P"}],"schematic_style":"labels","port":"inter-block","route":true},
+    {"name":"N1","class":"default","pins":[{"part":"R1","gate":"G$1","pin":"2"},{"part":"R2","gate":"G$1","pin":"1"}],"schematic_style":"labels","port":"inter-block","route":true},
+    {"name":"N2","class":"default","pins":[{"part":"R2","gate":"G$1","pin":"2"},{"part":"R3","gate":"G$1","pin":"1"}],"schematic_style":"labels","port":"inter-block","route":true},
+    {"name":"N3","class":"default","pins":[{"part":"R3","gate":"G$1","pin":"2"},{"part":"R4","gate":"G$1","pin":"1"}],"schematic_style":"labels","port":"inter-block","route":true},
+    {"name":"N4","class":"default","pins":[{"part":"R4","gate":"G$1","pin":"2"},{"part":"R5","gate":"G$1","pin":"1"}],"schematic_style":"labels","port":"inter-block","route":true},
+    {"name":"N5","class":"default","pins":[{"part":"R5","gate":"G$1","pin":"2"},{"part":"R6","gate":"G$1","pin":"1"}],"schematic_style":"labels","port":"inter-block","route":true},
+    {"name":"N6","class":"default","pins":[{"part":"R6","gate":"G$1","pin":"2"},{"part":"U1","gate":"A","pin":"P"}],"schematic_style":"labels","port":"inter-block","route":true}
+  ],
+  "routing": {
+    "selected_nets": ["BRIDGE", "N1", "N2", "N3", "N4", "N5", "N6"],
+    "protected_nets": [],
+    "policies": {
+      "BRIDGE": {
+        "max_vias_per_connection": 1
+      }
+    },
+    "budget": {
+      "max_nodes_per_attempt": 8000,
+      "max_nodes_per_connection": 12000,
+      "max_attempts_per_connection": 2,
+      "max_seconds_per_attempt": 10,
+      "max_seconds_per_job": 60,
+      "max_vias_per_connection": 1
+    },
+    "require_fully_routed": true
+  }
+}

@@ -25,7 +25,7 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from .routing_budget import MAX_SEARCH_STATES, BudgetStop, RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
-from .stitch import Obstacle, _mm, board_obstacles
+from .stitch import Obstacle, _mm, board_obstacles, outline_vertices
 
 DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
 
@@ -188,7 +188,8 @@ class Grid:
         XX, YY = np.meshgrid(self.X, self.Y, indexing="ij")
         # board edge: copper keeps the edge-clearance rule from the outline
         if outline:
-            poly = [(s[0], s[1]) for s in outline]
+            poly = (outline_vertices(outline, checkpoint=checkpoint) if checkpoint and len(outline) >= 3
+                    else [(s[0], s[1]) for s in outline])
             inside = _in_poly(poly, XX, YY, checkpoint) if len(poly) >= 3 else np.ones(XX.shape, bool)
             edist = np.full(XX.shape, np.inf)
             for s in outline:

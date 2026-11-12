@@ -39,6 +39,7 @@ class PairViaSizeTest(unittest.TestCase):
         snap = mock.Mock(board_xml=ET.tostring(root))
         with (
             mock.patch.object(server, "_snap", return_value=snap),
+            mock.patch.object(server, "_v2_rules", return_value=(None, "offline fixture")),
             mock.patch.object(server, "_layer_depths", return_value=({1: 0.0, 16: 1.6}, "test")),
             mock.patch.object(server, "_write_layer", side_effect={"top": 1, "bottom": 16}.__getitem__),
             mock.patch.object(server.session, "require_design", return_value="test"),
