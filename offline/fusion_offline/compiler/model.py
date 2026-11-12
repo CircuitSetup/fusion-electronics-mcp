@@ -1,12 +1,21 @@
-"""Strict version-1 design shape validation before source resolution."""
+"""Version-1 design validation, normalization, and pinned source loading."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+import json
 from pathlib import PurePosixPath, PureWindowsPath
 import re
 from sys import float_info
+from types import MappingProxyType
+from typing import Any
+from xml.parsers import expat
 
-SPEC_VERSION = 1
+from . import SPEC_VERSION
+from .canonical import canonical_digest, canonical_json_bytes, normalize_mm
+from .paths import read_pinned_file
+
 ROUTING_BUDGET_DEFAULTS = {
     "max_nodes_per_attempt": 200_000,
     "max_nodes_per_connection": 300_000,
@@ -26,6 +35,7 @@ ROUTING_BUDGET_MAXIMUMS = {
     "ripup_rounds": 8,
 }
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.$@+!~-]+")
+_INVALID_XML_TEXT = re.compile(r"[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 
 
 def _object(value, field, required="", optional=""):
@@ -53,6 +63,8 @@ def _identifier(value, field, *, empty=False):
 def _text(value, field):
     if not isinstance(value, str):
         raise ValueError(f"{field} must be a string")
+    if _INVALID_XML_TEXT.search(value):
+        raise ValueError(f"{field} contains a character outside XML 1.0")
 
 
 def _number(value, field, *, integer=False):
@@ -366,3 +378,167 @@ def parse_design_spec(data: object) -> dict:
     _pours(data["board"]["pours"], nets)
     _routing(data["routing"], nets)
     return data
+
+
+_MAX_SPEC_BYTES = 4 * 1024 * 1024
+_MAX_XML_BYTES = 32 * 1024 * 1024
+_MAX_TOTAL_XML_BYTES = 128 * 1024 * 1024
+_MM_FIELDS = frozenset("x y x1 y1 x2 y2 width drill diameter isolate".split())
+_SORT_KEYS = {
+    "parts": ("ref",),
+    "units": ("gate",),
+    "nets": ("name",),
+    "pins": ("part", "gate", "pin"),
+    "sheets": ("number",),
+    "placements": ("ref",),
+    "net_classes": ("number",),
+}
+_SORTED_VALUES = frozenset(("selected_nets", "protected_nets", "allowed_layers", "layers"))
+_VERTICES = frozenset(("outline", "vertices"))
+
+
+@dataclass(frozen=True)
+class PinnedAsset:
+    path: str
+    sha256: str
+    data: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class PinnedLibrary(PinnedAsset):
+    name: str
+
+
+@dataclass(frozen=True)
+class DesignSpec:
+    version: int
+    name: str
+    units: str
+    templates: Mapping[str, PinnedAsset]
+    libraries: tuple[PinnedLibrary, ...]
+    parts: tuple[Mapping[str, Any], ...]
+    schematic: Mapping[str, Any]
+    board: Mapping[str, Any]
+    nets: tuple[Mapping[str, Any], ...]
+    routing: Mapping[str, Any]
+
+    def to_canonical(self) -> dict[str, object]:
+        """Use asset pins and names as identity independent of their local paths."""
+        return {
+            "version": self.version,
+            "name": self.name,
+            "units": self.units,
+            "templates": {
+                kind: {"sha256": asset.sha256} for kind, asset in self.templates.items()
+            },
+            "libraries": [
+                {"name": asset.name, "sha256": asset.sha256} for asset in self.libraries
+            ],
+            "parts": self.parts,
+            "schematic": self.schematic,
+            "board": self.board,
+            "nets": self.nets,
+            "routing": self.routing,
+        }
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self)
+
+
+def _freeze(value, field_name=""):
+    if isinstance(value, dict):
+        # Attribute names and policy net names are data, not schema fields.
+        if field_name in ("attributes", "clearances", "policies"):
+            return MappingProxyType({
+                key: normalize_mm(item) if field_name == "clearances" else _freeze(item)
+                for key, item in sorted(value.items())
+            })
+        return MappingProxyType({
+            key: _freeze(item, key) for key, item in sorted(value.items())
+        })
+    if isinstance(value, list):
+        if field_name in _VERTICES:
+            return tuple(tuple(normalize_mm(axis) for axis in point) for point in value)
+        if fields := _SORT_KEYS.get(field_name):
+            value = sorted(value, key=lambda row: tuple(row[key] for key in fields))
+        elif field_name in _SORTED_VALUES:
+            value = sorted(value)
+        frozen = tuple(_freeze(item) for item in value)
+        if field_name in ("holes", "keepouts", "pours"):
+            return tuple(sorted(frozen, key=canonical_json_bytes))
+        return frozen
+    if field_name in _MM_FIELDS:
+        rounded = normalize_mm(value)
+        if field_name in ("width", "drill", "diameter") and value > 0 and not rounded:
+            raise ValueError(f"{field_name} rounds to zero at 0.0001 mm precision")
+        return rounded
+    if field_name == "rotation" or field_name.startswith("max_seconds_"):
+        return float(value) or 0.0
+    return value
+
+
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _validate_source_xml(data: bytes, path: str) -> None:
+    def xml_decl(_version, encoding, _standalone):
+        if encoding is not None and encoding.lower() != "utf-8":
+            raise ValueError(f"source XML must declare UTF-8: {path}")
+
+    def doctype(name, system, public, internal):
+        # Preserve the ordinary EAGLE doctype without resolving its external DTD.
+        if name != "eagle" or system not in (None, "eagle.dtd") or public or internal:
+            raise ValueError(f"source XML entity declarations or external DTDs are unsupported: {path}")
+
+    def skipped_entity(name, _is_parameter):
+        raise ValueError(f"source XML entity reference {name!r} is unsupported: {path}")
+
+    parser = expat.ParserCreate("UTF-8")
+    parser.XmlDeclHandler = xml_decl
+    parser.StartDoctypeDeclHandler = doctype
+    parser.SkippedEntityHandler = skipped_entity
+    try:
+        parser.Parse(data.decode("utf-8"), True)
+    except (expat.ExpatError, UnicodeDecodeError) as exc:
+        raise ValueError(f"invalid UTF-8 source XML {path}: {exc}") from exc
+
+
+def load_design_spec(path: str, expected_sha256: str) -> DesignSpec:
+    """Load a pinned JSON design and verify all local XML source bytes."""
+    raw = read_pinned_file(path, expected_sha256, _MAX_SPEC_BYTES)
+    try:
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, RecursionError) as exc:
+        raise ValueError("design must be a UTF-8 JSON document") from exc
+    parse_design_spec(data)
+    remaining = _MAX_TOTAL_XML_BYTES
+
+    def load_asset(row):
+        nonlocal remaining
+        source, pin = row["path"], row["sha256"].lower()
+        payload = read_pinned_file(source, pin, min(_MAX_XML_BYTES, remaining))
+        _validate_source_xml(payload, source)
+        remaining -= len(payload)
+        return source, pin, payload
+
+    templates = MappingProxyType({
+        kind: PinnedAsset(*load_asset(row)) for kind, row in sorted(data["templates"].items())
+    })
+    libraries = tuple(
+        PinnedLibrary(*load_asset(row), name=row["name"])
+        for row in sorted(data["libraries"], key=lambda row: row["name"])
+    )
+    return DesignSpec(
+        version=data["version"], name=data["name"], units=data["units"],
+        templates=templates, libraries=libraries,
+        parts=_freeze(data["parts"], "parts"), schematic=_freeze(data["schematic"]),
+        board=_freeze(data["board"]), nets=_freeze(data["nets"], "nets"),
+        routing=_freeze(data["routing"]),
+    )

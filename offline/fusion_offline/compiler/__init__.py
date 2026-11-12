@@ -1,0 +1,6 @@
+"""Deterministic offline EAGLE compiler contracts."""
+
+SPEC_VERSION = 1
+COMPILER_CONTRACT_VERSION = 1
+ROUTER_CONTRACT_VERSION = 1
+MANIFEST_VERSION = 1
