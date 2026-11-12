@@ -2,6 +2,7 @@ import unittest
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from fusion_offline import design as D, router as R, route_all as RA
+from fusion_offline.routing_budget import RoutingBudget
 from fusion_mcp import server as S
 from fusion_mcp.session import Snapshot
 from test_offline import RouterTest
@@ -170,6 +171,23 @@ class MultilayerTest(unittest.TestCase):
     def test_unsupported_via_span_is_refused(self):
         with self.assertRaisesRegex(ValueError, 'Unsupported via'):
             R.route(board(), 'S', (5,10), (1,), (35,10), (2,), via_spans=[[1,2]])
+
+    def test_bounded_route_can_use_through_via_without_tracing_on_reference_plane(self):
+        root = board()
+        ET.SubElement(root.find('.//signal[@name="X"]'), 'wire',
+                      x1='2', y1='3', x2='38', y2='3', width='.5', layer='2')
+        result = R.route(root, 'S', (5.03, 10.07), (1,), (35.11, 10.02), (15,),
+                         layers=(1, 15, 16), via_spans=[(1, 16)], step=.254, budget=RoutingBudget())
+        self.assertEqual(result.problems, [])
+        self.assertTrue(result.vias)
+        self.assertEqual(result.via_extent, (1, 16))
+        self.assertNotIn(2, {layer for layer, _ in result.legs})
+        grid = R.Grid(root, 'S', .25, .2, .25, (5, 3), layers=(1, 15, 16))
+        self.assertTrue(grid.via_blocked[grid.ij(5, 3)])
+        forbidden = R.route(root, 'S', (5.03, 10.07), (1,), (35.11, 10.02), (15,),
+                            layers=(1, 15, 16), via_spans=[], step=.254, budget=RoutingBudget())
+        self.assertTrue(forbidden.problems)
+        self.assertFalse(forbidden.vias)
 
     def test_readback_verifies_native_inner_width_and_via_span(self):
         root = board()

@@ -101,6 +101,22 @@ class RestrictRectanglesTest(unittest.TestCase):
                 with self.assertRaises(UnverifiedGeometry):
                     board_obstacles(board(shape))
 
+    def test_inner_only_mask_blocks_a_crossing_and_a_through_via(self):
+        for shape in (rect(41, 'restrictlayers="2"'), native('restrictlayers="2"'),
+                      '<circle x="2" y="3" radius="1" width="0" layer="41" restrictlayers="2"/>'):
+            with self.subTest(shape=shape):
+                root = board(shape)
+                root.find('.//param[@name="layerSetup"]').set('value', '(1*2*15*16)')
+                obstacle, = board_obstacles(root)[0]
+                self.assertEqual(obstacle.layers, {2})
+                grid = Grid(root, 'N', .2, .1, .5, (0, 0), layers=(1, 16), window=(0, 0, 6, 6))
+                for copper in (1, 16):
+                    self.assertTrue(_seg_clear(grid, copper, (0, 3), (4, 3)))
+                self.assertTrue(grid.via_blocked[grid.ij(2, 3)])
+                grid = Grid(root, 'N', .2, .1, .5, (0, 0), layers=(1, 2, 15, 16), window=(0, 0, 6, 6))
+                self.assertFalse(_seg_clear(grid, 2, (0, 3), (4, 3)))
+                self.assertTrue(_seg_clear(grid, 15, (0, 3), (4, 3)))
+
     def test_invalid_shapes_fail_closed(self):
         invalid = [rect(extra='rot="R90"'), rect(extra='rot="MR0"'),
                    rect().replace('x2="3"', 'x2="1"'), rect().replace('x1="1"', 'x1="nan"'),
@@ -118,13 +134,14 @@ class RestrictRectanglesTest(unittest.TestCase):
         self.assertEqual(board_obstacles(board(native(layer=21)))[0], [])
         self.assertEqual(len(board_obstacles(board(rect(extra='rot="R0"')))[0]), 1)
 
-    def test_observed_outer_mask_cannot_be_assumed_to_describe_an_inner_layer(self):
-        for mask in ('16', '1,16', '16,1'):
-            with self.subTest(mask=mask):
-                root = board(native(f'restrictlayers="{mask}"'))
-                root.find('.//param[@name="layerSetup"]').set('value', '(1*2*16*64)')
-                with self.assertRaises(UnverifiedGeometry):
-                    board_obstacles(root)
+    def test_mask_uses_enabled_export_ids_and_mirrors_stack_positions(self):
+        root = board(native('restrictlayers="2,16"'), package=True)
+        root.find('.//param[@name="layerSetup"]').set('value', '(1*2*16*64)')
+        obstacle, = board_obstacles(root)[0]
+        self.assertEqual(obstacle.layers, {2, 16})
+        root.find('.//polygonshape').set('restrictlayers', '1,2')
+        obstacle, = board_obstacles(root)[0]
+        self.assertEqual(obstacle.layers, {16, 64})
 
     def test_coincident_native_outer_and_via_rectangles_preserve_each_restriction(self):
         trace = '<rectangle x1="90.04" y1="0" x2="97.96" y2="107" layer="41" restrictlayers="1,16"/>'

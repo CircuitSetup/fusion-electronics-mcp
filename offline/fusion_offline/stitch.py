@@ -161,16 +161,27 @@ def _restrict_polygon(polygon, stack, source_ref=None, transform=lambda x, y: (x
                 if segments_intersect(a, b, *edges[j]):
                     raise ValueError('restrict polygon intersects itself')
         layer = int(polygon.attrib['layer'])
+        layers = _restrict_layers(layer, stack, mirror, polygon.get("restrictlayers"))
     except (ValueError, KeyError, TypeError) as error:
         raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None
     center = tuple(sum(p[i] for p in points)/len(points) for i in (0, 1))
-    return Obstacle('polygon', None, False, (*center, points, half), _restrict_layers(layer, stack, mirror),
+    return Obstacle('polygon', None, False, (*center, points, half), layers,
                     restrict_layer=layer, source_ref=source_ref)
 
 
-def _restrict_layers(layer, stack, mirror=False):
+def _restrict_layers(layer, stack, mirror=False, mask=None):
     # An empty trace-layer set marks vRestrict: vias still check every obstacle.
-    return frozenset() if layer == 43 else frozenset({stack[0] if (layer == 41) != mirror else stack[-1]})
+    if mask is None:
+        layers = [] if layer == 43 else [stack[0] if layer == 41 else stack[-1]]
+    else:
+        if layer == 43 or not re.fullmatch(r"[1-9][0-9]*(?:,[1-9][0-9]*)*", mask):
+            raise ValueError("unsupported native restrictlayers mask")
+        layers = list(map(int, mask.split(",")))
+        if len(set(layers)) != len(layers) or not set(layers) <= set(stack):
+            raise ValueError("native restrictlayers mask must name distinct enabled copper layers")
+    if mirror:
+        layers = [stack[-1 - stack.index(layer)] for layer in layers]
+    return frozenset(layers)
 
 
 def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y), mirror=False, *, checkpoint=None):
@@ -203,16 +214,9 @@ def _restrict_shape(shape, stack, source_ref=None, transform=lambda x, y: (x, y)
                 ET.SubElement(polygon, 'vertex', vertex.attrib)
         obstacle = _restrict_polygon(polygon, stack, source_ref, transform, mirror, checkpoint=checkpoint)
         mask = shape.get('restrictlayers')
-        if mask is not None or shape.tag == 'polygonshape':
-            # shortcut: only observed outer-layer masks are verified; reject inner masks until their native mapping is established.
-            if mask not in ('1', '16', '1,16', '16,1') or shape.get('layer') == '43':
-                raise ValueError('unsupported or missing native restrictlayers mask')
-            layers = {int(layer) for layer in mask.split(',')}
-            if not layers <= {stack[0], stack[-1]}:
-                raise ValueError('unsupported or missing native restrictlayers mask')
-            if mirror:
-                layers = {stack[-1] if layer == stack[0] else stack[0] for layer in layers}
-            obstacle.layers = frozenset(layers)
+        if shape.tag == 'polygonshape' and mask is None and obstacle.restrict_layer != 43:
+            raise ValueError('missing native restrictlayers mask')
+        obstacle.layers = _restrict_layers(obstacle.restrict_layer, stack, mirror, mask)
         return obstacle
     except (ValueError, KeyError, TypeError) as error:
         raise UnverifiedGeometry(f'{source_ref or "board"}: unverified restrict geometry: {error}') from None
@@ -337,8 +341,12 @@ def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle
             checkpoint()
         if c.get("layer") in ("41", "42", "43") and _f(c, "width") == 0:
             layer = int(c.attrib["layer"])
+            try:
+                layers = _restrict_layers(layer, stack, mask=c.get("restrictlayers"))
+            except ValueError as error:
+                raise UnverifiedGeometry(f"board: unverified restrict circle: {error}") from None
             obs.append(Obstacle("circle", None, True, (_f(c, "x"), _f(c, "y"), _f(c, "radius")),
-                                _restrict_layers(layer, stack), restrict_layer=layer))
+                                layers, restrict_layer=layer))
     for shape in list(board.findall('./plain/rectangle')) + list(board.findall('./plain/polygonshape')):
         if checkpoint:
             checkpoint()

@@ -240,10 +240,10 @@ class RoutingBudgetTests(unittest.TestCase):
         self.assertEqual(result.rips, 0)
         self.assertIn(existing.attrib, [w.attrib for w in result.root.findall(".//signal[@name='X']/wire")])
 
-    def test_through_via_cannot_cross_an_excluded_inner_layer(self):
+    def test_via_span_policy_can_forbid_a_transition_around_a_wall(self):
         root = board(wall=True)
         ET.SubElement(root.find(".//designrules"), "param", name="layerSetup", value="(1*2*15*16)")
-        result = route(root, RoutingBudget(), layers=(1, 16))
+        result = route(root, RoutingBudget(), layers=(1, 16), via_spans=[])
         self.assertEqual(result.diagnostics.termination, "no_path")
         self.assertFalse(result.vias)
 

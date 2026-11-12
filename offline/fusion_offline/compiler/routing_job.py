@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 from ..design import parse_schematic_design
 from ..route_all import Conn, _commit, canonicalize_routed_signals, route_all
-from ..router import Route, copper_layers
+from ..router import Route, copper_layers, via_layers
 from ..routing_budget import RoutingBudget
 from . import ROUTER_CONTRACT_VERSION
 from .board import route_geometry, route_owners
@@ -136,12 +136,37 @@ def _request(base, board, selected_nets, prior):
         raise ValueError(f"cannot plan routing with unverified base geometry: {', '.join(blocked)}")
     root = ET.fromstring(board)
     document = root.find("./drawing/board")
-    pads = _pad_centres(document, parse_schematic_design(ET.fromstring(schematic)), copper_layers(root))
+    stack = copper_layers(root)
+    pads = _pad_centres(document, parse_schematic_design(ET.fromstring(schematic)), stack)
     widths = {node.get("number"): float(node.get("width", "0")) for node in document.findall("./classes/class")}
     classes = {node.get("name"): node.get("class", "0") for node in document.findall("./signals/signal")}
+    signals = {node.attrib["name"]: node for node in document.findall("./signals/signal")}
     connections = []
     for net in policy["selected_nets"]:
         groups = report["contact_components"].get(net, [])
+        allowed = policy["policies"].get(net, {}).get("allowed_layers", stack)
+        escapes = {}
+        if net in signals and set(allowed).intersection(stack[1:-1]):
+            for via in signals[net].findall("via"):
+                xy = tuple(float(via.attrib[axis]) for axis in ("x", "y"))
+                layers = tuple(layer for layer in via_layers(root, via) if layer in allowed)
+                if layers:
+                    escapes[xy] = layers
+        launches = {}
+        if escapes:
+            for wire in signals[net].findall("wire"):
+                layer = int(wire.attrib["layer"])
+                a, b = (tuple(float(wire.attrib[f"{axis}{end}"]) for axis in ("x", "y")) for end in (1, 2))
+                for start, end in ((a, b), (b, a)):
+                    if end in escapes:
+                        launches.setdefault((*start, layer), []).append((end, escapes[end]))
+
+        def launch(pad, toward):
+            connected = [via for point in pad for via in launches.get(point, ())]
+            if connected:
+                return min(connected, key=lambda row: (sum((a - b) ** 2 for a, b in zip(row[0], toward)), row))
+            return pad[0][:2], tuple(point[2] for point in pad)
+
         # One deterministic spanning path over proven copper components.
         for first, second in pairwise(groups):
             start, goal = min(
@@ -150,9 +175,10 @@ def _request(base, board, selected_nets, prior):
                     sum((a - b) ** 2 for a, b in zip(pads[edge[0]][0][:2], pads[edge[1]][0][:2])), edge,
                 ),
             )
-            source, target = pads[start], pads[goal]
-            conn = Conn(f"{net}:{canonical_digest([net, start, goal])}", net, source[0][:2],
-                        tuple(p[2] for p in source), target[0][:2], tuple(p[2] for p in target),
+            source, source_layers = launch(pads[start], pads[goal][0][:2])
+            target, target_layers = launch(pads[goal], source)
+            conn = Conn(f"{net}:{canonical_digest([net, start, goal])}", net, source,
+                        source_layers, target, target_layers,
                         widths[classes[net]] or 0.25, f"{'.'.join(start)} -> {'.'.join(goal)}")
             connections.append(conn)
     connections.sort(key=lambda conn: conn.id)

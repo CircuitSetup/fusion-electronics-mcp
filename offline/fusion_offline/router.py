@@ -464,7 +464,6 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     if checkpoint:
         layers = tuple(l for l in stack if l in layers)
         progress.layers = layers
-        vias = vias and layers == stack  # Through vias occupy every configured copper layer.
         start_layers = tuple(l for l in layers if l in start_layers)
     else:
         start_layers = tuple(l for l in start_layers if l in layers)

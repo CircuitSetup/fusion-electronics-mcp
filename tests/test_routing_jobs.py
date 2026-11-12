@@ -277,6 +277,36 @@ class RoutingJobsTest(unittest.TestCase):
         self.assertEqual(len(owners["old"]["geometry"]), 2)
         self.assertEqual(len(route_owners(ET.fromstring(raw), owners)), 3)
 
+    def test_routing_job_can_launch_on_an_existing_pad_escape(self):
+        spec = minimal_design()
+        for kind, row in spec["templates"].items():
+            root = ET.parse(row["path"]).getroot()
+            layers = root.find("./drawing/layers")
+            for number in (2, 15):
+                ET.SubElement(layers, "layer", number=str(number), name=f"Route{number}")
+            if kind == "board":
+                root.find(".//param[@name='layerSetup']").set("value", "(1*2*15*16)")
+            path = self.root / Path(row["path"]).name
+            raw = ET.tostring(root)
+            path.write_bytes(raw)
+            row.update(path=str(path), sha256=pin(raw))
+        net = next(net for net in spec["nets"] if net["name"] == "VCC")
+        net.update(wires=[{"x1": 14.05, "y1": 21, "x2": 12.6, "y2": 21, "layer": 1, "width": .18}],
+                   vias=[{"x": 12.6, "y": 21, "drill": .3, "extent": "1-16"}])
+        spec["routing"]["policies"]["VCC"] = {"allowed_layers": [1, 15, 16], "via_spans": [[1, 16]]}
+        source = self.root / "design.json"
+        raw = json.dumps(spec).encode()
+        source.write_bytes(raw)
+        base = compile_candidate(source, pin(raw), self.root / "base")
+        job = self.plan(base, ["VCC"])
+        conn, = json.loads(job.read_artifact("request"))["connections"]
+        self.assertEqual(conn["goal"], [12.6, 21.0])
+        self.assertEqual(conn["goal_layers"], [1, 15, 16])
+        candidate = self.promote(base, job)
+        self.assertEqual(json.loads(candidate.read_artifact("report"))["airwires_by_net"]["VCC"], 0)
+        self.assertFalse(ET.fromstring(candidate.read_artifact("board")).findall(
+            ".//signal[@name='VCC']/wire[@layer='2']"))
+
     def test_external_provenance_bounds_vias_per_connection(self):
         from fusion_offline.compiler.board import route_geometry
         from fusion_offline.compiler.validate import validate_candidate

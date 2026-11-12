@@ -128,7 +128,7 @@ def _checked_manifest(data):
         raise ValueError("candidate routing job and its artifacts must be present together")
     if data["candidate_id"] not in {
         _identity(data["inputs"], data["routing_job"], contract_version=version)
-        for version in (1, COMPILER_CONTRACT_VERSION)
+        for version in range(1, COMPILER_CONTRACT_VERSION + 1)
     }:
         raise ValueError("candidate identity does not match input pins")
     findings = data["findings"]

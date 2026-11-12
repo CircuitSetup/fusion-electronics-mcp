@@ -20,12 +20,36 @@ from fusion_offline.compiler.routing_job import (
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "compiler" / "e2e"
 
 
-def materialize_spec(directory, *, partial=False):
+def materialize_spec(directory, *, partial=False, inner_restrict=False):
     data = json.loads((FIXTURE / "design.json").read_bytes())
     for asset in (*data["templates"].values(), *data["libraries"]):
         asset["path"] = str((FIXTURE / asset["path"]).resolve())
     if partial:
         data["routing"]["policies"].update(json.loads((FIXTURE / "impossible-policy.json").read_bytes()))
+    if inner_restrict:
+        for kind, asset in data["templates"].items():
+            template = ET.parse(asset["path"]).getroot()
+            layers = template.find("./drawing/layers")
+            for layer in (2, 15):
+                ET.SubElement(layers, "layer", number=str(layer), name=f"Route{layer}",
+                              color="1", fill="1", visible="yes", active="yes")
+            if kind == "board":
+                template.find(".//param[@name='layerSetup']").set("value", "(1*2*15*16)")
+            raw = ET.tostring(template)
+            path = directory / Path(asset["path"]).name
+            path.write_bytes(raw)
+            asset.update(path=str(path), sha256=sha256(raw).hexdigest())
+        data["board"]["copper_layers"] = [1, 2, 15, 16]
+        # Two separate shapes let native read-back distinguish each inner layer.
+        data["board"]["keepouts"].extend([
+            {"layers": [2], "vertices": [[18, 12], [22, 12], [22, 16], [18, 16]]},
+            {"layers": [15], "vertices": [[26, 12], [29, 12], [29, 16], [26, 16]]},
+        ])
+        data["board"]["pours"].append({
+            "net": "N1", "layer": 2, "vertices": [[10.4, 7], [15.6, 7], [15.6, 9], [10.4, 9]],
+            "width": 0.25, "isolate": 0.4, "thermals": False, "orphans": True,
+        })
+        data["routing"]["policies"]["BRIDGE"] = {"allowed_layers": [1, 15, 16], "via_spans": [[1, 16]]}
     source = directory / "design.json"
     raw = json.dumps(data, sort_keys=True).encode()
     source.write_bytes(raw)
@@ -128,6 +152,28 @@ class CompilerEndToEndTest(unittest.TestCase):
         self.assertEqual(len(diagnostics), 7)
         self.assertEqual({row["termination"] for row in diagnostics.values()}, {"routed"})
         self.assert_budget(job, diagnostics)
+
+    def test_four_layer_round_trip_fixture_compiles_and_checks_both_masks(self):
+        from live.e2e_compiled_import import require_inner_restrict_round_trip
+
+        spec = materialize_spec(self.root, inner_restrict=True)
+        _, _, final = build_routed_fixture(self.root, spec)
+        board = final.read_artifact("board")
+        self.assertEqual(json.loads(final.read_artifact("report"))["airwires"], 0)
+        self.assertEqual(json.loads(final.read_artifact("summary"))["allowed_layer_violations"], [])
+        self.assertEqual(require_inner_restrict_round_trip(board, board), [
+            {"bounds": [18.0, 12.0, 22.0, 16.0], "layers": [2]},
+            {"bounds": [26.0, 12.0, 29.0, 16.0], "layers": [15]},
+        ])
+        changed = board.replace(b'restrictlayers="15"', b'restrictlayers="2"')
+        with self.assertRaisesRegex(RuntimeError, "inner copper restrictions"):
+            require_inner_restrict_round_trip(board, changed)
+        root = ET.fromstring(board)
+        shape = root.find(".//polygonshape[@restrictlayers='2']")
+        for contour in shape:
+            contour.remove(contour.findall("vertex")[1])
+        with self.assertRaisesRegex(RuntimeError, "inner copper restrictions"):
+            require_inner_restrict_round_trip(board, ET.tostring(root))
 
     def test_impossible_layer_policy_retains_a_bounded_partial_candidate(self):
         self.assertTrue((FIXTURE / "impossible-policy.json").is_file(), "Missing impossible routing policy")

@@ -196,7 +196,7 @@ class _Components:
             self.parents[self.root(point)] = root
 
 
-def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules):
+def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules, via_spans):
     """Return contact groups proved by pad centres, straight traces and through vias."""
     components = _Components()
     errors, unknown = [], []
@@ -232,7 +232,8 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
     for via, owner in zip(signal.vias, via_owners):
         point = via.x, via.y
         nodes = [(*point, layer) for layer in stack]
-        if (via.extent != f"{stack[0]}-{stack[-1]}" or not set(stack) <= allowed
+        if (via.extent != f"{stack[0]}-{stack[-1]}"
+                or via_spans is not None and (stack[0], stack[-1]) not in map(tuple, via_spans)
                 or via.drill <= 0 or via.diameter < 0
                 or not all(math.isfinite(n) for n in (*point, via.drill, via.diameter))):
             errors.append("unsupported or disallowed via extent or dimensions")
@@ -273,18 +274,26 @@ def _restricts_layer(restriction, layer, stack):
     return (restriction.restrict_layer, layer) in ((41, stack[0]), (42, stack[-1]))
 
 
-def _area_hits(points, half, other, *, closed=True):
+def _area_hits(points, half, other, *, closed=True, holes=()):
     """Test a closed polygon or straight stroke against a native restriction."""
     edges = list(pairwise((*points, points[0]) if closed else points))
     if other.kind == "circle":
         x, y, r = other.data
+        if any(_inside_poly(hole, x, y) and all(
+                _seg_dist(a, b, (x, y), (x, y)) > r + half
+                for a, b in pairwise((*hole, hole[0]))) for hole in holes):
+            return False
         return ((closed and _inside_poly(points, x, y))
                 or any(_seg_dist(a, b, (x, y), (x, y)) <= r + half for a, b in edges))
     polygon, margin = other.data[2:]
+    border = list(pairwise((*polygon, polygon[0])))
+    if any(_inside_poly(hole, *polygon[0]) and all(
+            _seg_dist(a, b, c, d) > half + margin for a, b in pairwise((*hole, hole[0])) for c, d in border
+    ) for hole in holes):
+        return False
     return (_inside_poly(polygon, *points[0])
             or (closed and _inside_poly(points, *polygon[0]))
-            or any(_seg_dist(a, b, c, d) <= half + margin for a, b in edges
-                   for c, d in zip(polygon, polygon[1:] + polygon[:1])))
+            or any(_seg_dist(a, b, c, d) <= half + margin for a, b in edges for c, d in border))
 
 
 def _copper_hits(copper, restriction):
@@ -326,16 +335,43 @@ def _pad_copper(root, board, rules, stack):
             if shape in ("long", "offset") and float(rules.get(elongation, "100")) != 100:
                 raise UnverifiedGeometry(f"{label}: unsupported design-rule pad elongation")
             diameters = annular_copper(
-                rules, "Pad", float(node.attrib["drill"]), float(node.get("diameter", "0")), inner=False,
+                rules, "Pad", float(node.attrib["drill"]), float(node.get("diameter", "0")), inner=len(stack) > 2,
             )
-            for layer, side in ((stack[0], "top"), (stack[-1], "bottom")):
+            for layer in stack:
+                side = "top" if layer == stack[0] else "bottom" if layer == stack[-1] else "inner"
                 # The existing pad polygons use the top ring. Cover larger side-specific rings.
                 scale = max(1, diameters[side] / pad.size)
                 points = [(pad.x + (x - pad.x) * scale, pad.y + (y - pad.y) * scale) for x, y in pad.poly]
                 yield label, layer, points
 
 
-def _keepouts(root, board, stack):
+def check_fill_keepouts(root, measured_fills, *, restrictions=None):
+    """Check measured fill contours against the restrictions on their export layers."""
+    if restrictions is None:
+        restrictions = [obstacle for obstacle in board_obstacles(root)[0] if obstacle.restrict_layer]
+    stack = parse_board_design(root).copper_layers
+    measured = set()
+    for fill in sorted(measured_fills, key=lambda row: (row["net"], row["layer"])):
+        name, layer = fill["net"], fill["layer"]
+        if layer not in stack:
+            raise UnverifiedGeometry(f"{name}: measured fill layer {layer} is absent from the exported stack")
+        applicable = [r for r in restrictions if _restricts_layer(r, layer, stack)]
+        if not applicable:
+            continue
+        rings = fill["rings"]
+        if fill.get("curved") or not rings or any(
+            len(ring) < 3 or any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in ring)
+            for ring in rings
+        ):
+            raise UnverifiedGeometry(f"{name}: unsupported measured fill contours on copper layer {layer}")
+        outer, *holes = rings
+        if any(_area_hits(outer, 0, restriction, holes=holes) for restriction in applicable):
+            raise ValueError(f"{name}: measured copper fill overlaps a keepout on copper layer {layer}")
+        measured.add((name, layer))
+    return measured
+
+
+def _keepouts(root, board, stack, measured_fills=None):
     obstacles, rules, _ = board_obstacles(root)
     restrictions = [obs for obs in obstacles if obs.restrict_layer]
     for container in [board.find("plain"), *board.findall("./libraries/library/packages/package")]:
@@ -365,16 +401,25 @@ def _keepouts(root, board, stack):
                 continue
             if _copper_hits(copper, restriction):
                 raise ValueError(f"{copper.net or 'unassigned pad'} overlaps restrict layer {restriction.restrict_layer}")
-    for polygon in board.findall("./signals/signal/polygon"):
-        layer = int(polygon.attrib["layer"])
-        region = _restrict_polygon(polygon, stack)
-        for restriction in restrictions:
-            if (_restricts_layer(restriction, layer, stack)
-                    and _area_hits(*region.data[2:], restriction)):
+    by_layer = {layer: [r for r in restrictions if _restricts_layer(r, layer, stack)] for layer in stack}
+    measured = check_fill_keepouts(root, measured_fills, restrictions=restrictions) if measured_fills else set()
+    outlines = Counter((s.attrib["name"], int(p.attrib["layer"])) for s in board.findall("./signals/signal")
+                       for p in s.findall("polygon") if p.get("pour") != "cutout")
+    for signal in board.findall("./signals/signal"):
+        for polygon in signal.findall("polygon"):
+            if polygon.get("pour") == "cutout":
+                continue
+            layer = int(polygon.attrib["layer"])
+            key = signal.get("name"), layer
+            if key in measured and outlines[key] == 1:
+                continue
+            region = _restrict_polygon(polygon, stack)
+            if any(_area_hits(*region.data[2:], r) for r in by_layer.get(layer, ())):
                 raise UnverifiedGeometry("polygon outline intersects a keepout; actual fill is unavailable")
 
 
-def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict, *, provenance=None) -> dict:
+def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict, *,
+                       provenance=None, measured_fills=None) -> dict:
     """Check paired bytes and return deterministic findings and physical contact groups."""
     _validate_source_xml(schematic_xml, "schematic")
     _validate_source_xml(board_xml, "board")
@@ -416,6 +461,8 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
         allowed = set(policy.get("allowed_layers", stack))
         if not allowed <= set(stack):
             routing_errors.append(f"{name}: policy names absent copper layers")
+        if any(tuple(span) != (stack[0], stack[-1]) for span in policy.get("via_spans", ())):
+            routing_errors.append(f"{name}: policy names an unsupported via span")
         limit = routing["budget"]["max_vias_per_connection"]
         xml_signal = next(s for s in board.findall("./signals/signal") if s.get("name") == name)
         if xml_signal.find("polygon") is not None:
@@ -426,7 +473,7 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             signal, pads, stack, allowed & set(stack),
             min(limit, policy.get("max_vias_per_connection", limit)),
             [owners.get((name, canonical_digest(route_geometry(via)))) for via in xml_signal.findall("via")],
-            outline, design.rules,
+            outline, design.rules, policy.get("via_spans"),
         )
         routing_errors.extend(f"{name}: {error}" for error in sorted(set(errors)))
         routing_unknown.extend(f"{name}: {reason}" for reason in sorted(set(unknown)))
@@ -434,7 +481,7 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
         "routing_geometry", "fail" if routing_errors else "unverified" if routing_unknown else "pass",
         "; ".join(routing_errors + routing_unknown),
     ))
-    findings.append(_check("keepouts", lambda: _keepouts(board_root, board, stack)))
+    findings.append(_check("keepouts", lambda: _keepouts(board_root, board, stack, measured_fills)))
     airwires_by_net = {name: max(0, len(contacts) - 1) for name, contacts in groups.items()}
     airwires = sum(airwires_by_net.values())
     pending_pours = sorted(name for name in poured if airwires_by_net[name])

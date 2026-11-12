@@ -237,7 +237,7 @@ class CompilerBoardTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "via budget"):
             self.build()
 
-    def test_refuses_unverified_inner_keepouts(self):
+    def test_serializes_inner_copper_keepouts_on_layer_41(self):
         def inner_layer(root):
             ET.SubElement(root.find("./drawing/layers"), "layer", number="2", name="Route2")
 
@@ -248,8 +248,21 @@ class CompilerBoardTest(unittest.TestCase):
         self.data["board"]["keepouts"] = [
             {"layers": [2], "vertices": [[0, 0], [5, 0], [5, 5]]},
         ]
-        with self.assertRaisesRegex(ValueError, "unsupported native restrict geometry"):
-            self.build(mutate_template=inner_board, mutate_schematic=inner_layer)
+        _, root, _ = self.build(mutate_template=inner_board, mutate_schematic=inner_layer)
+        shape = root.find(".//board/plain/polygonshape")
+        self.assertEqual(shape.attrib, {"layer": "41", "restrictlayers": "2"})
+        obstacle, = [obstacle for obstacle in board_obstacles(root)[0] if obstacle.restrict_layer]
+        self.assertEqual(obstacle.layers, {2})
+
+        def unified_board(root):
+            inner_board(root)
+            root.find("./drawing/layers/layer[@number='41']").set("name", "RestrictCopper")
+
+        self.data["board"]["keepouts"].append(
+            {"layers": [1, 16], "vertices": [[20, 0], [25, 0], [25, 5]]})
+        _, root, _ = self.build(mutate_template=unified_board, mutate_schematic=inner_layer)
+        self.assertEqual({node.get("restrictlayers") for node in root.findall(".//board/plain/polygonshape")},
+                         {"2", "1,16"})
 
     def test_rejects_schematic_connections_or_part_identity_that_differ_from_pinned_library(self):
         def change_connect(root):

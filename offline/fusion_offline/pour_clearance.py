@@ -31,24 +31,30 @@ def _pts(e):
     return [(float(v.get("x")), float(v.get("y"))) for v in e.iterfind("vertex")]
 
 
-def fills(root: ET.Element) -> list[dict]:
+def fills(root: ET.Element, *, measured_only=False) -> list[dict]:
     """Poured copper from a V2 board file: [{net, layer, rings: [[(x, y), ...], ...]}] (outer
     contours and holes alike: each ring is a copper edge). Empty when the file has no fill."""
     out = []
     for sig in root.iter("signal"):
         for pp in sig.iterfind("polygonpour"):
-            for sh in pp.iter("polygonshape"):
+            shapes = pp.findall("./polygonfilldetails//polygonshape") if measured_only else pp.iter("polygonshape")
+            for sh in shapes:
                 rings = []
                 c = sh.find("polygonoutlinesegments")
-                if c is None:
+                if c is None and not measured_only:
                     c = sh.find("polygonoutlineobjects")
-                if c is not None:
-                    rings.append(_pts(c))
+                if c is None:
+                    continue
+                rings.append(_pts(c))
                 rings += [_pts(h) for h in sh.iter("polygonholesegments")]
                 rings = [r for r in rings if len(r) >= 3]
                 if rings:
-                    out.append({"net": sig.get("name"), "layer": int(sh.get("layer") or pp.get("layer")),
-                                "rings": rings})
+                    fill = {"net": sig.get("name"), "layer": int(sh.get("layer") or pp.get("layer")), "rings": rings}
+                    contour_tags = {"polygonoutlinesegments", "polygonoutlineobjects", "polygonholesegments"}
+                    if any(float(v.get("curve", "0")) for contour in sh.iter() if contour.tag in contour_tags
+                           for v in contour.findall("vertex")):
+                        fill["curved"] = True
+                    out.append(fill)
     return out
 
 

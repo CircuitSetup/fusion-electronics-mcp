@@ -64,18 +64,22 @@ def _layer_violations(board, policy):
     violations = []
     for signal in board.findall("./drawing/board/signals/signal"):
         net = signal.attrib["name"]
-        allowed = set(policy["policies"].get(net, {}).get("allowed_layers", stack))
+        net_policy = policy["policies"].get(net, {})
+        allowed = set(net_policy.get("allowed_layers", stack))
+        through = min(stack), max(stack)
+        spans = net_policy.get("via_spans", [through])
         if allowed - stack:
             violations.append({"net": net, "geometry": "policy", "layers": sorted(allowed - stack)})
         for node in signal:
             if node.tag in ("wire", "polygon") and node.attrib["layer"] != "19":
-                layers = {int(node.attrib["layer"])}
+                disallowed = {int(node.attrib["layer"])} - (allowed & stack)
             elif node.tag == "via":
                 first, last = map(int, node.attrib["extent"].split("-"))
-                layers = {layer for layer in stack if first <= layer <= last} | {first, last}
+                disallowed = set()
+                if (first, last) != through or (first, last) not in map(tuple, spans):
+                    disallowed = {layer for layer in stack if first <= layer <= last} | {first, last}
             else:
                 continue
-            disallowed = layers - (allowed & stack)
             if disallowed:
                 violations.append({"net": net, "geometry": node.tag, "layers": sorted(disallowed)})
     return sorted(violations, key=lambda row: (row["net"], row["geometry"], row["layers"]))

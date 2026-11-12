@@ -40,6 +40,15 @@ ABOVE = ring(-1, 0.4, 11, 3, "polygonoutlinesegments")                    # fill
 
 
 class FillTest(unittest.TestCase):
+    def test_measured_contours_exclude_authored_outlines_and_mark_arcs(self):
+        root = v2([ABOVE.replace('x="-1" y="0.4"', 'x="-1" y="0.4" curve="10"', 1)], layer=303)
+        authored = ET.SubElement(root.find(".//polygonpour"), "polygonshape", layer="303")
+        authored.append(ET.fromstring(ABOVE))
+        rows = PCL.fills(root, measured_only=True)
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["curved"])
+        self.assertEqual(PCL.remap(rows, [1, 2, 303, 304], [1, 2, 15, 16])[0]["layer"], 15)
+
     def test_pour_above_the_trace(self):
         fill = PCL.fills(v2([ABOVE]))
         res = PCL.check(classic(), ["USB_P"], fill)

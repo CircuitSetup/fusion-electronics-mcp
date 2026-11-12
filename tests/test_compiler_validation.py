@@ -30,7 +30,7 @@ class CompilerValidationTest(unittest.TestCase):
         path.write_bytes(data)
         row.update(path=str(path), sha256=sha256(data).hexdigest())
 
-    def report(self, manifest, modify_board=None):
+    def report(self, manifest, modify_board=None, **options):
         from fusion_offline.compiler.validate import validate_candidate
 
         board = manifest.read_artifact("board")
@@ -39,7 +39,7 @@ class CompilerValidationTest(unittest.TestCase):
             modify_board(root)
             board = ET.tostring(root)
         return validate_candidate(manifest.read_artifact("schematic"), board,
-                                  json.loads(manifest.read_artifact("routing_intent")))
+                                  json.loads(manifest.read_artifact("routing_intent")), **options)
 
     def test_full_routing_counts_unconnected_contacts_without_layer_19_wires(self):
         self.data["routing"]["require_fully_routed"] = True
@@ -102,6 +102,31 @@ class CompilerValidationTest(unittest.TestCase):
         self.assertEqual(report["airwires_by_net"]["VCC"], 1)
         finding = next(row for row in report["findings"] if row["check"] == "full_routing")
         self.assertIn("Native fill connectivity required for VCC", finding["detail"])
+
+    def test_inner_keepout_checks_measured_fill_and_its_holes(self):
+        for row in self.data["templates"].values():
+            template = ET.parse(row["path"]).getroot()
+            ET.SubElement(template.find("./drawing/layers"), "layer", number="2", name="Route2")
+            setup = template.find(".//param[@name='layerSetup']")
+            if setup is not None:
+                setup.set("value", "(1*2*16)")
+            self.set_asset(row, template)
+        region = [(20, 4), (24, 4), (24, 8), (20, 8)]
+        self.data["board"]["keepouts"] = [{"layers": [2], "vertices": region}]
+        outer = [(17, 2), (29, 2), (29, 11), (17, 11)]
+        hole = [(19, 3), (25, 3), (25, 9), (19, 9)]
+        self.data["board"]["pours"] = [{"net": "GND", "layer": 2, "vertices": outer, "width": 0.2}]
+        candidate = self.compile()
+        for fills, expected in (
+            (None, "unverified"),
+            ([{"net": "GND", "layer": 1, "rings": [outer]}], "unverified"),
+            ([{"net": "GND", "layer": 2, "rings": [outer]}], "fail"),
+            ([{"net": "GND", "layer": 2, "rings": [outer, hole]}], "pass"),
+        ):
+            with self.subTest(fills=fills):
+                report = self.report(candidate, measured_fills=fills)
+                finding = next(row for row in report["findings"] if row["check"] == "keepouts")
+                self.assertEqual(finding["status"], expected, finding)
 
     def test_contactrefs_require_exact_pad_names_and_unique_signals(self):
         candidate = self.compile()

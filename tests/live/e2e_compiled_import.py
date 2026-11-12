@@ -10,6 +10,7 @@ family remains saved and open. The report and exports are retained under
 import argparse
 from collections import Counter
 from contextlib import contextmanager
+from functools import partial
 from hashlib import sha256
 import json
 from math import isfinite
@@ -235,7 +236,60 @@ def native_check(server, kind, command, saved):
     return {"command": result, "findings": findings}
 
 
-def run_acceptance(server, report, build, materialize):
+def require_inner_restrict_round_trip(candidate, exported):
+    from fusion_offline.design import parse_board_design
+    from fusion_offline.stitch import board_obstacles
+
+    def restrictions(raw):
+        root = ET.fromstring(raw)
+        stack = parse_board_design(root).copper_layers
+        inner = set(stack[1:-1])
+        shapes = []
+        for obs in board_obstacles(root)[0]:
+            if not (obs.restrict_layer and obs.layers and inner.intersection(obs.layers)):
+                continue
+            require(obs.kind == "polygon", "Unexpected inner copper restriction shape")
+            vertices, half = obs.data[2:]
+            vertices = tuple((round(x, 4), round(y, 4)) for x, y in vertices)
+            start = vertices.index(min(vertices))
+            vertices = vertices[start:] + vertices[:start]
+            vertices = min(vertices, vertices[:1] + vertices[:0:-1])
+            shapes.append((tuple(round(x, 4) for x in obs.bounds), tuple(sorted(obs.layers)),
+                           vertices, round(half, 4)))
+        return stack, sorted(shapes)
+
+    expected_stack, expected = restrictions(candidate)
+    actual_stack, actual = restrictions(exported)
+    require(len(expected_stack) == 4 and actual_stack == expected_stack and len(expected) >= 2 and actual == expected,
+            f"Reopened inner copper restrictions differ: expected {expected}, got {actual}")
+    return [{"bounds": list(bounds), "layers": list(layers)} for bounds, layers, _, _ in actual]
+
+
+def require_inner_fill_keepouts(server, saved, exported, measurement):
+    from fusion_offline.compiler.validate import check_fill_keepouts
+    from fusion_offline.design import parse_board_design, read_xml
+    from fusion_offline.pour_clearance import fills, remap
+    from fusion_offline.stackup import parse_stackup
+
+    doc = active_member(server, "board", saved)
+    working = server.session.bridge.call("design_rules", timeout=60)
+    verify_active(server, "board", doc, "measured keepout fill")
+    require(working["board"] == doc["name"], "Working copy belongs to a different board")
+    native_stack = parse_stackup(working["xml"])
+    board = read_xml(exported)
+    stack = parse_board_design(board).copper_layers
+    require(native_stack is not None and len(native_stack.copper) == len(stack),
+            "Cannot map Fusion working-copy fill layers")
+    native_ids = [layer.number for layer in native_stack.copper]
+    rows = remap(fills(read_xml(working["path"]), measured_only=True), native_ids, stack)
+    expected = {(row["net"], row["layer"]) for row in measurement["fills"] if row["layer"] in stack[1:-1]}
+    observed = check_fill_keepouts(board, rows)
+    require(expected and expected <= observed, "Missing measured inner-layer fill contours")
+    return {"source": "Fusion saved working-copy contours", "modified": working["modified"],
+            "checked": [{"net": net, "layer": layer} for net, layer in sorted(expected)]}
+
+
+def run_acceptance(server, report, build, materialize, *, inner_restrict=False):
     from fusion_offline.drc import summarize
 
     project_id, name = report.data["project_id"], report.data["name"]
@@ -286,6 +340,8 @@ def run_acceptance(server, report, build, materialize):
             comparison["expected"] = pair_signatures(candidate.read_artifact("schematic"), candidate_board)
             comparison["exported"] = pair_signatures(actual["schematic"], actual["board"])
             comparison["matches"] = comparison["expected"] == comparison["exported"]
+            if inner_restrict:
+                comparison["inner_restrict"] = require_inner_restrict_round_trip(candidate_board, actual["board"])
             comparison["raw_export_layer_19_spans"] = len(
                 ET.fromstring(actual["board"]).findall(".//signal/wire[@layer='19']")
             )
@@ -293,6 +349,9 @@ def run_acceptance(server, report, build, materialize):
             erc.update(native_check(server, "schematic", "ERC;", saved))
         with report.phase("native_repour_airwires") as repour:
             native_repour(server, saved, report.data["request_id"], repour)
+            if inner_restrict:
+                repour["inner_fill_keepouts"] = require_inner_fill_keepouts(server, saved, actual["board"],
+                                                                          repour["measurement"])
         with report.phase("native_drc") as drc:
             drc.update(native_check(server, "board", "DRC;", saved))
             drc["summary"] = summarize(drc["findings"]["errors"])
@@ -314,6 +373,7 @@ def main(argv=None):
     parser.add_argument("--disposable-project-id", required=True, help="Explicit ID of a disposable Fusion project")
     parser.add_argument("--name", required=True, help="New Fusion product name in the disposable project root")
     parser.add_argument("--artifacts", type=Path, help="New directory for the acceptance report and exports")
+    parser.add_argument("--inner-restrict", action="store_true", help="Use the four-layer restriction fixture")
     args = parser.parse_args(argv)
     if not args.disposable_project_id.strip() or not args.name.strip():
         parser.error("The disposable project ID and destination name must be nonempty")
@@ -333,7 +393,8 @@ def main(argv=None):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from test_compiler_e2e import build_routed_fixture, materialize_spec
 
-        run_acceptance(server, report, build_routed_fixture, materialize_spec)
+        run_acceptance(server, report, build_routed_fixture,
+                       partial(materialize_spec, inner_restrict=args.inner_restrict), inner_restrict=args.inner_restrict)
         report.data["status"] = "pass"
     except Exception as error:
         if report.data["status"] == "running":

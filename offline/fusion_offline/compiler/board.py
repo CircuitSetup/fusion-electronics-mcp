@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from ..annular import copper as annular_copper
 from ..design import parse_board_design, parse_schematic_design, transform
 from ..junctions import canonicalize_signal
-from ..stitch import _inside_poly, _restrict_polygon, segments_intersect
+from ..stitch import _inside_poly, _restrict_polygon, _restrict_shape, segments_intersect
 from ..symbols import Geo, symbol_prims
 from .canonical import canonical_digest, eagle_xml_bytes
 from .libraries import ResolvedLibraries
@@ -63,9 +63,24 @@ def _emit_plain(plain, board, stack, layers):
         _append(plain, "hole", hole)
     restrict = {stack[0]: (41, "tRestrict"), stack[-1]: (42, "bRestrict")}
     for keepout in board["keepouts"]:
+        selected = keepout["layers"]
+        if not set(selected) <= set(stack):
+            raise ValueError("keepout names an absent copper layer")
+        if not set(selected) <= restrict.keys() or layers.get(41) == "RestrictCopper":
+            if 41 not in layers:
+                raise ValueError("board template must declare RestrictCopper (layer 41)")
+            vertices = keepout["vertices"]
+            vertices = vertices[:-1] if vertices[0] == vertices[-1] else vertices
+            shape = ET.SubElement(plain, "polygonshape", layer="41",
+                                  restrictlayers=",".join(map(str, selected)))
+            for tag, points in (("polygonoutlineobjects", vertices),
+                                ("polygonoutlinesegments", vertices + vertices[:1])):
+                contour = ET.SubElement(shape, tag)
+                for x, y in points:
+                    _append(contour, "vertex", {"x": x, "y": y})
+            _restrict_shape(shape, stack)
+            continue
         for layer in keepout["layers"]:
-            if layer not in restrict:
-                raise ValueError(f"unsupported native restrict geometry for copper layer {layer}")
             number, name = restrict[layer]
             if layers.get(number) != name:
                 raise ValueError(f"board template must declare the {name} layer")
@@ -200,8 +215,8 @@ def _emit_preroute(signal, net, stack, routing, contact_centres, rules):
     for via in vias:
         if via["extent"] != f"{stack[0]}-{stack[-1]}":
             raise ValueError(f"{name}: unsupported via span {via['extent']}")
-        if not set(stack) <= allowed:
-            raise ValueError(f"{name}: via span includes a disallowed copper layer")
+        if policy.get("via_spans") is not None and (stack[0], stack[-1]) not in policy["via_spans"]:
+            raise ValueError(f"{name}: through vias are disallowed by policy")
         xy = via["x"], via["y"]
         if xy in via_points:
             raise ValueError(f"{name}: duplicate via")
@@ -301,6 +316,9 @@ def build_board(
     if len(elements) or len(signals) or document.find(".//moduleinst") is not None:
         raise ValueError("board template must be empty and flat")
     stack, layers = _check_stack(root, sch_root, spec.board.get("copper_layers"))
+    for name, policy in spec.routing["policies"].items():
+        if any(span != (stack[0], stack[-1]) for span in policy.get("via_spans", ())):
+            raise ValueError(f"{name}: unsupported via span; only full-stack through vias are supported")
     rules = _via_rules(document)
 
     copper_layers = {str(layer) for layer in stack}

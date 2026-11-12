@@ -100,6 +100,16 @@ selected same-net traces at tees so every branch ends at the same emitted point.
 the via center. The board template supplies fabrication rules such as `rvViaOuter`,
 `rlMinViaOuter` and `rlMaxViaOuter`. The compiler writes the 25%, 8 mil and 20 mil defaults
 respectively when the template omits them.
+Per-net `allowed_layers` limits traces. Set `via_spans` to the full-stack endpoint pair
+(for example, `[[1,16]]`), or to `[]` to forbid through vias. Through vias check clearance on
+every layer they cross, including any reserved reference plane. A pre-routed pad-to-via escape
+can serve as the launch point for an inner-layer routing job.
+
+`board.keepouts[].layers` accepts enabled copper export IDs, including inner layers.
+The compiler emits a layer-41 RestrictCopper mask for a keepout that includes inner copper.
+Layer 43 remains a separate via-only restriction. If a pour outline crosses a copper keepout,
+offline candidate validation reports it as unverified. Guarded import requires that check to
+pass. The four-layer harness checks saved Fusion contours separately on its disposable fixture.
 The job records the selected connections, the proposed board, diagnostics and a review preview,
 including useful results when some connections stop early. Inspect termination reasons, attempted
 layers, via usage and reported blockers before changing your constraints. Planning with the same
@@ -182,5 +192,9 @@ to save the report and exports under a new directory.
 ```text
 python tests/live/e2e_compiled_import.py --disposable-project-id ID --name NEW_PRODUCT
 ```
+
+Add `--inner-restrict` to run the four-layer fixture and compare the two inner-layer restrictions
+after native reopen and export. The report distinguishes saved working-copy contour checks from
+live post-repour measurements.
 
 Live acceptance is pending an explicit disposable project ID and new product name.

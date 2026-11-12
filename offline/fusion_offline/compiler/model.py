@@ -353,11 +353,19 @@ def _routing(routing, nets, *, board_nets):
         _identifier(name, "policy net")
         if name not in nets:
             raise ValueError(f"policy refers to undeclared net {name}")
-        _object(policy, "policy", "", "allowed_layers max_vias_per_connection")
+        _object(policy, "policy", "", "allowed_layers max_vias_per_connection via_spans")
         if "allowed_layers" in policy:
             _layers(policy["allowed_layers"])
         if "max_vias_per_connection" in policy:
             _budget_value("max_vias_per_connection", policy["max_vias_per_connection"])
+        if "via_spans" in policy:
+            spans = _list(policy["via_spans"], "via_spans")
+            if len(spans) > 1:
+                raise ValueError("via_spans must be empty or contain one increasing layer pair")
+            for span in spans:
+                _layers(span)
+                if len(span) != 2 or span[0] >= span[1]:
+                    raise ValueError("via_spans must be empty or contain one increasing layer pair")
     budget = routing["budget"]
     _object(budget, "budget", "", " ".join(ROUTING_BUDGET_MAXIMUMS))
     for field, value in budget.items():
