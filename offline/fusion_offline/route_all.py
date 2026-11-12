@@ -172,7 +172,7 @@ def _bounded_route_all(root, conns, vias, rip_cost, policies, priorities, job, p
                             _progress=state, _tap_exclude=lambda check: _not_joined(work, c, check), **kw)
 
         route = search()
-        if route.diagnostics.termination in ("no_path", "max_vias") and state.can_attempt:
+        if route.diagnostics.termination in ("no_path", "max_vias"):
             laid = {i for i in res.routes if by_id[i].net != c.net}
             if laid and rip_rounds[c.id] < job.budget.ripup_rounds:
                 rip_rounds[c.id] += 1

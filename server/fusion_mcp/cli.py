@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import sys
+from xml.etree.ElementTree import ParseError
 
 from . import PROJECT_URL, __version__
 
@@ -148,6 +149,118 @@ def list_tools() -> int:
     return 0
 
 
+_COMPILER_COMMANDS = {
+    "compile-candidate": "compile a pinned design specification",
+    "route-candidate": "plan routing or promote a pinned routing job",
+    "render-candidate": "locate the verified review page",
+    "validate-candidate": "read the pinned validation report",
+}
+_COMPILER_EXIT_CODES = {
+    "pass": 0, "invalid_input": 2, "fail": 3, "unverified": 3, "partial": 4, "internal_error": 5,
+}
+_COMPILER_EXIT_HELP = (
+    "Exit codes: 0 pass, 2 invalid input, 3 failed or unverified, "
+    "4 budget-limited partial routing, 5 internal error."
+)
+_ROUTING_LIMITS = {"node_limit", "attempt_limit", "time_limit", "job_deadline", "max_vias"}
+
+
+def _compiler_parsers(sub):
+    for command, description in _COMPILER_COMMANDS.items():
+        parser = sub.add_parser(command, help=description, description=description,
+                                epilog=_COMPILER_EXIT_HELP)
+        source = "spec" if command == "compile-candidate" else "manifest"
+        parser.add_argument(f"--{source}", required=True, help="absolute local input path")
+        parser.add_argument(f"--{source}-sha256", required=True, help="exact SHA-256 of the input file")
+        if command in ("compile-candidate", "route-candidate"):
+            parser.add_argument("--output-directory", required=command == "compile-candidate",
+                                help="output location (required for promotion)")
+        if command == "route-candidate":
+            parser.add_argument("--net", action="append", help="select a net for planning (repeatable)")
+            parser.add_argument("--job-manifest", help="absolute local routing job manifest path for promotion")
+            parser.add_argument("--job-manifest-sha256", help="exact SHA-256 of the routing job manifest")
+
+
+def _compiler_result(handle, status):
+    preview = handle.path.parent / handle.data["artifacts"]["preview"]["path"]
+    return {"manifest_path": str(handle.path), "manifest_sha256": handle.sha256,
+            "status": status, "preview_path": str(preview)}
+
+
+def _routing_status(diagnostics):
+    terminations = {row["termination"] for row in diagnostics.values()}
+    if terminations & _ROUTING_LIMITS:
+        return "partial"
+    return "fail" if terminations - {"routed"} else "pass"
+
+
+def _run_compiler(args):
+    try:
+        from fusion_offline.compiler.compile import compile_candidate
+        from fusion_offline.compiler.manifest import load_candidate_manifest
+        from fusion_offline.compiler.render import render_candidate
+        from fusion_offline.compiler.routing_job import plan_routing_job, promote_routing_job
+
+        if args.cmd == "compile-candidate":
+            candidate = compile_candidate(args.spec, args.spec_sha256, args.output_directory)
+        elif args.cmd == "route-candidate":
+            if args.job_manifest is not None or args.job_manifest_sha256 is not None:
+                if not (args.job_manifest and args.job_manifest_sha256 and args.output_directory) or args.net:
+                    raise ValueError("promotion requires --job-manifest, --job-manifest-sha256 and "
+                                     "--output-directory, and cannot use --net")
+                candidate = promote_routing_job(
+                    args.manifest, args.manifest_sha256, args.job_manifest,
+                    args.job_manifest_sha256, args.output_directory,
+                )
+            else:
+                job = plan_routing_job(args.manifest, args.manifest_sha256, args.net,
+                                       output_directory=args.output_directory)
+                diagnostics = json.loads(job.read_artifact("diagnostics"))
+                result = _compiler_result(job, _routing_status(diagnostics))
+                return _emit_compiler_result(dict(result, diagnostics=diagnostics))
+        elif args.cmd == "render-candidate":
+            candidate = render_candidate(args.manifest, args.manifest_sha256)
+        else:
+            candidate = load_candidate_manifest(args.manifest, args.manifest_sha256)
+
+        data = candidate.data
+        result = _compiler_result(candidate, data["status"])
+        if args.cmd == "validate-candidate":
+            result["report"] = json.loads(candidate.read_artifact("report"))
+
+        if data["routing_job"]:
+            diagnostics = json.loads(candidate.read_artifact("routing_diagnostics"))
+            routing_status = _routing_status(diagnostics)
+            result.update(routing_status=routing_status, diagnostics=diagnostics)
+            blocked_checks = {row["check"] for row in data["findings"]
+                              if row["required"] and row["status"] != "pass"}
+            if routing_status == "partial" and blocked_checks == {"full_routing"}:
+                result["status"] = "partial"
+
+        if data["status"] != "pass":
+            result["findings"] = data["findings"]
+    except (ValueError, ParseError, FileNotFoundError, FileExistsError, NotADirectoryError,
+            IsADirectoryError, PermissionError) as error:
+        result = {"status": "invalid_input", "error": str(error)}
+    except Exception as error:
+        result = {"status": "internal_error", "error": f"{type(error).__name__}: {error}"}
+    return _emit_compiler_result(result)
+
+
+def _emit_compiler_result(result):
+    status = result["status"]
+    if status != "pass":
+        print(result.get("error") or f"Offline compiler outcome: {status}", file=sys.stderr)
+        for finding in result.get("findings", ()):
+            if finding["required"] and finding["status"] != "pass":
+                print(f"{finding['check']}: {finding['detail']}", file=sys.stderr)
+        for connection, row in result.get("diagnostics", {}).items():
+            if row["termination"] != "routed":
+                print(f"{connection}: {row['termination']}", file=sys.stderr)
+    print(json.dumps(result))
+    return _COMPILER_EXIT_CODES[status]
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="fusion-electronics-mcp",
                                 description="MCP server for Autodesk Fusion Electronics.")
@@ -159,7 +272,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("doctor", help="check the setup")
     sub.add_parser("tools", help="list the MCP tools")
     sub.add_parser("serve", help="run the MCP server on stdio (the default)")
-    args = p.parse_args(argv)
+    _compiler_parsers(sub)
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        args = p.parse_args(argv)
+    except SystemExit as error:
+        if error.code != 2 or not argv or argv[0] not in _COMPILER_COMMANDS:
+            raise
+        print(json.dumps({"status": "invalid_input"}))
+        return _COMPILER_EXIT_CODES["invalid_input"]
+    if args.cmd in _COMPILER_COMMANDS:
+        return _run_compiler(args)
     if args.cmd == "install-addin":
         return install_addin(args.link, args.force)
     if args.cmd == "doctor":

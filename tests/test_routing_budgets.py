@@ -124,6 +124,7 @@ class RoutingBudgetTests(unittest.TestCase):
                               policies={"S": {"allowed_layers": (1,)}}, priorities={"X": 1})
         self.assertEqual(set(result.routes), {"x", "z"})
         self.assertEqual(result.diagnostics["s"].attempts, 1)
+        self.assertEqual(result.diagnostics["s"].termination, "attempt_limit")
         self.assertEqual(ET.tostring(root), original)
 
     def test_ripup_counts_attempts_for_both_connections(self):

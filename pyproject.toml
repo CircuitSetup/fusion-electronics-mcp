@@ -17,7 +17,7 @@ render = ["matplotlib>=3.8"]
 documents = ["PyMuPDF>=1.24"]
 
 [project.scripts]
-fusion-electronics-mcp = "fusion_mcp.server:main"
+fusion-electronics-mcp = "fusion_mcp.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/groundplane-studio/fusion-electronics-mcp"
