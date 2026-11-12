@@ -1,0 +1,199 @@
+{
+  "version": 1,
+  "name": "led-switch",
+  "units": "mm",
+  "templates": {
+    "schematic": {
+      "path": "/compiler-fixtures/minimal/empty.sch",
+      "sha256": "4a2fa9eabd025e833d821b44f7bd2b08f45a9ad1db003c041a6540b76ad6eaa0"
+    },
+    "board": {
+      "path": "/compiler-fixtures/minimal/empty.brd",
+      "sha256": "073df9cdfaf3f8914d3c2cd9c453fa95aed37d14bfe871e3c60f8bcfdfdafc42"
+    }
+  },
+  "libraries": [
+    {
+      "name": "PROJECT",
+      "path": "/compiler-fixtures/minimal/project.lbr",
+      "sha256": "3709692dcdf34af845f85821e0fbc703251c6aacdc4265d84007296bef85a06d"
+    }
+  ],
+  "parts": [
+    {
+      "ref": "J1",
+      "library": "PROJECT",
+      "deviceset": "HEADER3",
+      "device": "",
+      "technology": "",
+      "value": "Power and control",
+      "attributes": {
+        "MPN": "TEST-HEADER3"
+      },
+      "units": [
+        {"gate":"G$1","sheet":1,"x":5.08,"y":27.94,"rotation":0}
+      ],
+      "board": {
+        "x": 4,
+        "y": 10,
+        "rotation": 0,
+        "side": "top",
+        "fixed": true
+      }
+    },
+    {
+      "ref": "R1",
+      "library": "PROJECT",
+      "deviceset": "RESISTOR",
+      "device": "",
+      "technology": "",
+      "value": "330R",
+      "attributes": {
+        "MPN": "TEST-RESISTOR"
+      },
+      "units": [
+        {"gate":"G$1","sheet":1,"x":22.86,"y":30.48,"rotation":0}
+      ],
+      "board": {
+        "x": 15,
+        "y": 21,
+        "rotation": 0,
+        "side": "top",
+        "fixed": false
+      }
+    },
+    {
+      "ref": "D1",
+      "library": "PROJECT",
+      "deviceset": "LED",
+      "device": "",
+      "technology": "",
+      "value": "RED",
+      "attributes": {
+        "MPN": "TEST-LED"
+      },
+      "units": [
+        {"gate":"G$1","sheet":1,"x":43.18,"y":30.48,"rotation":0}
+      ],
+      "board": {
+        "x": 24,
+        "y": 21,
+        "rotation": 0,
+        "side": "top",
+        "fixed": false
+      }
+    },
+    {
+      "ref": "Q1",
+      "library": "PROJECT",
+      "deviceset": "NPN",
+      "device": "",
+      "technology": "",
+      "value": "NPN",
+      "attributes": {
+        "MPN": "TEST-NPN"
+      },
+      "units": [
+        {"gate":"G$1","sheet":1,"x":60.96,"y":17.78,"rotation":0}
+      ],
+      "board": {
+        "x": 29,
+        "y": 11,
+        "rotation": 0,
+        "side": "top",
+        "fixed": false
+      }
+    }
+  ],
+  "schematic": {
+    "sheets": [
+      {
+        "number": 1,
+        "description": "LED switch"
+      }
+    ]
+  },
+  "board": {
+    "outline": [
+      [
+        0,
+        0
+      ],
+      [
+        40,
+        0
+      ],
+      [
+        40,
+        30
+      ],
+      [
+        0,
+        30
+      ]
+    ],
+    "holes": [],
+    "keepouts": [],
+    "placements": [],
+    "net_classes": [],
+    "pours": []
+  },
+  "nets": [
+    {
+      "name": "VCC",
+      "class": "default",
+      "pins": [
+        {"part":"J1","gate":"G$1","pin":"1"},
+        {"part":"R1","gate":"G$1","pin":"P$1"}
+      ],
+      "schematic_style": "wired",
+      "route": true
+    },
+    {
+      "name": "LED_A",
+      "class": "default",
+      "pins": [
+        {"part":"R1","gate":"G$1","pin":"P$2"},
+        {"part":"D1","gate":"G$1","pin":"A"}
+      ],
+      "schematic_style": "wired",
+      "route": true
+    },
+    {
+      "name": "LED_K",
+      "class": "default",
+      "pins": [
+        {"part":"D1","gate":"G$1","pin":"K"},
+        {"part":"Q1","gate":"G$1","pin":"C"}
+      ],
+      "schematic_style": "wired",
+      "route": true
+    },
+    {
+      "name": "CTRL",
+      "class": "default",
+      "pins": [
+        {"part":"J1","gate":"G$1","pin":"3"},
+        {"part":"Q1","gate":"G$1","pin":"B"}
+      ],
+      "schematic_style": "wired",
+      "route": true
+    },
+    {
+      "name": "GND",
+      "class": "default",
+      "pins": [
+        {"part":"J1","gate":"G$1","pin":"2"},
+        {"part":"Q1","gate":"G$1","pin":"E"}
+      ],
+      "schematic_style": "wired",
+      "route": true
+    }
+  ],
+  "routing": {
+    "selected_nets": [],
+    "protected_nets": [],
+    "policies": {},
+    "budget": {}
+  }
+}
