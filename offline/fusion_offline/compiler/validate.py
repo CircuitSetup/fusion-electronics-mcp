@@ -344,7 +344,8 @@ def _pad_copper(root, board, rules, stack):
                 raise UnverifiedGeometry(f"{label}: unsupported copper pad shape {shape}")
             if any(rules.get(rule, "-1") != "-1" for rule in ("psTop", "psBottom", "psFirst")):
                 raise UnverifiedGeometry(f"{label}: unsupported design-rule pad shape override")
-            if shape in ("long", "offset") and float(rules.get("psElongationLong", "100")) != 100:
+            elongation = "psElongationOffset" if shape == "offset" else "psElongationLong"
+            if shape in ("long", "offset") and float(rules.get(elongation, "100")) != 100:
                 raise UnverifiedGeometry(f"{label}: unsupported design-rule pad elongation")
             diameters = annular_copper(
                 rules, "Pad", float(node.attrib["drill"]), float(node.get("diameter", "0")), inner=False,

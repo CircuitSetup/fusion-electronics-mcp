@@ -99,6 +99,16 @@ class SchematicWiringTest(unittest.TestCase):
             for w in seg.findall('wire'): seg.remove(w)
         self.assertNotEqual(P.electrical(ET.tostring(root)), P.electrical(ET.tostring(altered)))
 
+    def test_existing_labels_are_a_noop_even_with_unrelated_curved_wires(self):
+        op = connect(('R1', 'P$2'), ('R2', 'P$1'), style='labels')
+        root = self.simulate(drawing(), op)
+        net = ET.SubElement(root.find('.//sheet/nets'), 'net', name='OTHER', **{'class': '0'})
+        segment = ET.SubElement(net, 'segment')
+        ET.SubElement(segment, 'wire', x1='80', y1='40', x2='90', y2='40',
+                      width='0', layer='91', curve='90')
+        before = ET.tostring(root)
+        self.assertEqual(ET.tostring(self.simulate(root, op)), before)
+
     def test_labels_remain_an_explicit_compatibility_style(self):
         root = self.simulate(drawing(), connect(('R1', 'P$2'), ('R2', 'P$1'), style='labels'))
         self.assertFalse(reachable(root, (10.16, 0), (40.64, 0)))

@@ -25,7 +25,7 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from .routing_budget import MAX_SEARCH_STATES, BudgetStop, RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
-from .stitch import Obstacle, _mm, board_obstacles, outline_vertices
+from .stitch import Obstacle, _mm, board_obstacles, outline_vertices, segments_intersect
 
 DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
 
@@ -182,14 +182,16 @@ class Grid:
         self.own = [o for o in obs if o.net == net and near(o)]
         if checkpoint:
             checkpoint()
-            progress.blockers = _candidate_blockers(self.other, (bx0, by0, bx1, by1), layers, checkpoint)
+            progress.blockers = _candidate_blockers(self.other, (bx0, by0, bx1, by1), layers, checkpoint, via_states > 1)
         self.X = self.x0 + np.arange(self.nx) * step
         self.Y = self.y0 + np.arange(self.ny) * step
         XX, YY = np.meshgrid(self.X, self.Y, indexing="ij")
         # board edge: copper keeps the edge-clearance rule from the outline
+        self.outline_polygon = []
         if outline:
             poly = (outline_vertices(outline, checkpoint=checkpoint) if checkpoint and len(outline) >= 3
                     else [(s[0], s[1]) for s in outline])
+            self.outline_polygon = poly
             inside = _in_poly(poly, XX, YY, checkpoint) if len(poly) >= 3 else np.ones(XX.shape, bool)
             edist = np.full(XX.shape, np.inf)
             for s in outline:
@@ -351,11 +353,12 @@ def _seg_dist(x, y, s):
     return math.hypot(x - (x1 + t * vx), y - (y1 + t * vy))
 
 
-def _candidate_blockers(obstacles, window, layers, checkpoint):
+def _candidate_blockers(obstacles, window, layers, checkpoint, vias):
     groups = {}
     for o in obstacles:
         checkpoint()
-        if not _obs_near(o, *window) or not any(_layer_ok(o, l) for l in layers):
+        if not _obs_near(o, *window) or not (any(_layer_ok(o, l) for l in layers)
+                                            or (vias and o.restrict_layer == 43)):
             continue
         kind = ("keepout" if o.restrict_layer is not None else "hole" if o.is_npth else
                 "pad" if o.is_pad else "wire" if o.kind == "seg" else "via")
@@ -632,11 +635,27 @@ def _octi(a, b, tol=1e-4) -> bool:
     return dx < tol or dy < tol or abs(dx - dy) < tol
 
 
+def _edge_clear(G, xs, ys, half) -> bool:
+    if len(G.outline_polygon) >= 3 and not _in_poly(G.outline_polygon, xs, ys, G.checkpoint).all():
+        return False
+    for edge in G.outline:
+        if G.checkpoint:
+            G.checkpoint()
+        if segments_intersect((xs[0], ys[0]), (xs[-1], ys[-1]), edge[:2], edge[2:]):
+            return False
+        obstacle = Obstacle("seg", None, False, (*edge, 0.0))
+        if (_dist_field(obstacle, xs, ys) < half + G.edge - 0.005).any():
+            return False
+    return True
+
+
 def _seg_clear(G, l, a, b) -> bool:
     n = max(2, int(math.dist(a, b) / 0.05))
     t = np.linspace(0.0, 1.0, n + 1)
     xs, ys = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
     h = G.half_at(xs, ys)
+    if not _edge_clear(G, xs, ys, h):
+        return False
     for o in G.other + G.ripable:
         if G.checkpoint:
             G.checkpoint()
@@ -968,6 +987,8 @@ def check_route(G: Grid, r: Route) -> list[str]:
             n = max(2, int(math.dist(a, b) / 0.05))
             t = np.linspace(0.0, 1.0, n + 1)
             xs, ys = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t
+            if not _edge_clear(G, xs, ys, G.half_at(xs, ys)):
+                return [f"layer {l} trace crosses the board outline or edge clearance"]
             for o in G.other:
                 if G.checkpoint:
                     G.checkpoint()

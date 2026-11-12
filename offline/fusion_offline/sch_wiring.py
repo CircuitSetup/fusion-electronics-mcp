@@ -136,6 +136,8 @@ def plan(root, net, targets, style='wired', labels=True, allow_merge=False):
         for p in sch.pins:
             if sch.net_of(p.part,p.pin,p.gate) in allowed: by_sheet.setdefault(p.sheet,[])
     for sheet, requested in sorted(by_sheet.items()):
+        if style == 'labels' and all(sch.net_of(p.part, p.pin, p.gate) == net for p in requested):
+            continue
         nets = [n for n in sheets[sheet-1].findall('./nets/net') if n.get('name') in allowed]
         lines = [ab for n in nets for ab in edges(n)]
         pins = list(requested)
@@ -146,17 +148,16 @@ def plan(root, net, targets, style='wired', labels=True, allow_merge=False):
                 raise ValueError('Schematic net is too dense; divide it into functional blocks')
         bodies = body_boxes(root, sch, sheet) if style == 'wired' else {}
         foreign = []
-        if style == 'wired':
-            for p in sch.pins:
-                if p.sheet == sheet and p not in pins:
-                    foreign.append((p.x-.25, p.y-.25, p.x+.25, p.y+.25))
-            for n in sheets[sheet-1].findall('./nets/net'):
-                for w in n.findall('./segment/wire'):
-                    if float(w.get('curve', '0')): raise ValueError('Curved schematic wires need manual routing')
-                if n.get('name') not in allowed:
-                    for a, b in edges(n):
-                        foreign.append((min(a[0], b[0])-.25, min(a[1], b[1])-.25,
-                                        max(a[0], b[0])+.25, max(a[1], b[1])+.25))
+        for p in sch.pins:
+            if p.sheet == sheet and p not in pins and sch.net_of(p.part, p.pin, p.gate) not in allowed:
+                foreign.append((p.x-.25, p.y-.25, p.x+.25, p.y+.25))
+        for n in sheets[sheet-1].findall('./nets/net'):
+            for w in n.findall('./segment/wire'):
+                if float(w.get('curve', '0')): raise ValueError('Curved schematic wires need manual routing')
+            if n.get('name') not in allowed:
+                for a, b in edges(n):
+                    foreign.append((min(a[0], b[0])-.25, min(a[1], b[1])-.25,
+                                    max(a[0], b[0])+.25, max(a[1], b[1])+.25))
         added = []
         for p in pins:
             at = point(p.x, p.y)
@@ -173,7 +174,7 @@ def plan(root, net, targets, style='wired', labels=True, allow_merge=False):
                              else (box[3]-p.y+GAP/2) if oy > 0 else (p.y-box[1]+GAP/2))
             end = point(p.x+ox*length, p.y+oy*length)
             obstacles = foreign + [box for key, box in bodies.items() if key != (p.part, p.gate)]
-            if style == 'wired' and not clear(at, end, obstacles):
+            if not clear(at, end, obstacles):
                 raise ValueError(f'Blocked pin escape at {p.part}.{p.gate}.{p.pin}; space the related parts')
             path = cut_at_wires([at,end],lines) if style == 'wired' else [at,end]
             added.append(path); lines.extend(zip(path,path[1:]))

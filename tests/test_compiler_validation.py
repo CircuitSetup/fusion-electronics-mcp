@@ -172,6 +172,24 @@ class CompilerValidationTest(unittest.TestCase):
                 self.assertIn(phrase, finding["detail"])
 
 
+    def test_offset_pad_uses_its_own_elongation_rule(self):
+        asset = self.data["libraries"][0]
+        library = ET.parse(asset["path"]).getroot()
+        library.find(".//package[@name='HEADER3']/pad").set("shape", "offset")
+        self.set_asset(asset, library)
+        asset = self.data["templates"]["board"]
+        board = ET.parse(asset["path"]).getroot()
+        ET.SubElement(board.find(".//designrules"), "param", name="psElongationOffset", value="200")
+        self.set_asset(asset, board)
+        self.data["board"]["keepouts"] = [
+            {"layers": [1], "vertices": [[7, 9.95], [7.1, 9.95], [7.1, 10.05], [7, 10.05]]},
+        ]
+        candidate = self.compile()
+        finding = next(row for row in candidate.data["findings"] if row["check"] == "keepouts")
+        self.assertEqual(finding["status"], "unverified")
+        self.assertEqual(candidate.data["status"], "unverified")
+        self.assertIn("elongation", finding["detail"])
+
     def test_bottom_pad_restring_enlarges_keepout_copper(self):
         row = self.data["templates"]["board"]
         board = ET.parse(row["path"]).getroot()

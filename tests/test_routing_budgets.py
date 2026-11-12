@@ -39,6 +39,45 @@ def route(root, budget, **options):
 
 
 class RoutingBudgetTests(unittest.TestCase):
+    def test_final_route_check_rejects_copper_outside_outline_or_edge_clearance(self):
+        root = board()
+        plain = root.find(".//plain")
+        for wire in list(plain.findall("wire[@layer='20']")):
+            plain.remove(wire)
+        points = [(0, 0), (40, 0), (40, 20), (22, 20), (22, 7), (18, 7), (18, 20), (0, 20)]
+        for a, b in zip(points, points[1:] + points[:1]):
+            ET.SubElement(plain, "wire", x1=str(a[0]), y1=str(a[1]), x2=str(b[0]), y2=str(b[1]),
+                          layer="20", width="0")
+        root.find(".//signal[@name='X']").clear()
+        grid = R.Grid(root, "S", .25, None, .254, (5, 10))
+        for points in ([(5, 10), (35, 10)], [(5, .1), (15, .1)], [(5, -1), (15, -1)]):
+            with self.subTest(points=points):
+                self.assertFalse(R._seg_clear(grid, 1, *points))
+                result = R.Route("S", legs=[(1, points)])
+                self.assertTrue(R.check_route(grid, result))
+        self.assertTrue(R._seg_clear(grid, 1, (5, 2), (15, 2)))
+
+    def test_narrow_notch_cannot_fall_between_clearance_samples(self):
+        root = board()
+        plain = root.find(".//plain")
+        for wire in list(plain.findall("wire[@layer='20']")):
+            plain.remove(wire)
+        outline = [(0, 0), (40, 0), (40, 20), (10.03, 20),
+                   (10.03, 7), (10.02, 7), (10.02, 20), (0, 20)]
+        for a, b in zip(outline, outline[1:] + outline[:1]):
+            ET.SubElement(plain, "wire", x1=str(a[0]), y1=str(a[1]), x2=str(b[0]), y2=str(b[1]),
+                          layer="20", width="0")
+        root.find(".//signal[@name='X']").clear()
+        root.find(".//param[@name='mdCopperDimension']").set("value", "0mm")
+        grid = R.Grid(root, "S", .01, None, .254, (5, 10))
+        self.assertFalse(R._seg_clear(grid, 1, (5, 10), (35, 10)))
+        self.assertTrue(R.check_route(grid, R.Route("S", legs=[(1, [(5, 10), (35, 10)])])))
+        result = R.route(root, "S", (5, 10), (1,), (35, 10), (1,), width=.01, step=.254,
+                         layers=(1,), budget=RoutingBudget(), clock=lambda: 0)
+        # The notch is narrower than the search grid: reject its shortcut rather than report success.
+        self.assertEqual(result.diagnostics.termination, "no_path")
+        self.assertTrue(any("board outline" in problem for problem in result.problems))
+
     def test_one_attempt_stops_at_exact_node_limit(self):
         root = board()
         before = ET.tostring(root)

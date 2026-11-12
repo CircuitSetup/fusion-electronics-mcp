@@ -1,5 +1,6 @@
 """Contract tests for deterministic EAGLE schematic emission."""
 from collections import Counter
+from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -40,6 +41,29 @@ class CompilerSchematicTest(unittest.TestCase):
         xml = build_schematic(spec, template, resolved)
         self.assertEqual(build_schematic(spec, template, resolved), xml)
         return template, xml
+
+    def test_label_stubs_reject_foreign_pins_and_wires(self):
+        resistor = next(part for part in self.data["parts"] if part["ref"] == "R1")
+        resistor["units"][0].update(x=15, y=20)
+        other = deepcopy(resistor)
+        other.update(ref="R2")
+        other["board"].update(x=25)
+        self.data["parts"] = [resistor, other]
+        self.data["nets"] = [
+            {"name": name, "class": "default", "pins": [{"part": ref, "gate": "G$1", "pin": pin}],
+             "schematic_style": "labels", "port": "inter-block", "route": False}
+            for name, ref, pin in (("A", "R1", "P$2"), ("B", "R2", "P$1"))
+        ]
+        self.data["routing"].update(selected_nets=[], protected_nets=[], policies={})
+        # At 15 mm the first stub hits a pin; at 18 mm only the stubs overlap.
+        for spacing in (15, 18):
+            with self.subTest(spacing=spacing):
+                other["units"][0].update(x=15 + spacing, y=20)
+                with self.assertRaisesRegex(ValueError, "Blocked pin escape"):
+                    self.build()
+        other["units"][0].update(x=40, y=20)
+        _, xml = self.build()
+        self.assertEqual(len(ET.fromstring(xml).findall(".//segment/label")), 2)
 
     def test_minimal_template_electrical_and_render_signatures(self):
         template, xml = self.build()

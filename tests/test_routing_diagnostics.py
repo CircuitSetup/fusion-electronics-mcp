@@ -1,4 +1,5 @@
 import unittest
+import xml.etree.ElementTree as ET
 
 from fusion_offline.routing_budget import RoutingBudget
 
@@ -17,6 +18,21 @@ class RoutingDiagnosticsTests(unittest.TestCase):
         self.assertGreater(diagnostics["closest_distance_mm"], 0)
         self.assertEqual(diagnostics["candidate_blockers"],
                          [{"type": "wire", "net": "X", "reference": None, "count": 1}])
+
+    def test_via_keepout_is_reported_only_when_vias_are_enabled(self):
+        root = board(wall=True)
+        routed = route(root, RoutingBudget(), clock=lambda: 0)
+        self.assertEqual(routed.diagnostics.termination, "routed")
+        self.assertEqual(routed.diagnostics.vias_used, 2)
+        ET.SubElement(root.find(".//plain"), "circle", x="20", y="10", radius="30", width="0", layer="43")
+        blocked = route(root, RoutingBudget(), clock=lambda: 0)
+        self.assertEqual(blocked.diagnostics.termination, "no_path")
+        self.assertIn({"type": "keepout", "net": None, "reference": None, "count": 1},
+                      blocked.diagnostics.as_dict()["candidate_blockers"])
+        for options in ({"vias": False}, {"layers": (1,)}):
+            with self.subTest(options=options):
+                planar = route(root, RoutingBudget(), clock=lambda: 0, **options)
+                self.assertNotIn("keepout", {row["type"] for row in planar.diagnostics.candidate_blockers})
 
     def test_invalid_layers_and_via_technology_are_structured(self):
         for options in ({"layers": (99,)}, {"layers": (1, 1)}, {"via_spans": [(1, 2)]}):

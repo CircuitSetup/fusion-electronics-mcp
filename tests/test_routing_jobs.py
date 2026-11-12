@@ -76,6 +76,30 @@ class RoutingJobsTest(unittest.TestCase):
         self.assertTrue(routes["provenance"])
         self.assertEqual(routes["failed"], {})
 
+    def test_concave_outline_routes_and_promotes_without_cutting_across_notch(self):
+        spec = minimal_design()
+        spec["board"]["outline"] = [[0, 0], [40, 0], [40, 30], [22, 30],
+                                    [22, 17], [18, 17], [18, 30], [0, 30]]
+        spec["routing"].update(selected_nets=["LED_A"], policies={"LED_A": {"allowed_layers": [1]}})
+        source = self.root / "design.json"
+        raw = json.dumps(spec).encode()
+        source.write_bytes(raw)
+        base = compile_candidate(source, pin(raw), self.root / "base")
+        self.assertEqual(base.data["status"], "pass")
+        job = self.plan(base)
+        self.assertEqual(json.loads(job.read_artifact("routes"))["failed"], {})
+        final = self.promote(base, job)
+        self.assertEqual(final.data["status"], "pass", final.data["findings"])
+        report = json.loads(final.read_artifact("report"))
+        self.assertEqual(report["airwires_by_net"]["LED_A"], 0)
+
+    def test_corrected_router_does_not_reuse_version_one_jobs(self):
+        base = self.compile()
+        with patch.object(self.service, "ROUTER_CONTRACT_VERSION", 1):
+            old = self.plan(base, [])
+        current = self.plan(base, [])
+        self.assertNotEqual(current.path, old.path)
+
     def test_same_request_in_two_directories_has_identical_bytes(self):
         base = self.compile()
         first = self.plan(base, ["VCC", "GND"])
