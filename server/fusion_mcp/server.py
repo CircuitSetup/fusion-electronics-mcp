@@ -5112,6 +5112,24 @@ def validate_eagle_candidate(manifest_path: str, manifest_sha256: str) -> dict[s
 
 
 
+@mcp.tool(annotations=ADDITIVE)
+def import_eagle_candidate(manifest_path: str, expected_manifest_sha256: str, request_id: str,
+                           project_id: str, name: str, folder: str = "") -> dict[str, Any]:
+    """Import one reviewed, passing compiler candidate into a new linked Electronics family.
+
+    Pin the exact manifest SHA-256 and supply a fresh 32-character lowercase hex request ID,
+    the existing active project ID and the new product name. Folder is an existing
+    project-relative path, with an empty string for the project root. Each call advances one
+    native step at most. Resume pending results with identical arguments. On non-Windows,
+    select the returned staged schematic and board in Fusion. Use the existing low-level
+    status and recovery tools to inspect state_unknown. saved_linked returns verified
+    native identities and can be read again with the same pins.
+    """
+    from .candidate_import import import_candidate
+    return import_candidate(session.bridge, manifest_path, expected_manifest_sha256, request_id,
+                            project_id, name, folder)
+
+
 def main() -> None:
     from .cli import main as cli_main
     raise SystemExit(cli_main())

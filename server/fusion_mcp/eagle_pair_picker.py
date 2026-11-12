@@ -23,7 +23,7 @@ def _session(info):
                 token_sha256=hashlib.sha256(info['token'].encode()).hexdigest())
 
 
-def begin(bridge, args, *, journal_dir=None) -> dict:
+def begin(bridge, args, *, journal_dir=None, expected_binding=None) -> dict:
     """Journal original source pins and event cursor before the idempotent native start."""
     keys = {'request_id', 'schematic_path', 'board_path', 'schematic_sha256',
             'board_sha256', 'project_id', 'folder', 'name'}
@@ -37,6 +37,8 @@ def begin(bridge, args, *, journal_dir=None) -> dict:
     with bridge.lock.hold('begin_eagle_pair_import'):
         info = bridge._info()
         binding = _session(info)
+        if expected_binding is not None and binding != expected_binding:
+            raise ValueError('Add-in session changed before paired import start')
         path = Path(journal_dir or data_dir('import-requests')) / (rid + '.json')
         pin_cursor = not path.exists()
         if path.exists():

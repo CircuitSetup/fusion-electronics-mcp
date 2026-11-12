@@ -95,7 +95,7 @@ def workflow() -> dict:
             "promote_eagle_candidate_routing (optional; uses the exact saved job)",
             "render_eagle_candidate",
             "validate_eagle_candidate and review the exact manifest and artifacts",
-            "Use the separate guarded paired-EAGLE import workflow after review",
+            "import_eagle_candidate (explicit native import after review)",
         ],
         "routing_budget": {
             "defaults": dict(ROUTING_BUDGET_DEFAULTS),
