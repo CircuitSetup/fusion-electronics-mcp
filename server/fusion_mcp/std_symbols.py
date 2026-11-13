@@ -309,7 +309,7 @@ def pin_order(style: str, pins: list[dict]) -> list[dict]:
 
 def art_commands(style: str) -> list[str]:
     """EAGLE commands that draw a style's artwork and texts (symbol editor)."""
-    out = []
+    out = ["CHANGE FONT PROPORTIONAL;"]
     for it in styles()[style]["items"]:
         t, layer = it["tag"], it.get("layer", "94")
         if t == "wire":

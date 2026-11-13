@@ -29,9 +29,9 @@ from . import data_dir
 DEFAULT_DIR = data_dir("library", "parts")
 MARKER_LAYER = 114
 MILLING_LAYER = 46
-# >NAME / >VALUE in new packages: vector font, ratio 8 %, bottom-left aligned, >NAME stacked
+# >NAME / >VALUE in new packages: proportional font, ratio 8 %, bottom-left aligned, >NAME stacked
 # above >VALUE above the top-left corner of the footprint (Groundplane library style)
-TEXT_STYLE = {"size": 0.8128, "ratio": 8, "font": "VECTOR", "align": "BOTTOM LEFT", "gap": 0.25}
+TEXT_STYLE = {"size": 0.8128, "ratio": 8, "font": "PROPORTIONAL", "align": "BOTTOM LEFT", "gap": 0.25}
 
 
 @dataclass
@@ -358,7 +358,7 @@ def _symbol_commands(L: list, d: dict, sym: dict) -> None:
           f"WIRE 0.254 (-5.08 {n(-hh)}) (5.08 {n(-hh)}) (5.08 {n(hh)}) (-5.08 {n(hh)}) (-5.08 {n(-hh)});"]
     for p, x, y, rot in placed:
         L.append(f"PIN {q(p['name'])} {p.get('direction', 'pas')} short R{rot} ({n(x)} {n(y)});")
-    L += ["CHANGE SIZE 1.778;", "LAYER 95;", f"TEXT '>NAME' R0 (-5.08 {n(hh + 0.5)});",
+    L += ["CHANGE FONT PROPORTIONAL;", "CHANGE SIZE 1.778;", "LAYER 95;", f"TEXT '>NAME' R0 (-5.08 {n(hh + 0.5)});",
           "LAYER 96;", f"TEXT '>VALUE' R0 (-5.08 {n(-hh - 2.3)});"]
 
 

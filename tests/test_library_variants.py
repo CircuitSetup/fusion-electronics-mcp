@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from unittest import mock
 
 from fusion_mcp import library as LIB
+from fusion_mcp import std_symbols as SS
 from fusion_mcp.library import Part, build_script, deviceset_info, variant_script
 from fusion_offline.kicad_import import footprint_to_part
 
@@ -52,6 +53,12 @@ class KicadSlotTest(unittest.TestCase):
 
 
 class BuildScriptTest(unittest.TestCase):
+    def test_standard_symbol_text_sets_proportional_font(self):
+        commands = SS.art_commands("res")
+        self.assertEqual(commands[0], "CHANGE FONT PROPORTIONAL;")
+        self.assertTrue(any("TEXT '>NAME'" in command for command in commands))
+        self.assertTrue(any("TEXT '>VALUE'" in command for command in commands))
+
     def test_slots_text_style_and_allowlist(self):
         s = build_script(plug_part())
         load_addin().validate(s)
@@ -60,8 +67,10 @@ class BuildScriptTest(unittest.TestCase):
         self.assertIn("CHANGE SLOTLENGTH 0.9 (4 0);", s)
         self.assertIn("LAYER 46;", s)
         self.assertEqual(s.count("-180 ("), 2)                                  # two rounded ends
-        for line in ("CHANGE FONT VECTOR;", "CHANGE RATIO 8;", "CHANGE SIZE 0.8128;", "CHANGE ALIGN BOTTOM LEFT;"):
-            self.assertIn(line, s)
+        package, _, symbol = s.partition(".sym';")
+        for line in ("CHANGE FONT PROPORTIONAL;", "CHANGE RATIO 8;", "CHANGE SIZE 0.8128;", "CHANGE ALIGN BOTTOM LEFT;"):
+            self.assertIn(line, package)
+        self.assertIn("CHANGE FONT PROPORTIONAL;", symbol)
         name = next(l for l in s.splitlines() if l.startswith("TEXT '>NAME'"))
         value = next(l for l in s.splitlines() if l.startswith("TEXT '>VALUE'"))
         # above-left of the footprint (leftmost silk x -4.75, top: the S1 slot pad at 2.8 + 1.0)
