@@ -6,7 +6,9 @@ import xml.etree.ElementTree as ET
 
 from ..annular import copper as annular_copper
 from ..design import parse_board_design, parse_schematic_design, transform
+from ..eagle import UnverifiedGeometry
 from ..junctions import canonicalize_signal
+from .. import part_placement
 from ..stitch import _inside_poly, _restrict_polygon, _restrict_shape, segments_intersect
 from ..symbols import Geo, symbol_prims
 from .canonical import canonical_digest, eagle_xml_bytes
@@ -105,7 +107,7 @@ def _package_label_bounds(package):
     return Geo(package.attrib["name"], {}, {}, primitives).body()
 
 
-def _emit_elements(elements, spec, libraries, stack):
+def _emit_elements(root, elements, spec, libraries, stack):
     separate = {row["ref"]: row for row in spec.board["placements"]}
     outline = spec.board["outline"]
     if outline and outline[0] == outline[-1]:
@@ -115,6 +117,8 @@ def _emit_elements(elements, spec, libraries, stack):
                 for name, library in libraries.libraries.items()
                 for node in library.findall("./packages/package")}
     centres = {}
+    plans = []
+    prerouted = {pin["part"] for net in spec.nets if net.get("wires") or net.get("vias") for pin in net["pins"]}
     for row in spec.parts:
         ref = row["ref"]
         part = libraries.parts[ref]
@@ -134,6 +138,17 @@ def _emit_elements(elements, spec, libraries, stack):
             "value": row["value"], "x": x, "y": y, "locked": placement["fixed"],
             "rot": f'{"M" if mirror else ""}R{Decimal(str(angle)):f}',
         })
+        try:
+            plan = part_placement.plan(root, ref, (x, y), exact=placement.get("off_grid", False)
+                                       or placement["fixed"] or ref in prerouted,
+                                       allow_outside=placement.get("allow_outside", False))
+        except UnverifiedGeometry:
+            plan = None  # Preserve the candidate so preflight can report unsupported geometry.
+        if plan:
+            plan["check_copper"] = ref not in prerouted
+            part_placement.apply(root, plan)
+            x, y = plan["at"]
+            plans.append(plan)
         for name, value in sorted((dict(part.attributes) | dict(row["attributes"])).items()):
             if name.upper() not in ("NAME", "VALUE"):
                 _append(element, "attribute", dict(name=name, value=value, x=x, y=y, size=1.02,
@@ -152,7 +167,7 @@ def _emit_elements(elements, spec, libraries, stack):
                     raise ValueError(f"{ref}.{pad.get('name')}: unsupported SMD layer {layer}")
                 pad_layers = (stack[-1] if (layer == stack[0]) == mirror else stack[0],)
             centres[ref, pad.get("name")] = {(px, py, layer) for layer in pad_layers}
-    return centres
+    return centres, plans
 
 
 def _check_schematic_parts(schematic, pinned_parts):
@@ -299,6 +314,7 @@ def route_owners(root, provenance):
 
 def build_board(
     spec: DesignSpec, template_xml: bytes, libraries: ResolvedLibraries, schematic_xml: bytes,
+    *, placement_exceptions=None,
 ) -> bytes:
     """Emit explicit copper and exact gate-qualified schematic contacts."""
     root, sch_root = ET.fromstring(template_xml), ET.fromstring(schematic_xml)
@@ -335,7 +351,11 @@ def build_board(
             board_library = ET.SubElement(embedded, "library", library.attrib)
             board_library.append(deepcopy(packages))
     classes = apply_net_classes(document, spec.board["net_classes"])
-    centres = _emit_elements(elements, spec, libraries, stack)
+    if spec.align_50mil:
+        grid = root.find("./drawing/grid")
+        if grid is not None:
+            grid.attrib.update(distance="50", unitdist="mil", unit="mil")
+    centres, placement_plans = _emit_elements(root, elements, spec, libraries, stack)
 
     design = parse_schematic_design(sch_root)
     nets = {row["name"]: row for row in spec.nets}
@@ -371,4 +391,19 @@ def build_board(
             raise ValueError(f"{name}: pour uses absent copper layer {pour['layer']}")
         polygon = _polygon(board_signals[name], pour["vertices"], pour, ("net", "vertices"))
         _restrict_polygon(polygon, stack, f"{name} pour")
-    return eagle_xml_bytes(root, template_xml, align_50mil=spec.align_50mil)
+    for plan in placement_plans:
+        try:
+            plan["label"] = part_placement.plan_label(root, plan["ref"], allow_outside=plan["allow_outside"])
+        except UnverifiedGeometry:
+            continue
+        part_placement.apply(root, plan)
+    saved = eagle_xml_bytes(root, template_xml, align_50mil=spec.align_50mil)
+    saved_root = ET.fromstring(saved)
+    for plan in placement_plans:
+        try:
+            part_placement.verify(saved_root, plan)
+        except UnverifiedGeometry:
+            continue
+        if placement_exceptions is not None and plan["off_grid_reason"]:
+            placement_exceptions[plan["ref"]] = plan["off_grid_reason"]
+    return saved

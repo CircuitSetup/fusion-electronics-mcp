@@ -93,9 +93,10 @@ def define_net_class(number: int, name: str) -> str:
 
 
 # -- schematic ---------------------------------------------------------------
-def add_part(device: str, library: str, ref: str, x: float, y: float, angle: float = 0,
+def add_part(device: str, library: str, ref: str | None, x: float, y: float, angle: float = 0,
              sheet: int | None = None) -> str:
-    return (f"{GRID} {sheet_prefix(sheet)} ADD {q(device + '@' + library)} {q(ref)} "
+    name = f" {q(ref)}" if ref else ""
+    return (f"{GRID} {sheet_prefix(sheet)} ADD {q(device + '@' + library)}{name} "
             f"R{n(angle % 360)} {pt(x, y)};")
 
 

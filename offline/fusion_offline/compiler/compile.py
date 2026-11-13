@@ -51,11 +51,16 @@ def compile_candidate(spec_path, expected_spec_sha256, output_directory) -> Cand
     spec = load_design_spec(spec_path, expected_spec_sha256)
     libraries = resolve_libraries(spec)
     schematic = build_schematic(spec, spec.templates["schematic"].data, libraries)
-    board = build_board(spec, spec.templates["board"].data, libraries, schematic)
+    exceptions = {}
+    board = build_board(spec, spec.templates["board"].data, libraries, schematic, placement_exceptions=exceptions)
     inputs = {
         "spec_version": spec.version, "spec_sha256": expected_spec_sha256.lower(),
         "template_schematic_sha256": spec.templates["schematic"].sha256,
         "template_board_sha256": spec.templates["board"].sha256,
         "libraries": [{"name": asset.name, "sha256": asset.sha256} for asset in spec.libraries],
     }
-    return _publish(output_directory, inputs, schematic, board, canonical_json_bytes(_routing_intent(spec)))
+    intent = _routing_intent(spec)
+    intent["verify_reference_labels"] = True
+    if exceptions:
+        intent["placement_grid_exceptions"] = exceptions
+    return _publish(output_directory, inputs, schematic, board, canonical_json_bytes(intent))

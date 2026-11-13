@@ -15,6 +15,8 @@ class CompilerValidationTest(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name).resolve()
         self.data = minimal_design()
+        for part in self.data["parts"]:
+            part["board"]["off_grid"] = True
 
     def compile(self):
         from fusion_offline.compiler.compile import compile_candidate
@@ -229,9 +231,8 @@ class CompilerValidationTest(unittest.TestCase):
 
     def test_template_outline_governs_placement_when_spec_omits_outline(self):
         self.data["board"]["outline"] = []
-        report = self.report(self.compile())
-        finding = next(row for row in report["findings"] if row["check"] == "placements")
-        self.assertEqual(finding["status"], "fail")
+        with self.assertRaisesRegex(ValueError, "board edge"):
+            self.compile()
 
     def test_open_template_outline_fails(self):
         self.data["board"]["outline"] = []
@@ -273,9 +274,8 @@ class CompilerValidationTest(unittest.TestCase):
         self.data["board"]["keepouts"] = [
             {"layers": [1], "vertices": [[4.75, 10.75], [4.85, 10.75], [4.85, 10.85], [4.75, 10.85]]},
         ]
-        report = self.report(self.compile())
-        finding = next(row for row in report["findings"] if row["check"] == "keepouts")
-        self.assertEqual(finding["status"], "fail")
+        with self.assertRaisesRegex(ValueError, "J1.*routing clearance"):
+            self.compile()
 
     def test_full_routing_ignores_stale_layer_19_markers(self):
         self.data["routing"]["require_fully_routed"] = True

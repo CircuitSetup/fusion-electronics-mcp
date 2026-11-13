@@ -86,7 +86,8 @@
         "rotation": {"type":"number","minimum":0,"exclusiveMaximum":360},
         "side": {"enum":["top","bottom"]},
         "fixed": {"type":"boolean"},
-          "allow_outside": {"type":"boolean","default":false}
+          "allow_outside": {"type":"boolean","default":false},
+          "off_grid": {"type":"boolean","default":false}
       }
     },
     "part": {
@@ -94,7 +95,7 @@
       "required": ["ref","library","deviceset","device","technology","value","attributes","units","board"],
       "additionalProperties": false,
       "properties": {
-        "ref": {"$ref":"#/$defs/identifier"},
+        "ref": {"anyOf":[{"$ref":"#/$defs/identifier"},{"type":"null"}],"description":"Use null to allocate the device prefix for an unreferenced part."},
         "library": {"$ref":"#/$defs/identifier"},
         "deviceset": {"$ref":"#/$defs/identifier"},
         "device": {
@@ -181,7 +182,8 @@
               "rotation": {"type":"number","minimum":0,"exclusiveMaximum":360},
               "side": {"enum":["top","bottom"]},
               "fixed": {"type":"boolean"},
-          "allow_outside": {"type":"boolean","default":false}
+          "allow_outside": {"type":"boolean","default":false},
+          "off_grid": {"type":"boolean","default":false}
             }
           }
         },

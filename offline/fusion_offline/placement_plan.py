@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 from . import footprints as FP
+from .part_placement import placement_grid, plan as check_placement
 from .placement_check import (DEFAULT_GRID, _natural, apply_moves, connections, derived_courtyards, move_effects,
                               pad_gaps, pads, part_class)
 
@@ -272,7 +273,10 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
     neighbour's pad row or column (as place_inline leaves it) is not snapped or lined up off it
     on that axis. A P/N pair group is dropped as a whole when any member's move is dropped."""
     from .placement_check import resolve_moves
-    grid = {**DEFAULT_GRID, **(grid or {})}
+    active_grid = placement_grid(root)
+    origin = active_grid[1] if active_grid else (0, 0)
+    defaults = dict.fromkeys(DEFAULT_GRID, active_grid[0]) if active_grid else DEFAULT_GRID
+    grid = {**defaults, **(grid or {})}
     pad_list = pads(root)
     n_pads = defaultdict(int)
     for p in pad_list:
@@ -300,6 +304,7 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
     t = {r: dict(pos[r]) for r in pos}                     # targets, start where they are
     actions, left = defaultdict(list), {}
     snap = lambda v, g: round(round(v / g) * g, 4)
+    snap_xy = lambda x, y, g: tuple(round(o + snap(v - o, g), 4) for v, o in zip((x, y), origin))
     free = set()
     for r in scope:
         if r in locked:
@@ -321,7 +326,7 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
     # 1. grid
     for r in sorted(free, key=_natural):
         g = grid[pos[r]["cls"]]
-        x, y = snap(t[r]["x"], g), snap(t[r]["y"], g)
+        x, y = snap_xy(t[r]["x"], t[r]["y"], g)
         if "x" in pinned.get(r, ()):
             x = t[r]["x"]
         if "y" in pinned.get(r, ()):
@@ -333,7 +338,7 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
         if r in free or r in left or r in group:
             continue
         g = grid[pos[r]["cls"]]
-        x, y = snap(t[r]["x"], g), snap(t[r]["y"], g)
+        x, y = snap_xy(t[r]["x"], t[r]["y"], g)
         d = math.hypot(x - t[r]["x"], y - t[r]["y"])
         if 1e-6 < d <= nudge:
             t[r]["x"], t[r]["y"] = x, y
@@ -354,7 +359,8 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
             continue
         a = members[0]
         g = grid[pos[a]["cls"]]
-        dx, dy = snap(t[a]["x"], g) - t[a]["x"], snap(t[a]["y"], g) - t[a]["y"]
+        x, y = snap_xy(t[a]["x"], t[a]["y"], g)
+        dx, dy = x - t[a]["x"], y - t[a]["y"]
         d = math.hypot(dx, dy)
         if 1e-6 < d <= nudge:
             for r in members:
@@ -481,6 +487,14 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
                     dropped.append({"part": m, "why": f"pair {group[r]} group moves only as one, "
                                                       f"and {r}'s move was dropped ({reason})"})
     for r in moved_list():
+        if active_grid and r not in group:
+            at = t[r]["x"], t[r]["y"]
+            snapped = snap_xy(*at, grid[pos[r]["cls"]])
+            if math.dist(at, snapped) > 1e-4:
+                if pinned.get(r):
+                    actions[r].append("off grid to preserve pad alignment for routing")
+                else:
+                    t[r]["x"], t[r]["y"] = snapped
         d = math.hypot(t[r]["x"] - pos[r]["x"], t[r]["y"] - pos[r]["y"])
         if d > max_move + 1e-9:
             drop(r, f"would move {d:.3f} mm (max_move {max_move})")
@@ -493,6 +507,12 @@ def tidy(root: ET.Element, refs=None, region=None, grid: dict | None = None, cri
         moves = [{"ref": r, "x_mm": t[r]["x"], "y_mm": t[r]["y"], "angle": t[r]["angle"]} for r in moved]
         after = apply_moves(root, resolve_moves(root, moves))
         bad = {}
+        if active_grid:
+            for r in moved:
+                try:
+                    check_placement(after, r, (t[r]["x"], t[r]["y"]), exact=True)
+                except ValueError as error:
+                    bad[r] = str(error)
         for item in move_effects(root, after, moved)["introduced"]:
             if item["kind"] == "silkscreen":
                 continue                                      # low severity: never a reason either way

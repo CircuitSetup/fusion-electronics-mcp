@@ -101,6 +101,20 @@ def apply(session,plan_path,expected_sha256,directory=None):
                 if P.identity(after)!=P.identity(snap) or P.electrical(after['sch_xml'])!=P.electrical(expected): raise ValueError('Read-back did not match the reviewed operation')
                 if after['sources']!=snap['sources']: raise ValueError('Source changed during apply')
                 verify_board(last,after,expected)
+                if op['op'] == 'add_part' and after['board_xml'] is not None:
+                    from fusion_offline import part_placement as placement
+                    from .server import _place_added_part
+                    from .session import Snapshot
+
+                    board = P.D.read_xml(after['board_xml'].encode())
+                    if op['ref'] in P.D.parse_board_design(board).element_names:
+                        proposed = placement.place_existing(board, op['ref'], placement.default_origin(board))
+                        _place_added_part(session, Snapshot(board_xml=after['board_xml'].encode(),
+                                                            sch_xml=after['sch_xml'].encode()), proposed)
+                        session.activate('schematic')
+                        after = snapshot(session,plan['operations'],plan['evidence'])
+                        if P.identity(after)!=P.identity(snap) or P.electrical(after['sch_xml'])!=P.electrical(expected):
+                            raise ValueError('PCB placement changed the reviewed schematic operation')
                 xml=after['sch_xml']; last=after; completed.append(index)
             except Exception as ex:
                 # No blind undo: multi-sheet commands and timeouts do not have a proven single undo boundary.

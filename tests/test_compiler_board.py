@@ -63,10 +63,10 @@ class CompilerBoardTest(unittest.TestCase):
                          {"x": "3.0", "y": "3.0", "drill": "2.0"})
         self.assertEqual([(el.name, el.package, el.x, el.y, el.angle, el.mirror, el.value, el.attrs)
                           for el in board.elements], [
-            ("D1", "LED_0805", 24, 21, 90, True, "RED", {"MPN": "TEST-LED"}),
+            ("D1", "LED_0805", 22.86, 20.32, 90, True, "RED", {"MPN": "TEST-LED"}),
             ("J1", "HEADER3", 4, 10, 0, False, "Power and control", {"MPN": "TEST-HEADER3"}),
-            ("Q1", "SOT23", 29, 11, 0, False, "NPN", {"MPN": "TEST-NPN"}),
-            ("R1", "RES_0805", 15, 21, 0, False, "330R", {"MPN": "TEST-RESISTOR"}),
+            ("Q1", "SOT23", 27.94, 10.16, 0, False, "NPN", {"MPN": "TEST-NPN"}),
+            ("R1", "RES_0805", 15.24, 20.32, 0, False, "330R", {"MPN": "TEST-RESISTOR"}),
         ])
         self.assertEqual(root.find(".//element[@name='J1']").get("locked"), "yes")
         design = parse_board_design(root)
@@ -87,6 +87,9 @@ class CompilerBoardTest(unittest.TestCase):
 
         def unused(root):
             ET.SubElement(root.find(".//board/libraries"), "library", name="UNUSED")
+            for wire in root.findall(".//plain/wire[@layer='20']"):
+                for axis in ("x1", "x2", "y1", "y2"):
+                    wire.set(axis, str(4 * float(wire.get(axis))))
 
         template, root, _ = self.build(mutate_template=unused)
         self.assertEqual(ET.tostring(root.find(".//board/plain")),
@@ -277,8 +280,8 @@ class CompilerBoardTest(unittest.TestCase):
             self.build(mutate_schematic=change_technology)
 
     def test_concave_outline_checks_polygon_and_honors_allow_outside(self):
-        self.data["board"]["outline"] = [[0, 0], [40, 0], [40, 21], [25, 21],
-                                          [25, 30], [10, 30], [10, 15], [0, 15]]
+        self.data["board"]["outline"] = [[0, 0], [40, 0], [40, 24], [25, 24],
+                                          [25, 30], [10, 30], [10, 17], [0, 17]]
         self.build()
         placement = self.data["parts"][1]["board"]
         placement.update(x=4, y=15)

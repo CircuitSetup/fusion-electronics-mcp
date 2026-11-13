@@ -1446,28 +1446,131 @@ def _resolve_pin(sch, spec: str):
 
 
 @tool(ADDITIVE)
-def add_part(device: str, library_name: str, ref: str, x_mm: float, y_mm: float,
-             angle: float = 0, sheet: int = 1) -> dict:
+def add_part(device: str, library_name: str, ref: str | None = None, x_mm: float = 0, y_mm: float = 0,
+             angle: float = 0, sheet: int = 1, board_x_mm: float | None = None,
+             board_y_mm: float | None = None, off_grid: bool = False) -> dict:
     """Place a device (device set + variant name, e.g. 'RES_0603_10K_1%_1/10W') from a Fusion
     library into the schematic. The part is forward-annotated onto the board. `sheet` may be an
     existing sheet or the next new one (sheets + 1). A library refresh prompt is accepted only
-    with read-back checks that existing component definitions, wiring and layout are preserved."""
-    sch = _snap(board=False).schematic()
-    if ref in sch.parts:
-        raise ValueError(f"{ref} already exists; pick an unused reference designator")
+    with read-back checks that existing component definitions, wiring and layout are preserved.
+    Omit `ref` to use the device's prefix. Optional board coordinates are a preferred position.
+    `off_grid` preserves those coordinates exactly. Linked PCB placement and its designator are
+    read back before returning."""
+    lock = getattr(getattr(session, "bridge", None), "lock", None)
+    with lock.hold("add component and place PCB footprint") if lock else contextlib.nullcontext():
+        return _add_part(device, library_name, ref, x_mm, y_mm, angle, sheet, board_x_mm, board_y_mm, off_grid)
+
+
+@tool(ADDITIVE)
+def add_parts(parts: list[dict]) -> dict:
+    """Add parts in order using the same fields as add_part. Each linked PCB placement
+    reserves space before the next add. Returns verified parts and the first error, if any.
+    Resume from the failed item using its reported reference when one was assigned."""
+    from inspect import signature
+
+    if not parts:
+        raise ValueError("Supply at least one part")
+    fields = signature(add_part)
+    pending = [fields.bind(**row) for row in parts]
+    explicit = [row.arguments["ref"].casefold() for row in pending if row.arguments.get("ref")]
+    if len(explicit) != len(set(explicit)):
+        raise ValueError("Batch repeats an explicit reference designator")
+    lock = getattr(getattr(session, "bridge", None), "lock", None)
+    completed = []
+    with lock.hold("add component batch") if lock else contextlib.nullcontext():
+        for index, row in enumerate(pending):
+            row.apply_defaults()
+            try:
+                completed.append(_add_part(**row.arguments, reserved_refs=explicit))
+            except (ValueError, KeyError, WriteFailed, BridgeOpError, BridgeUnavailable) as error:
+                return {"ok": False, "parts": completed, "failed_index": index, "error": str(error)}
+    return {"ok": True, "parts": completed}
+
+
+def _add_part(device, library_name, ref, x_mm, y_mm, angle, sheet, board_x_mm, board_y_mm, off_grid, reserved_refs=()):
+    from fusion_offline import part_placement as placement
+    from fusion_offline.edit_plan import xml_hash
+
+    if (board_x_mm is None) != (board_y_mm is None) or off_grid and board_x_mm is None:
+        raise ValueError("Supply both board coordinates for a preferred or explicit off-grid placement")
+    if not all(math.isfinite(v) for v in (x_mm, y_mm, angle)):
+        raise ValueError("Schematic coordinates and angle must be finite")
+    if callable(getattr(session, "activate", None)):
+        session.activate("schematic")
+    snap = _snap()
+    active = (session.context().get("active_document") or {}) if callable(getattr(session, "context", None)) else {}
+    sch = snap.schematic()
+    original_board = D.read_xml(snap.board_xml) if snap.board_xml is not None else None
+    occupied = {name.casefold() for name in sch.parts}
+    if original_board is not None:
+        occupied.update(e.get("name", "").casefold() for e in original_board.findall("./drawing/board/elements/element"))
+    if ref is not None:
+        placement.reference(ref)
+        if ref.casefold() in occupied:
+            existing = sch.parts.get(ref)
+            match = existing and existing.library.casefold() == library_name.casefold() and (
+                existing.deviceset + existing.device).casefold() == device.casefold()
+            if not match or not any(i.part == ref and i.sheet == sheet and math.dist((i.x, i.y), (x_mm, y_mm)) <= .001
+                                    and abs((i.angle - angle + 180) % 360 - 180) <= .01 for i in sch.instances):
+                raise ValueError(f"{ref} already exists; pick an unused reference designator")
+            if existing.package and original_board is not None:
+                resume = placement.read_placement(original_board, ref)
+                if resume is None or (off_grid and math.dist(resume["at"], (board_x_mm, board_y_mm)) > .001):
+                    target = (board_x_mm, board_y_mm) if board_x_mm is not None else placement.default_origin(original_board)
+                    resume = placement.place_existing(original_board, ref, target, exact=off_grid)
+                    _place_added_part(session, snap, resume)
+                return {"ok": True, "ref": ref, "detail": f"{ref} already added", "part": get_part(ref), "placement": resume}
+            return {"ok": True, "ref": ref, "detail": f"{ref} already added", "part": get_part(ref)}
     if not 1 <= sheet <= sch.sheets + 1:
         raise ValueError(f"sheet {sheet} does not exist (the schematic has {sch.sheets}; use 1..{sch.sheets + 1})")
+    embedded = next((lib for lib in D.read_xml(snap.sch_xml).findall("./drawing/schematic/libraries/library")
+                     if lib.get("name", "").casefold() == library_name.casefold()), None)
+    variants = [(ds, dev) for ds in embedded.findall("./devicesets/deviceset") for dev in ds.findall("./devices/device")
+                if (ds.get("name", "") + dev.get("name", "")).casefold() == device.casefold()] if embedded is not None else []
+    if ref is None and len(variants) == 1 and variants[0][0].get("prefix"):
+        ref = placement.next_reference(variants[0][0].get("prefix"), occupied | set(reserved_refs))
+    preferred = None if board_x_mm is None else (board_x_mm, board_y_mm)
+    board_plan = None
+    if original_board is not None and len(variants) == 1 and ref is not None:
+        package_name = variants[0][1].get("package")
+        package = next((pkg for pkg in embedded.findall("./packages/package") if pkg.get("name") == package_name), None)
+        if package is not None:
+            from copy import deepcopy
+            import xml.etree.ElementTree as ET
+
+            staged = deepcopy(original_board)
+            board = staged.find("./drawing/board")
+            target = preferred or placement.default_origin(original_board)
+            lib = next((row for row in board.findall("./libraries/library") if row.get("name") == library_name), None)
+            if lib is None:
+                lib = ET.SubElement(board.find("libraries"), "library", name=library_name)
+                ET.SubElement(lib, "packages")
+            if not any(row.get("name") == package_name for row in lib.findall("./packages/package")):
+                lib.find("packages").append(deepcopy(package))
+            ET.SubElement(board.find("elements"), "element", name=ref, library=library_name, package=package_name,
+                          x=str(target[0]), y=str(target[1]))
+            board_plan = placement.place_existing(staged, ref, target, exact=off_grid)
     cmd = C.add_part(device, library_name, ref, x_mm, y_mm, angle, sheet)
+    actual_ref = ref
+    planned = None
 
     def verify(before, after):
+        nonlocal actual_ref, planned
         from fusion_offline import edit_plan as P
         from .edit_plan import verify_board
         sch = after.schematic()
-        p = sch.parts.get(ref)
-        if p is None:
-            return False, f"{ref} did not appear (check the device and library names; the library must be saved and closed)"
         old = before.schematic()
-        if set(sch.parts) != set(old.parts) | {ref} or any(sch.parts.get(r) != part for r, part in old.parts.items()):
+        if xml_hash(before.sch_xml) != xml_hash(snap.sch_xml) or xml_hash(before.board_xml) != xml_hash(snap.board_xml):
+            return False, "Design changed after part placement planning"
+        added = set(sch.parts) - set(old.parts)
+        if actual_ref is None and len(added) == 1:
+            actual_ref = placement.reference(added.pop())
+            if actual_ref.casefold() in reserved_refs:
+                return False, f"{actual_ref} is reserved by another add in this batch"
+        p = sch.parts.get(actual_ref)
+        if p is None:
+            return False, f"{actual_ref or device} did not appear (check the device and library names; the library must be saved and closed)"
+        if set(sch.parts) != set(old.parts) | {actual_ref} or any(sch.parts.get(r) != part for r, part in old.parts.items()):
             return False, "An existing component changed while adding the part"
         old_defs = P.library_definitions(D.read_xml(before.sch_xml))
         new_defs = P.library_definitions(D.read_xml(after.sch_xml))
@@ -1481,13 +1584,92 @@ def add_part(device: str, library_name: str, ref: str, x_mm: float, y_mm: float,
                          after.sch_xml.decode('utf-8'))
         except ValueError as ex:
             return False, str(ex)
-        on_board = after.board_xml is None or any(e.name == ref for e in after.fab().elements)
-        return on_board, f"{ref} placed as {p.deviceset}{p.device}" + ("" if on_board else " but not on the board")
+        if p.library.casefold() != library_name.casefold() or (p.deviceset + p.device).casefold() != device.casefold():
+            return False, f"{actual_ref}: Fusion added a different library device"
+        if not any(i.part == actual_ref and i.sheet == sheet and math.dist((i.x, i.y), (x_mm, y_mm)) <= .001
+                   and abs((i.angle - angle + 180) % 360 - 180) <= .01 for i in sch.instances):
+            return False, f"{actual_ref}: schematic origin or orientation differs from the ADD request"
+        if p.package and after.board_xml is not None:
+            try:
+                root = D.read_xml(after.board_xml)
+                target = board_plan["at"] if board_plan else preferred or placement.default_origin(root)
+                planned = placement.place_existing(root, actual_ref, target,
+                                                   exact=off_grid or board_plan is not None)
+            except (ValueError, KeyError, StopIteration) as error:
+                return False, f"{actual_ref}: {error}"
+        return True, f"{actual_ref} placed as {p.deviceset}{p.device}"
 
     after, detail = session.verified_write("schematic", cmd, verify,
         answers=[(r"A different version of device set .+ is already present in this file and needs to be updated", "Yes")],
-        forms=[dialogs.FORM_ADD_PALETTE])
-    return {"ok": True, "detail": detail, "part": get_part(ref)}
+        forms=[dialogs.FORM_ADD_PALETTE], expected_document_id=active.get("document_id"))
+    if planned:
+        try:
+            _place_added_part(session, after, planned)
+        except (WriteFailed, BridgeOpError, BridgeUnavailable, ValueError) as error:
+            raise WriteFailed(f"{actual_ref} was added to the schematic. PCB placement could not be verified. {error}") from error
+        if board_plan and board_plan["off_grid_reason"]:
+            planned["off_grid_reason"] = board_plan["off_grid_reason"]
+    return {"ok": True, "ref": actual_ref, "detail": detail, "part": get_part(actual_ref),
+            **({"placement": planned} if planned else {})}
+
+
+def _place_added_part(session, snapshot, plan):
+    from fusion_offline import part_placement as placement
+    from .edit_plan import verify_board
+    import hashlib
+
+    ref = plan["ref"]
+    board = D.read_xml(snapshot.board_xml)
+    element = board.find(f"./drawing/board/elements/element[@name='{ref}']")
+    package = next((p for lib in board.findall("./drawing/board/libraries/library")
+                    if lib.get("name") == element.get("library") for p in lib.findall("./packages/package")
+                    if p.get("name") == element.get("package")), None)
+    label = plan["label"]
+    point = C.pt(float(label["x"]), float(label["y"]))
+    target = C.q(f"{ref}>NAME")
+    commands = [C.move_part(ref, *plan["at"])]
+    font = label.get("font", "vector").upper()
+    if font not in ("VECTOR", "PROPORTIONAL", "FIXED"):
+        raise ValueError(f"{ref}: unsupported PCB reference label font {font}")
+    bound = element.find("attribute[@name='NAME']") is not None or (package is not None and any(
+        (node.text or "").strip().upper() == ">NAME" for node in package.findall("text")))
+    if bound:
+        commands.extend((f"SMASH {C.q(ref)};", f"MOVE {target} {point};",
+                         f"ROTATE ={label['rot']} {target};", f"CHANGE LAYER {label['layer']} {target};",
+                         f"CHANGE DISPLAY VALUE {target};", f"CHANGE ALIGN {label['align'].replace('-', ' ').upper()} {target};",
+                         f"CHANGE SIZE {C.n(float(label['size']))} {target};",
+                         f"CHANGE RATIO {C.n(float(label.get('ratio', '10')))} {target};",
+                         f"CHANGE FONT {font} {target};"))
+    else:
+        commands.append(f"LAYER {label['layer']}; CHANGE FONT {font}; CHANGE ALIGN CENTER; "
+                        f"CHANGE SIZE {C.n(float(label['size']))}; CHANGE RATIO {C.n(float(label['ratio']))}; "
+                        f"TEXT {C.q(ref)} {label['rot']} {point};")
+
+    def verify(before, after):
+        try:
+            old, new = D.read_xml(before.board_xml), D.read_xml(after.board_xml)
+            elements = old.find("./drawing/board/elements")
+            elements.remove(elements.find(f"element[@name='{ref}']"))
+            placement.verify(new, plan)
+            import xml.etree.ElementTree as ET
+            if before.sch_xml != after.sch_xml:
+                raise ValueError("PCB placement changed the schematic")
+            verify_board({"board_xml": ET.tostring(old, encoding="unicode")},
+                         {"board_xml": after.board_xml.decode()}, after.sch_xml.decode())
+            old_text = [ET.tostring(t) for t in old.findall("./drawing/board/plain/text")]
+            new_text = [ET.tostring(t) for t in new.findall("./drawing/board/plain/text") if t.text != ref]
+            if old_text != new_text:
+                raise ValueError("PCB placement changed other text")
+        except (ValueError, KeyError, TypeError) as error:
+            return False, str(error)
+        return True, f"{ref} placed and labeled on the PCB"
+
+    kwargs = {"expected_board_sha256": hashlib.sha256(snapshot.board_xml).hexdigest()}
+    if callable(getattr(session, "activate", None)):
+        active = session.activate("board").get("active_document") or {}
+        kwargs["expected_document_id"] = active.get("document_id")
+    after, _ = session.verified_write("board", " ".join(commands), verify, **kwargs)
+    return after
 
 
 @tool(ADDITIVE)
@@ -1925,8 +2107,8 @@ def tidy_placement(parts: list[str] | None = None, region_mm: list[float] | None
                    nudge_mm: float = 0.25, rework_gap_mm: float = 0.0, max_move_mm: float = 0.5,
                    align: bool = True, spread: bool = True, rotate: bool = False, skip_routed: bool = True,
                    keep: list[str] | None = None, dry_run: bool = True, design: str | None = None) -> list:
-    """Tidy placement as ONE undo step: snap parts to the grid (grid_mm, default
-    {"passive": 0.125, "other": 0.25}), line up rows/columns that are within 0.2 mm of lining up,
+    """Tidy placement as ONE undo step: snap parts to the board's active grid (grid_mm overrides
+    its pitch), line up rows/columns that are within 0.2 mm of lining up,
     and even out a slightly uneven pitch along a row of one package (rows that follow a
     neighbour's pin pitch are left alone). rotate=true also turns non-polar two-pin parts (R, C,
     L, FB) by 180 degrees to match their row (off by default: it swaps pads and drags traces).

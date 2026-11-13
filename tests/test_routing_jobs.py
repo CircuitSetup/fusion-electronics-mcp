@@ -316,7 +316,9 @@ class RoutingJobsTest(unittest.TestCase):
         signal = board.find(".//signal[@name='VCC']")
         intent = json.loads(base.read_artifact("routing_intent"))
         intent["routing"]["budget"]["max_vias_per_connection"] = 1
-        for a, b, layer in (((4, 10), (8, 10), 1), ((8, 10), (8, 21), 16), ((8, 21), (14.05, 21), 1)):
+        from fusion_offline.router import pad_target
+        goal = tuple(round(value, 4) for value in pad_target(board, "R1", "1")[:2])
+        for a, b, layer in (((4, 10), (8, 10), 1), ((8, 10), (8, 21), 16), ((8, 21), goal, 1)):
             ET.SubElement(signal, "wire", x1=str(a[0]), y1=str(a[1]), x2=str(b[0]), y2=str(b[1]),
                           width="0.25", layer=str(layer))
         vias = [ET.SubElement(signal, "via", x="8", y=str(y), extent="1-16", drill="0.3", diameter="0.7064")

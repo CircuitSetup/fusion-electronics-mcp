@@ -15,6 +15,7 @@ from ..junctions import overlapping_runs
 from ..net_classes import _mm as rule_mm
 from ..pairs import _seg_dist
 from ..placement_check import pads as placed_pads
+from ..part_placement import verify_names
 from ..router import route_minimums
 from ..stitch import _inside_poly, _restrict_polygon, board_obstacles, outline_vertices, segments_intersect
 from .board import route_geometry, route_owners
@@ -613,6 +614,11 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
 
     findings.append(_check("outline", verify_outline))
     findings.append(_check("placements", lambda: _placements(board, outline, routing_intent["allow_outside"])))
+    if routing_intent.get("verify_reference_labels"):
+        findings.append(_check("reference_labels", lambda: verify_names(board_root, routing_intent["allow_outside"])))
+    if exceptions := routing_intent.get("placement_grid_exceptions"):
+        findings.append(_finding("placement_grid_exceptions", "pass",
+                                 ", ".join(f"{ref}: {reason}" for ref, reason in sorted(exceptions.items())), False))
     routing = routing_intent["routing"]
     groups, routing_errors, routing_unknown = {}, [], []
     poured = set()

@@ -128,10 +128,14 @@ class Session:
         return f"GRID MM 0.0001; {body} GRID LAST;"
 
     def run(self, commands: str, editor: str, answers: list[tuple[str, str]] | None = None,
-            forms: list[dict] | None = None, timeout: float = 60.0, check_dialogs: bool = True) -> dict:
+            forms: list[dict] | None = None, timeout: float = 60.0, check_dialogs: bool = True,
+            expected_document_id: str | None = None) -> dict:
         commands = self.with_grid(commands)
         self.activate(editor)
-        res = self.bridge.call("run", {"commands": commands, "editor": editor}, answers=answers, forms=forms,
+        args = {"commands": commands, "editor": editor}
+        if expected_document_id:
+            args["expected_document_id"] = expected_document_id
+        res = self.bridge.call("run", args, answers=answers, forms=forms,
                                timeout=timeout)
         # a question nobody expected got the watchdog's safe answer (No / Cancel): the command most
         # likely did not do what was meant, so say so instead of carrying on (a "different version
@@ -179,8 +183,12 @@ class Session:
     def _verified_write(self, editor, commands, verify, board, schematic, answers, forms, timeout, design,
                         expected_board_sha256=None, expected_document_id=None):
         before = self.snapshot(board, schematic)
-        if expected_document_id and (self.context().get('active_document') or {}).get('document_id') != expected_document_id:
-            raise WriteFailed('The planned document changed; nothing was written')
+        target_id = None
+        if expected_document_id:
+            active = self.context().get('active_document') or {}
+            if active.get('document_id') != expected_document_id:
+                raise WriteFailed('The planned document changed; nothing was written')
+            target_id = expected_document_id if active.get('kind') == editor else None
         if expected_board_sha256 and hashlib.sha256(before.board_xml or b'').hexdigest() != expected_board_sha256:
             raise WriteFailed('The planned board changed; re-plan before writing')
         from . import design_requirements as DR
@@ -212,14 +220,15 @@ class Session:
             self.run(pre, editor, timeout=30)     # sent on their own, so the write stays ONE undo step
         try:
             # verified_write reports and undoes on unexpected dialogs itself
-            res = self.run(commands, editor, answers=answers, forms=forms, timeout=timeout, check_dialogs=False) or {}
+            guard = {"expected_document_id": target_id} if target_id else {}
+            res = self.run(commands, editor, answers=answers, forms=forms, timeout=timeout, check_dialogs=False, **guard) or {}
         finally:
             if post:
                 self.run(post, editor, timeout=30)
         shown = list(res.get("dialogs", []))
         messages = list(res.get("messages", []))
         after = self.snapshot(board, schematic)
-        if constraints and (self.context().get('active_document') or {}).get('document_id') != constrained_document:
+        if (target_id or constraints) and (self.context().get('active_document') or {}).get('document_id') != (target_id or constrained_document):
             raise WriteFailed('Active document changed during constrained write; inspect original PCB. No UNDO sent to another document.')
         ok, detail = verify(before, after)
         if editor == 'board' and after.board_xml is not None:
@@ -261,7 +270,7 @@ class Session:
             return after, detail + drc_note + note
         changed = after.board_xml != before.board_xml or after.sch_xml != before.sch_xml
         if changed:
-            if constraints and (self.context().get('active_document') or {}).get('document_id') != constrained_document:
+            if (target_id or constraints) and (self.context().get('active_document') or {}).get('document_id') != (target_id or constrained_document):
                 raise WriteFailed('Active document changed before rollback; no UNDO sent to another document. Inspect the original PCB.')
             self.undo(editor)
             restored = self.snapshot(board, schematic)

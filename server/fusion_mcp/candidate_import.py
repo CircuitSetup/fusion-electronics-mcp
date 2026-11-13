@@ -40,7 +40,9 @@ def _validate(manifest_path, manifest_sha256, args):
     raw, signature = eagle_import.read_pair(args)
     intent_bytes = candidate.read_artifact("routing_intent")
     intent = json.loads(intent_bytes)
-    if (not isinstance(intent, dict) or intent.keys() != {"allow_outside", "nets", "routing"}
+    required = {"allow_outside", "nets", "routing"}
+    optional = {"verify_reference_labels", "placement_grid_exceptions"}
+    if (not isinstance(intent, dict) or not required <= intent.keys() <= required | optional
             or canonical_json_bytes(intent) != intent_bytes):
         raise ValueError("Candidate routing intent must be a canonical compiler object")
     nets, exemptions = intent["nets"], intent["allow_outside"]
@@ -48,6 +50,11 @@ def _validate(manifest_path, manifest_sha256, args):
             or not isinstance(exemptions, list) or any(not isinstance(ref, str) for ref in exemptions)
             or exemptions != sorted(set(exemptions)) or not set(exemptions) <= set(signature["elements"])):
         raise ValueError("Candidate routing intent has invalid nets or placement exemptions")
+    exceptions = intent.get("placement_grid_exceptions", {})
+    if (type(intent.get("verify_reference_labels", False)) is not bool or not isinstance(exceptions, dict)
+            or not set(exceptions) <= set(signature["elements"])
+            or any(not isinstance(reason, str) or not reason for reason in exceptions.values())):
+        raise ValueError("Candidate routing intent has invalid placement grid metadata")
     _routing(intent["routing"], {net: {"route": enabled} for net, enabled in nets.items()},
              board_nets={net for net, _, _ in signature["contacts"]})
     if intent["routing"]["budget"].keys() != ROUTING_BUDGET_DEFAULTS.keys():

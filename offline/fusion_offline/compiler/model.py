@@ -8,12 +8,14 @@ from decimal import Decimal, ROUND_HALF_UP
 import json
 from pathlib import PurePosixPath, PureWindowsPath
 import re
+import xml.etree.ElementTree as ET
 from sys import float_info
 from types import MappingProxyType
 from typing import Any
 from xml.parsers import expat
 
 from ..routing_budget import ROUTING_BUDGET_DEFAULTS, ROUTING_BUDGET_MAXIMUMS
+from ..part_placement import next_reference, reference
 from . import SPEC_VERSION
 from .canonical import canonical_digest, canonical_json_bytes, normalize_mm
 from .paths import read_pinned_file
@@ -109,7 +111,7 @@ def _vertices(value, field, minimum):
 
 
 def _placement(row, *, separate=False):
-    _object(row, "placement", "x y rotation side fixed" + (" ref" if separate else ""), "allow_outside")
+    _object(row, "placement", "x y rotation side fixed" + (" ref" if separate else ""), "allow_outside off_grid")
     _xy(row)
     _number(row["rotation"], "board rotation")
     if not 0 <= row["rotation"] < 360:
@@ -119,6 +121,8 @@ def _placement(row, *, separate=False):
     _boolean(row["fixed"], "fixed")
     if "allow_outside" in row:
         _boolean(row["allow_outside"], "allow_outside")
+    if "off_grid" in row:
+        _boolean(row["off_grid"], "off_grid")
 
 
 def _sheets(schematic):
@@ -140,10 +144,11 @@ def _parts(rows, libraries, sheets):
     parts, references = {}, set()
     for part in _list(rows, "parts"):
         _object(part, "part", "ref library deviceset device technology value attributes units board")
-        for field in ("ref", "library", "deviceset", "device", "technology"):
+        for field in ("library", "deviceset", "device", "technology"):
             _identifier(part[field], field, empty=field in ("device", "technology"))
         ref = part["ref"]
-        _unique(ref.casefold(), references, "ref")
+        if ref is not None:
+            _unique(reference(ref).casefold(), references, "ref")
         if part["library"] not in libraries:
             raise ValueError(f"unknown library {part['library']!r} for part {ref}")
         _text(part["value"], "value")
@@ -166,7 +171,8 @@ def _parts(rows, libraries, sheets):
             if unit["rotation"] not in (0, 90, 180, 270):
                 raise ValueError("schematic rotation must be 0, 90, 180, or 270")
             gates[unit["gate"]] = unit["sheet"]
-        parts[ref] = gates
+        if ref is not None:
+            parts[ref] = gates
         if part["board"] is not None:
             _placement(part["board"])
     return parts
@@ -530,11 +536,12 @@ def _align_placements_50mil(data):
     for part in data["parts"]:
         for unit in part["units"]:
             snap(unit)
-        if part["board"] is not None:
+        if part["board"] is not None and not part["board"].get("off_grid"):
             moved = snap(part["board"])
             board_moved |= moved and part["ref"] not in overridden
     for placement in data["board"]["placements"]:
-        board_moved |= snap(placement)
+        if not placement.get("off_grid"):
+            board_moved |= snap(placement)
     if board_moved and any(net.get("wires") or net.get("vias") for net in data["nets"]):
         raise ValueError("50 mil alignment would move board placements with explicit preroutes")
 
@@ -599,6 +606,18 @@ def load_design_spec(path: str, expected_sha256: str) -> DesignSpec:
         PinnedLibrary(*load_asset(row), name=row["name"])
         for row in sorted(data["libraries"], key=lambda row: row["name"])
     )
+    if any(part["ref"] is None for part in data["parts"]):
+        definitions = {asset.name: ET.fromstring(asset.data) for asset in libraries}
+        occupied = {part["ref"] for part in data["parts"] if part["ref"] is not None}
+        for part in data["parts"]:
+            if part["ref"] is not None:
+                continue
+            deviceset = next((ds for ds in definitions[part["library"]].findall(".//deviceset")
+                              if ds.get("name") == part["deviceset"]), None)
+            if deviceset is None:
+                raise ValueError(f"Unknown deviceset {part['deviceset']!r} for automatic reference designator")
+            part["ref"] = next_reference(deviceset.get("prefix") or "U", occupied)
+            occupied.add(part["ref"])
     return DesignSpec(
         version=data["version"], name=data["name"], units=data["units"],
         templates=templates, libraries=libraries,

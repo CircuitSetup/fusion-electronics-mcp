@@ -22,7 +22,7 @@ class CompilerLabelsTest(unittest.TestCase):
 
     def compile(self):
         data = minimal_design()
-        data["parts"][2]["board"].update(side="bottom", rotation=90)
+        data["parts"][2]["board"].update(side="bottom", rotation=90, off_grid=True)
         asset = data["libraries"][0]
         lib = ET.parse(asset["path"]).getroot()
         package = lib.find(".//package[@name='LED_0805']")
@@ -72,6 +72,29 @@ class CompilerLabelsTest(unittest.TestCase):
         self.assertEqual(next(row.attrs for row in parse_board(board).elements if row.name == "D1"),
                          {"MPN": "TEST-LED"})
 
+    def test_board_relocates_two_occupied_grid_requests_and_labels(self):
+        data = minimal_design()
+        data["parts"][1]["board"].update(x=15.2, y=20.8)
+        data["parts"][2]["board"].update(x=15.2, y=20.8, rotation=90)
+        source = self.root / "design.json"
+        raw = json.dumps(data).encode()
+        source.write_bytes(raw)
+        candidate = compile_candidate(source, sha256(raw).hexdigest(), self.root / "candidate")
+        root = ET.fromstring(candidate.read_artifact("board"))
+        from fusion_offline import footprints, placement_check
+        positions = set()
+        for ref in ("R1", "D1"):
+            element = root.find(f".//element[@name='{ref}']")
+            point = tuple(float(element.get(axis)) for axis in "xy")
+            self.assertTrue(all(abs(value / 2.54 - round(value / 2.54)) < 1e-6 for value in point))
+            positions.add(point)
+        self.assertEqual(len(positions), 2)
+        self.assertEqual({row["ref"] for row in footprints.silkscreen(root) if row["kind"] == "text"},
+                         {"R1", "J1", "D1", "Q1"})
+        self.assertFalse([row for row in placement_check.silk_on_pads(placement_check.silk_shapes(root),
+                                                                      placement_check.pads(root))
+                          if row["kind"] == "name"])
+
     def test_native_custom_attributes_match_the_repaired_21_mpn_rows(self):
         data = minimal_design()
         resistor = next(part for part in data["parts"] if part["ref"] == "R1")
@@ -86,7 +109,7 @@ class CompilerLabelsTest(unittest.TestCase):
                 part = deepcopy(resistor)
                 part.update(ref=ref, attributes={"MPN": mpn})
                 part["units"][0].update(x=x * 4, y=y * 4)
-                part["board"].update(x=x, y=y, side="bottom" if phase == "C" else "top")
+                part["board"].update(x=x, y=y, side="bottom" if phase == "C" else "top", off_grid=True)
                 data["parts"].append(part)
                 expected[ref] = (x, y, "28" if phase == "C" else "27")
 

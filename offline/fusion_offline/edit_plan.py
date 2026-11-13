@@ -80,7 +80,8 @@ def simulate(xml, operations, sources=None):
             new=ET.SubElement(sheets,'sheet'); ET.SubElement(new,'description').text=name(op['title'])
             for tag in ('plain','instances','busses','nets'): ET.SubElement(new,tag)
         elif kind=='add_part':
-            ref=name(op['ref'])
+            from .part_placement import reference
+            ref=reference(op['ref'])
             if ref.casefold() in {r.casefold() for r in sch.parts}: raise ValueError('Duplicate reference')
             source=sources.get(op['library_path'])
             if not source or 'content' not in source: raise ValueError('Cached library XML unavailable')

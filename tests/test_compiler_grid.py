@@ -77,3 +77,53 @@ class CompilerGridTest(unittest.TestCase):
         self.design["nets"][0]["vias"] = [{"x": 1, "y": 2, "extent": "1-16", "drill": 0.3}]
         spec = load_design_spec(*self.pin())
         self.assertEqual(spec.nets[-1]["vias"][0]["x"], 1)
+
+    def test_active_grid_origin_and_explicit_off_grid_readback(self):
+        asset = self.design["templates"]["board"]
+        template = ET.parse(asset["path"])
+        template.getroot().find("./drawing/grid").attrib.update(
+            distance="50", unitdist="mil", unit="inch", originx="10", originy="20")
+        path = self.root / "offset.brd"
+        template.write(path, encoding="utf-8")
+        asset.update(path=str(path), sha256=sha256(path.read_bytes()).hexdigest())
+        self.design["parts"][1]["board"].update(x=15.3, y=21.0)
+        self.design["parts"][2]["board"].update(x=24.1, y=21.17, off_grid=True)
+        root = ET.fromstring(self.compile("offset").read_artifact("board"))
+        for ref, expected in (("R1", (15.494, 20.828)), ("D1", (24.1, 21.17))):
+            element = root.find(f".//element[@name='{ref}']")
+            self.assertEqual(tuple(float(element.get(axis)) for axis in "xy"), expected)
+
+    def test_copper_clearance_can_keep_a_legal_off_grid_request(self):
+        from fusion_offline import part_placement as placement
+
+        root = ET.fromstring((Path(__file__).parent / "fixtures" / "mini.brd").read_bytes())
+        ET.SubElement(root.find("./drawing"), "grid", distance="10", unitdist="mm")
+        signals = root.find(".//board/signals")
+        signals.clear()
+        signal = ET.SubElement(signals, "signal", name="OTHER")
+        ET.SubElement(signal, "wire", x1="9.5", x2="9.5", y1="0", y2="11", width="0.3", layer="1")
+        board = root.find(".//board")
+        for wire in board.findall("./plain/wire"):
+            for attr in ("y1", "y2"):
+                if wire.get(attr) == "10":
+                    wire.set(attr, "11")
+        for element in list(board.find("elements")):
+            if element.get("name") != "R1":
+                board.find("elements").remove(element)
+        result = placement.plan(root, "R1", (8.2, 9.7))
+        self.assertEqual(result["at"], [8.2, 9.7])
+        self.assertIn("routing clearance at R1", result["off_grid_reason"])
+
+    def test_automatic_references_reserve_explicit_names(self):
+        self.design["nets"] = []
+        self.design["routing"]["selected_nets"] = []
+        self.design["parts"][1]["ref"] = None
+        copy = json.loads(json.dumps(self.design["parts"][1]))
+        copy["ref"] = "R1"
+        copy["board"].update(x=20, y=25)
+        copy["units"][0].update(x=12, y=42)
+        self.design["parts"].append(copy)
+        candidate = self.compile("refs")
+        for kind, tag in (("schematic", "part"), ("board", "element")):
+            names = {node.get("name") for node in ET.fromstring(candidate.read_artifact(kind)).iter(tag)}
+            self.assertTrue({"R1", "R2"} <= names, names)
