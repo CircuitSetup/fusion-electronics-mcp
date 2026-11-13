@@ -17,6 +17,8 @@
       "required": ["name", "smds"],
       "properties": {
         "name": {"type": "string"},
+        "mechanical_pads": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true,
+                            "description": "Copper mounting features with no electrical terminal. Keep these pads in the footprint only."},
         "smds": {"type": "array", "items": {
           "type": "object", "required": ["name", "x", "y", "dx", "dy"],
           "properties": {"name": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"},

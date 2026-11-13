@@ -183,6 +183,25 @@ class CompilerLibrariesTest(unittest.TestCase):
         self.assertEqual(part.gates["Spare"].pins["A"].get("name"), "A")
         self.assertEqual(part.pads["Spare", "A"], ("K",))
 
+    def test_candidate_retains_unwired_pin_without_creating_a_board_net(self):
+        from fusion_offline.compiler.compile import compile_candidate
+
+        ET.SubElement(self.package, "smd", name="3", x="0", y="0", dx="0.4", dy="0.4", layer="1")
+        symbol = self.library.find("./symbols/symbol[@name='LED']")
+        ET.SubElement(symbol, "pin", name="NC", x="0", y="2.54", length="short", direction="nc")
+        ET.SubElement(self.device.find("connects"), "connect", gate="G$1", pin="NC", pad="3")
+        self.resolve()  # Write the pinned fixture library and spec.
+        source = self.directory / "design.json"
+        candidate = compile_candidate(source, hashlib.sha256(source.read_bytes()).hexdigest(),
+                                      self.directory / "candidate")
+        schematic = ET.fromstring(candidate.read_artifact("schematic"))
+        board = ET.fromstring(candidate.read_artifact("board"))
+        self.assertIsNotNone(schematic.find(".//symbol[@name='LED']/pin[@name='NC']"))
+        self.assertIsNotNone(schematic.find(".//connect[@pin='NC'][@pad='3']"))
+        self.assertIsNone(schematic.find(".//pinref[@part='D1'][@pin='NC']"))
+        self.assertIsNotNone(board.find(".//package[@name='LED_0805']/smd[@name='3']"))
+        self.assertIsNone(board.find(".//contactref[@element='D1'][@pad='3']"))
+
     def test_rejects_shared_pad_across_different_nets(self):
         self.device.find("./connects/connect[@pin='A']").set("pad", "K")
         with self.assertRaisesRegex(ValueError, "pad.*net"):

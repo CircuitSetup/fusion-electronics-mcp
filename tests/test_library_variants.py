@@ -114,11 +114,16 @@ class VariantTest(unittest.TestCase):
             plan_variant(plug_part(), info, "_NEW", {"GND": "A1"}, None, False)
         with self.assertRaisesRegex(ValueError, "not in package"):
             plan_variant(plug_part(), info, "_NEW", {"GND": "A1", "VBUS": "B1", "SHIELD": "S9"}, None, False)
+        with self.assertRaisesRegex(ValueError, "Unmapped electrical pads.*S2"):
+            plan_variant(plug_part(), info, "_NEW", {"GND": "A1", "VBUS": "B1", "SHIELD": "S1"}, None, False)
+        with self.assertRaisesRegex(ValueError, "Pad B1.*multiple symbol pins"):
+            plan_variant(plug_part(), info, "_NEW", {"GND": "A1 B1", "VBUS": "B1", "SHIELD": "S1 S2"}, None, False)
         with self.assertRaisesRegex(ValueError, "already has a variant"):
             plan_variant(plug_part(), info, "_old", None, None, False)
 
     def test_variant_script(self):
-        s = variant_script(plug_part(), "CONN_USBC", "_NEW", {"G$1.GND": "A1", "G$1.SHIELD": "S1 S2"},
+        connects = {"G$1.GND": "A1", "G$1.VBUS": "B1", "G$1.SHIELD": "S1 S2"}
+        s = variant_script(plug_part(), "CONN_USBC", "_NEW", connects,
                            {"": {"VALUE": "PLUG"}, "_DNP": {"VALUE": "NC/PLUG"}})
         load_addin().validate(s)
         self.assertIn("EDIT 'PLUG_TEST.pac';", s)
@@ -127,8 +132,10 @@ class VariantTest(unittest.TestCase):
         self.assertIn("CONNECT 'G$1.SHIELD' 'S1 S2';", s)
         self.assertIn("TECHNOLOGY '';\nATTRIBUTE VALUE 'PLUG';\nATTRIBUTE PACKAGE DELETE;", s)
         self.assertIn("TECHNOLOGY '_DNP';\nATTRIBUTE VALUE 'NC/PLUG';\nATTRIBUTE PACKAGE DELETE;", s)
-        reuse = variant_script(plug_part(), "CONN_USBC", "_NEW", {}, {"": {}}, reuse_package=True)
+        reuse = variant_script(plug_part(), "CONN_USBC", "_NEW", connects, {"": {}}, reuse_package=True)
         self.assertNotIn(".pac'", reuse)
+        with self.assertRaisesRegex(ValueError, "Unmapped electrical pads.*B1"):
+            variant_script(plug_part(), "CONN_USBC", "_NEW", {"G$1.GND": "A1", "G$1.SHIELD": "S1 S2"}, {"": {}})
 
 
 class CrashGuardTest(unittest.TestCase):

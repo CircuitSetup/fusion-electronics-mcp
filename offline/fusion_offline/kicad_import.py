@@ -77,17 +77,19 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
                       pin_names: dict[str, str] | None = None, attributes: dict[str, str] | None = None,
                       jlc_native: bool = False, source: str = "", description: str = "",
                       user_value: bool = False, directions: dict[str, str] | None = None) -> tuple[dict, dict]:
-    """Returns (part, renames). pin_names maps pad -> symbol pin name (default:
-    the pad name); pads sharing a pin name are connected to that one pin."""
+    """Returns (part, renames). Every electrical pad gets a symbol pin. pin_names
+    maps source pad names to symbol pin names, defaulting to the pad identifier.
+    Pads explicitly sharing a symbol pin name are mapped to that pin."""
     fp = sexp(text)
     if _find(fp, "zone") or _find(fp, "rule_area"):
         raise ValueError("Unsupported KiCad zone/keepout or rule area; conversion would omit its copper restrictions")
     name = re.sub(r"[^A-Za-z0-9_.-]", "_", str(fp[1]).split(":")[-1])
     smds, pads, holes, slots, silk = [], [], [], [], []
     used: set[str] = set()
-    unconnected: set[str] = set()
+    mechanical_pads: set[str] = set()
     renames: dict[str, str] = {}
     raw = [p for p in _find(fp, "pad")]
+    source_names = {str(p[1]).casefold() for p in raw}
     numeric = [int(p[1]) for p in raw if str(p[1]).isdigit()]
     nxt = (max(numeric) if numeric else 0) + 1
     for p in raw:
@@ -111,7 +113,10 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
         if kind == "np_thru_hole" and oval:
             slots.append({"x": _r(x), "y": _r(y), "width": _r(slot_w), "length": _r(slot_l), "rot": axis})
             continue
-        if kind == "np_thru_hole" or (kind == "thru_hole" and dval and not oval and max(w, h) <= dval + 1e-3):
+        copperless = kind == "thru_hole" and dval and not oval and max(w, h) <= dval + 1e-3
+        if copperless and num:
+            raise ValueError(f"Pad {num} has no copper around its drill; correct the footprint or mark the hole as non-plated")
+        if kind == "np_thru_hole" or copperless:
             # a "plated" pad no bigger than its drill has no copper ring: a
             # locating-peg hole (EasyEDA exports RJ45 pegs this way)
             holes.append({"x": _r(x), "y": _r(y), "drill": dval or w})
@@ -120,10 +125,10 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
             # unnamed plated pads are mounting/locating pegs: keep them as
             # unconnected pads (no symbol pin) so the hole is not lost
             mt = 1
-            while f"MT{mt}" in used:
+            while f"MT{mt}" in mechanical_pads or f"mt{mt}" in source_names:
                 mt += 1
             num = f"MT{mt}"
-            unconnected.add(num)
+            mechanical_pads.add(num)
         if not re.fullmatch(r"[A-Za-z0-9_$+\-.]+", num):
             renames.setdefault(num, str(nxt))
             if renames[num] == str(nxt):
@@ -186,12 +191,23 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
 
     pin_names = pin_names or {}
     directions = directions or {}
-    pins, seen = [], {}
-    for pad in sorted(used - unconnected, key=lambda s: (len(s), s)):
-        pname = pin_names.get(pad, pad)
+    electrical_pads = used - mechanical_pads
+    original_names = {renamed: original for original, renamed in renames.items()}
+    unknown = set(pin_names) - electrical_pads - set(renames)
+    if unknown:
+        raise ValueError(f"pin_names names unknown electrical pads: {sorted(unknown)}")
+    pins, seen, unnamed = [], {}, set()
+    for pad in sorted(electrical_pads, key=lambda s: (len(s), s)):
+        original = original_names.get(pad, pad)
+        explicit = original in pin_names or pad in pin_names
+        pname = pin_names.get(original, pin_names.get(pad, pad))
         if pname in seen:
+            if not explicit or pname in unnamed:
+                raise ValueError(f"Default pin name {pname!r} conflicts with an explicit pin name; give both pads explicit names")
             seen[pname]["pads"].append(pad)
             continue
+        if not explicit:
+            unnamed.add(pname)
         entry = {"name": pname, "pad": pad, "pads": [pad], "direction": directions.get(pname, "pas")}
         seen[pname] = entry
         pins.append(entry)
@@ -209,5 +225,7 @@ def footprint_to_part(text: str, *, part_id: str, deviceset: str, prefix: str, d
         "metadata": {"source": source or f"kicad:{fp[1]}", "maintainer": "", "verified": False,
                      "notes": f"converted from KiCad footprint {fp[1]}"},
     }
+    if mechanical_pads:
+        part["package"]["mechanical_pads"] = sorted(mechanical_pads)
     validate_pad_names(part["package"])
     return part, renames

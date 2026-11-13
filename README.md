@@ -482,6 +482,16 @@ on Windows (`FUSION_MCP_LIBRARY` to change), so you can keep them in git.
 
 ### Datasheet-backed custom parts
 
+Build the complete datasheet pinout, including unused pins and NC/DNC terminals.
+Each electrical footprint pad needs a library pin mapping even if the placed
+part leaves it unwired. `pin_names` supplies names from the datasheet. Omitted
+names default to the pad identifiers. Give separate NC/DNC terminals distinct
+names and set their direction to `nc`. Unnumbered plated mounting features stay
+in the footprint as `package.mechanical_pads`, and unplated holes stay as holes
+or slots. A numbered plated terminal needs copper around its drill. For older
+hand-authored definitions, record verified mechanical pads
+in that field before inserting a part with package-only copper features.
+
 `create_library_part` also accepts these optional fields:
 - `pin_groups`: group name to an ordered list of symbol pin names. Include every
   pin exactly once. Groups are separated by a blank row on each side.

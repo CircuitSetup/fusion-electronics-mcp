@@ -39,6 +39,26 @@ class ConversionGuardsTest(unittest.TestCase):
         self.assertEqual({p['name'] for p in part['package']['smds']+part['package']['pads']},{'41','42'})
         self.assertEqual({p['pad'] for p in part['symbol']['pins']},{'41','42'})
 
+    def test_unnumbered_mounting_pad_stays_package_only(self):
+        peg = THERMAL.replace('"41"', '""')
+        part, _ = self.convert(PAD + peg)
+        self.assertEqual(part['package']['mechanical_pads'], ['MT1'])
+        self.assertEqual([p['pad'] for p in part['symbol']['pins']], ['41'])
+        script = L.build_script(L.Part(part))
+        self.assertIn("'MT1'", script)
+        self.assertNotIn("CONNECT 'G$1.MT1'", script)
+
+    def test_numbered_pad_without_copper_requires_source_correction(self):
+        copperless = THERMAL.replace('"41"', '"42"').replace('(drill 0.2)', '(drill 0.6)')
+        with self.assertRaisesRegex(ValueError, 'Pad 42.*no copper'):
+            self.convert(PAD + copperless)
+
+    def test_renamed_pad_uses_pin_name_from_source(self):
+        part, renames = footprint_to_part('(footprint "Module" ' + PAD.replace('"41"', '"A\'"') + ')',
+                                          part_id='module', deviceset='MODULE', prefix='U', pin_names={"A'": 'OUT'})
+        self.assertEqual(renames, {"A'": '1'})
+        self.assertEqual([(p['name'], p['pad']) for p in part['symbol']['pins']], [('OUT', '1')])
+
     def test_unsupported_conversion_does_not_replace_existing_part(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory); fp=base/'module.kicad_mod'; parts=base/'parts'

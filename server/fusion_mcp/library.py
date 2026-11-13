@@ -178,6 +178,46 @@ def configure_part(part: dict, pin_groups=None, pin_units=None, pin_sides=None, 
         part["metadata"]["datasheet"] = evidence
 
 
+def validate_pad_coverage(package: dict, connects: dict[str, str]) -> None:
+    """Check the complete footprint against the library mapping, independent of design nets."""
+    pads = {p["name"] for p in package.get("pads", []) + package.get("smds", [])}
+    mechanical = set(package.get("mechanical_pads", []))
+    if unknown := mechanical - pads:
+        raise ValueError(f"Mechanical pads {sorted(unknown)} are not in package {package['name']}")
+    owners = {}
+    for pin, names in connects.items():
+        pin_pads = names.split()
+        if not pin_pads:
+            raise ValueError(f"Symbol pin {pin} needs a package pad")
+        if len(pin_pads) != len(set(pin_pads)):
+            raise ValueError(f"Symbol pin {pin} repeats a package pad")
+        for pad in pin_pads:
+            if pad in owners:
+                raise ValueError(f"Pad {pad} is mapped to multiple symbol pins: {owners[pad]}, {pin}")
+            owners[pad] = pin
+    mapped = set(owners)
+    if unknown := mapped - pads:
+        raise ValueError(f"pads {sorted(unknown)} are not in package {package['name']}")
+    if package_only := mapped & mechanical:
+        raise ValueError(f"Mechanical pads {sorted(package_only)} must stay package-only")
+    if missing := pads - mechanical - mapped:
+        raise ValueError(f"Unmapped electrical pads in {package['name']}: {sorted(missing)}")
+
+
+def validate_part_connections(part: dict) -> None:
+    validate_pad_names(part["package"])
+    connects = {}
+    for gate, symbol in symbol_units(part):
+        for pin in symbol["pins"]:
+            name, pads = f"{gate}.{pin['name']}", str(pin["pad"])
+            if pin.get("direction") == "nc" and len(pads.split()) > 1:
+                raise ValueError(f"{name}: NC pads require separate symbol pins")
+            if name.upper() in connects:
+                raise ValueError(f"Duplicate symbol pin {name}")
+            connects[name.upper()] = pads
+    validate_pad_coverage(part["package"], connects)
+
+
 def symbol_units(part: dict) -> list[tuple[str, dict]]:
     """Keep the legacy flat pin list, with optional unit names on each pin."""
     sym = part["symbol"]
@@ -192,8 +232,8 @@ def build_script(part: Part, reuse_package: bool = False) -> str:
     """reuse_package: the library already has this package (same pads), so only the symbol and
     device are drawn and the device uses the existing package."""
     d = part.data
-    pkg, sym = d["package"], d["symbol"]
-    validate_pad_names(pkg)
+    pkg = d["package"]
+    validate_part_connections(d)
     L = ["GRID MM;"]
     if not reuse_package:
         L += _package_commands(pkg)
@@ -299,6 +339,7 @@ def variant_script(part: Part, deviceset: str, variant: str, connects: dict[str,
     asked for (ATTRIBUTE <name> DELETE)."""
     pkg = part.data["package"]
     validate_pad_names(pkg)
+    validate_pad_coverage(pkg, connects)
     L = ["GRID MM;"]
     if not reuse_package:
         L += _package_commands(pkg)

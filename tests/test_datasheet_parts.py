@@ -99,6 +99,33 @@ class DatasheetPartTest(unittest.TestCase):
         self.assertNotIn('datasheet', part.data['metadata'])
         self.assertIn("CONNECT 'G$1.GND' '4';", L.build_script(part))
 
+    def test_partial_pin_names_keep_unused_pins_and_nc_in_the_library(self):
+        result = S.create_library_part(str(self.fp), 'test-four', 'TEST4', 'U', 'TEST4',
+                                       pin_names={'1': 'IN', '3': 'NC'}, directions={'NC': 'nc'})
+        self.assertEqual(result['pins'], 4)
+        script = L.build_script(S.library.get('test-four'))
+        self.assertIn("PIN 'NC' nc short", script)
+        for name, pad in [('IN', '1'), ('2', '2'), ('NC', '3'), ('4', '4')]:
+            self.assertIn(f"CONNECT 'G$1.{name}' '{pad}';", script)
+
+    def test_nc_pins_cannot_be_combined_into_one_connection(self):
+        with self.assertRaisesRegex(S.ToolError, 'NC.*separate'):
+            S.create_library_part(str(self.fp), 'test-four', 'TEST4', 'U', 'TEST4',
+                                  pin_names={'3': 'NC', '4': 'NC'}, directions={'NC': 'nc'})
+
+    def test_default_pin_name_cannot_merge_with_an_explicit_name(self):
+        with self.assertRaisesRegex(S.ToolError, 'Default pin name.*conflicts'):
+            S.create_library_part(str(self.fp), 'test-four', 'TEST4', 'U', 'TEST4', pin_names={'1': '2'})
+
+    def test_insert_refuses_missing_physical_pin_before_native_write(self):
+        self.create()
+        S.library.get('test-four').data['symbol']['pins'].pop()
+        with mock.patch.object(S, 'session') as session:
+            with self.assertRaisesRegex(S.ToolError, 'Unmapped electrical pads.*4'):
+                S.insert_library_part('test-four')
+            session.activate.assert_not_called()
+            session.run_script.assert_not_called()
+
     def test_block_layout_refuses_multi_unit_geometry(self):
         from fusion_mcp.sch_blocks import BlockSchematic
         from types import SimpleNamespace
