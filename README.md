@@ -1,4 +1,4 @@
-# fusion-electronics-mcp
+# Fusion Electronics MCP & AI PCB Builder
 
 Build new PCB designs offline and work on them in Autodesk Fusion Electronics through an
 MCP client. The offline EAGLE compiler turns a JSON design specification and local libraries
