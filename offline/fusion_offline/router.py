@@ -17,6 +17,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import replace
+from itertools import combinations
 import re
 from array import array
 import xml.etree.ElementTree as ET
@@ -24,8 +25,10 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from dataclasses import dataclass, field
 
+from .junctions import overlapping_runs
 from .routing_budget import MAX_SEARCH_STATES, BudgetStop, RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
-from .stitch import Obstacle, _mm, board_obstacles, outline_vertices, segments_intersect
+from .stitch import Obstacle, _mm, board_obstacles, drill_keepouts, outline_vertices, segments_intersect
+from .net_classes import _mm as rule_mm
 
 DIRS = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
 
@@ -140,7 +143,7 @@ class Grid:
                  soft_cost: float = 4.0, pour_cost: float = 30.0, plane_cost: float = 0.25,
                  soft_tags: set | None = None, rip_cost: float = 15.0, necks=(), neck_width: float | None = None,
                  hug: float = 0.0, progress: SearchProgress | None = None, via_states: int = 1,
-                 via_radii=None):
+                 via_radii=None, via_drill=None):
         checkpoint = self.checkpoint = progress.checkpoint if progress else None
         obs, rules, outline = cache if cache else board_obstacles(root)
         obs = [replace(o, trace_holes=()) if o.trace_holes and o.trace_holes_for[0] != net else o for o in obs]
@@ -221,6 +224,15 @@ class Grid:
         for o in self.own:                       # no via in the net's own pads
             if o.is_pad:
                 self._mark(vb, o, self.via_radius(o) + G_via_clear(self, o))
+        self.drill_gap = rule_mm(rules.get("mdDrill")) or 0.0
+        self.drills = []
+        if via_drill is not None:
+            for hole in drill_keepouts(root, rules, via_drill, checkpoint=checkpoint):
+                if checkpoint:
+                    checkpoint()
+                if _obs_near(hole, bx0, by0, bx1, by1):
+                    self.drills.append(hole)
+                    self._mark(vb, hole, 0.0)
         for l in layers:
             vb |= blocked[l]
         # extra cost per cell entered: through-hole pin fields, other nets' pours on that layer
@@ -347,6 +359,13 @@ def G_via_clear(G, o: Obstacle) -> float:
     return G.via_clear_pad if o.is_pad else G.via_clear_wire
 
 
+def route_minimums(board, class_number, rules):
+    net_class = next((row for row in board.findall("./classes/class") if row.get("number") == class_number), None)
+    return tuple(max(rule_mm(rules.get(param)) or 0.0,
+                     (rule_mm(net_class.get(field)) or 0.0) if net_class is not None else 0.0)
+                 for param, field in (("msWidth", "width"), ("msDrill", "drill")))
+
+
 def _obs_near(o: Obstacle, x0, y0, x1, y1) -> bool:
     a, b, c, d = o.bounds
     return not (c < x0 or a > x1 or d < y0 or b > y1)
@@ -388,7 +407,7 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
           rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
           layers: tuple | None = None, via_spans: list | None = None, *,
           budget: RoutingBudget | None = None, max_vias_per_connection: int | None = None,
-          clock=None, _progress: SearchProgress | None = None, _tap_exclude=None) -> Route:
+          clock=None, _progress: SearchProgress | None = None, _tap_exclude=None, min_width_mm=0.0) -> Route:
     """Route `net` from pad centre `start` (on any of start_layers) to pad centre `goal`, or
     (join_existing) to whichever is nearer: the goal pad or any trace the net already has, which
     it taps where it meets it (Fusion connects a trace ending part-way along another, verified
@@ -419,7 +438,8 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
         result = _route(root, net, start, start_layers, goal, goal_layers, width, clearance,
                         prefer_layer, vias, via_drill, via_d, step, turn_cost, via_cost, layer_cost,
                         max_nodes, join_existing, margin_mm, soft_cost, tap_exclude, pour_cost, plane_cost,
-                        cache, h_weight, soft_tags, rip_cost, neck_width, neck_len, hug, layers, via_spans, progress)
+                        cache, h_weight, soft_tags, rip_cost, neck_width, neck_len, hug, layers, via_spans, progress,
+                        min_width_mm=min_width_mm)
         if progress is not None:
             progress.checkpoint()
             termination = ("routed" if result.legs and not result.problems else
@@ -441,7 +461,8 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
           soft_cost: float = 4.0, tap_exclude: set | None = None, pour_cost: float = 30.0,
           plane_cost: float = 0.25, cache=None, h_weight: float = 1.0, soft_tags: set | None = None,
           rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
-          layers: tuple | None = None, via_spans: list | None = None, progress: SearchProgress | None = None) -> Route:
+          layers: tuple | None = None, via_spans: list | None = None, progress: SearchProgress | None = None,
+          *, min_width_mm=0.0) -> Route:
     checkpoint = progress.checkpoint if progress else None
     if checkpoint:
         checkpoint()
@@ -486,12 +507,13 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
                 for o in obs_all[0]], obs_all[1], obs_all[2])
     from . import annular
     rules = obs_all[1]
-    minimum_drill = _mm(rules.get('msDrill'), 0.0)
-    signal = next((s for s in root.findall('.//board/signals/signal') if s.get('name') == net), None)
+    board = root.find('./drawing/board')
+    signal = next((s for s in board.findall('./signals/signal') if s.get('name') == net), None)
     net_class = signal.get('class', '0') if signal is not None else '0'
-    for cls in root.findall('.//board/classes/class'):
-        if cls.get('number') == net_class:
-            minimum_drill = max(minimum_drill, _mm(cls.get('drill'), 0.0))
+    minimum_width, minimum_drill = route_minimums(board, net_class, rules)
+    minimum_width = max(minimum_width, min_width_mm)
+    requested_width = width
+    width = max(width, minimum_width)
     via_drill = max(.3, minimum_drill) if via_drill is None else via_drill
     if not math.isfinite(via_drill) or via_drill <= 0 or (vias and via_drill < minimum_drill - 1e-6):
         raise ValueError(f'via drill must be positive and at least {minimum_drill:g} mm under the board rules')
@@ -506,7 +528,7 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
         short = _pad_short_side(obs_all[0], net, p, checkpoint)
         if short and short < width and neck_len > 0:
             necks.append((p[0], p[1], neck_len + short / 2))
-            nw = min(nw or short, short)
+            nw = max(minimum_width, min(nw or short, short))
     via_limit = progress.via_limit if progress and vias and len(layers) > 1 else None
     via_states = (via_limit + 1) if via_limit is not None else 1
     diameters = annular.copper(rules, 'Via', via_drill, via_d, inner)
@@ -515,7 +537,7 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     G = Grid(root, net, width, clearance, step, start, layers=layers, via_d=effective_diameter, window=window, cache=obs_all,
              soft_cost=soft_cost, pour_cost=pour_cost, plane_cost=plane_cost, soft_tags=soft_tags, rip_cost=rip_cost,
              necks=necks, neck_width=nw, hug=hug, progress=progress, via_states=via_states,
-             via_radii=via_radii)
+             via_radii=via_radii, via_drill=via_drill if vias and len(layers) > 1 else None)
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
     r = Route(net, via_drill=via_drill, via_diameter=via_d, via_extent=(stack[0], stack[-1]),
@@ -617,8 +639,19 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     legs = [(l, _smooth(G, l, p)) for l, p in legs]
     legs = [(l, p) for l, p in legs if len(p) >= 2]
     r.legs, r.widths = _split_necks(G, legs)
+    if width != requested_width:
+        r.widths = [size or width for size in (r.widths or [None] * len(r.legs))]
     r.length_mm = sum(math.dist(a, b) for _, p in r.legs for a, b in zip(p, p[1:]))
     r.problems += check_route(G, r)
+    if join_existing and not r.problems:
+        retained = _net_traces(root, net)
+        for layer, points in r.legs:
+            for a, b in zip(points, points[1:]):
+                if checkpoint:
+                    checkpoint()
+                if any(layer == old_layer and overlapping_runs(a, b, c, d) for old_layer, c, d in retained):
+                    r.problems.append(f"layer {layer} route overlaps retained same-net copper")
+                    break
     # which route_all connections this route crosses (they must be ripped up for it)
     for o in G.ripable:
         if checkpoint:
@@ -1011,11 +1044,19 @@ def check_route(G: Grid, r: Route) -> list[str]:
                     return [f"layer {l} near ({xs[k]:.2f}, {ys[k]:.2f}) is {dd[k]:.3f} mm from "
                             f"{o.net or 'a hole/keepout'}"]
     for x, y in r.vias:
+        for hole in G.drills:
+            if G.checkpoint:
+                G.checkpoint()
+            if hole.distance(x, y) < -1e-6:
+                return [f"via at ({x}, {y}) violates drill spacing"]
         for o in G.other:
             if G.checkpoint:
                 G.checkpoint()
             if o.distance(x, y) < G.via_radius(o) + G_via_clear(G, o) - 0.005:
                 return [f"via at ({x}, {y}) too close to {o.net or 'a hole/keepout'}"]
+    for a, b in combinations(r.vias, 2):
+        if math.dist(a, b) < r.via_drill + G.drill_gap - 1e-6:
+            return [f"vias at {a} and {b} violate drill spacing"]
     return []
 
 

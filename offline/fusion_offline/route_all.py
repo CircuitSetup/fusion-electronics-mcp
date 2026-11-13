@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from . import router as RT
 from .junctions import canonicalize_signal
-from .routing_budget import RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
+from .routing_budget import BudgetStop, RoutingBudget, RoutingJob, SearchDiagnostics, SearchProgress
 
 
 @dataclass
@@ -87,6 +87,17 @@ def _not_joined(root, c: Conn, checkpoint=None) -> set:
     return out
 
 
+def _route_direction(root, connection, checkpoint=None):
+    """Start at a bare pad when the other pad already has an escape to tap."""
+    c = connection
+    start, _ = RT.fragment(root, c.net, c.start, c.start_layers, checkpoint=checkpoint)
+    if start:
+        goal, _ = RT.fragment(root, c.net, c.goal, c.goal_layers, checkpoint=checkpoint)
+        if not goal:
+            return Conn(c.id, c.net, c.goal, c.goal_layers, c.start, c.start_layers, c.width, c.label)
+    return c
+
+
 def route_all(root: ET.Element, conns: list[Conn], vias: bool = True, rounds: int = 3,
               rip_cost: float = 15.0, policies=None, priorities=None, *,
               budget: RoutingBudget | None = None, protected_nets=(), clock=None,
@@ -110,7 +121,8 @@ def _legacy_route_all(root, conns, vias, rounds, rip_cost, policies, priorities,
     queue = sorted(conns, key=lambda c: -(priorities or {}).get(c.net, 0))
     base_options = kw.copy()
     while queue:
-        c = queue.pop(0)
+        original = queue.pop(0)
+        c = _route_direction(work, original)
         kw = {**base_options, **(policies or {}).get(c.net, {})}
         allow_vias = vias and kw.pop('vias', True)
         if c.id in res.routes:
@@ -152,7 +164,7 @@ def _legacy_route_all(root, conns, vias, rounds, rip_cost, policies, priorities,
             res.routes[c.id] = r3
             res.failed.pop(c.id, None)
         else:
-            queue.append(c)
+            queue.append(original)
     return res
 
 
@@ -187,9 +199,13 @@ def _bounded_route_all(root, conns, vias, rip_cost, policies, priorities, job, p
         kw.pop("tap_exclude", None)
 
         def search(soft_tags=None):
-            return RT.route(work, c.net, c.start, c.start_layers, c.goal, c.goal_layers, width=c.width,
+            try:
+                target = _route_direction(work, c, state.checkpoint)
+            except BudgetStop as error:
+                return RT.Route(c.net, problems=[str(error)], diagnostics=state.finish(error.termination))
+            return RT.route(work, c.net, target.start, target.start_layers, target.goal, target.goal_layers, width=c.width,
                             vias=allow_vias, join_existing=True, soft_tags=soft_tags, rip_cost=rip_cost,
-                            _progress=state, _tap_exclude=lambda check: _not_joined(work, c, check), **kw)
+                            _progress=state, _tap_exclude=lambda check: _not_joined(work, target, check), **kw)
 
         route = search()
         if route.diagnostics.termination in ("no_path", "max_vias"):

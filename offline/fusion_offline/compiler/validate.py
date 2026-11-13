@@ -10,8 +10,12 @@ from ..annular import copper as annular_copper
 from ..design import parse_board_design, parse_schematic_design, transform
 from ..eagle import UnverifiedGeometry, parse_rot
 from ..footprints import packages
+from ..gerbers import design_holes
+from ..junctions import overlapping_runs
+from ..net_classes import _mm as rule_mm
 from ..pairs import _seg_dist
 from ..placement_check import pads as placed_pads
+from ..router import route_minimums
 from ..stitch import _inside_poly, _restrict_polygon, board_obstacles, outline_vertices, segments_intersect
 from .board import route_geometry, route_owners
 from .canonical import canonical_digest
@@ -231,11 +235,12 @@ def _fill_contacts(fill, nodes, wires, footprints):
     return sorted(touched)
 
 
-def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules, via_spans,
+def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules, via_spans, minimums,
                       *, fills=(), has_pour=False, fill_pad_copper=None):
     """Return contact groups proved by pad centres, straight traces and through vias."""
     components = _Components()
     errors, unknown = [], []
+    minimum_width, minimum_drill = minimums
     anchors = set()
     footprints = {}
     for contact in signal.contacts:
@@ -249,6 +254,7 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
     degree = Counter()
     seen_wires = set()
     wires = []
+    runs_by_layer = defaultdict(list)
     for wire in signal.wires:
         if wire.layer == 19:
             continue
@@ -262,12 +268,25 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
         elif not all(math.isfinite(number) for number in (*a, *b, wire.width)):
             errors.append("nonfinite copper trace geometry")
         else:
+            runs_by_layer[wire.layer].append((a[:2], b[:2]))
             seen_wires.add(frozenset((a, b)))
             components.join((a, b))
             degree.update((a, b))
             wires.append((a, b))
             if outline and not _trace_inside(outline, a[:2], b[:2]):
                 errors.append("trace leaves the board outline")
+            if wire.width < minimum_width - 1e-6:
+                errors.append(f"trace at {a[:2]} on layer {wire.layer} is {wire.width:g} mm wide, below {minimum_width:g} mm")
+
+    for layer, runs in runs_by_layer.items():
+        ordered = sorted(tuple(sorted(run)) for run in runs)
+        for index, (a, b) in enumerate(ordered):
+            for next_index in range(index + 1, len(ordered)):
+                c, d = ordered[next_index]
+                if c[0] > b[0] + 0.000071:
+                    break
+                if overlapping_runs(a, b, c, d):
+                    errors.append(f"overlapping collinear traces on layer {layer}: {a}–{b} and {c}–{d}")
 
     via_points, via_nodes = set(), set()
     vias = []
@@ -284,6 +303,8 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
         elif not has_pour and not (degree.keys() | anchors) & set(nodes):
             errors.append("via has no trace endpoint at its centre")
         else:
+            if via.drill < minimum_drill - 1e-6:
+                errors.append(f"via at {point} has {via.drill:g} mm drill, below {minimum_drill:g} mm")
             minimum = annular_copper(rules, "Via", via.drill, 0, inner=False)["outer"]
             if 0 < via.diameter < minimum - 1e-6:
                 errors.append(f"explicit via diameter is smaller than the {minimum:g} mm board-rule diameter")
@@ -513,6 +534,44 @@ def _element_attributes(board):
         raise ValueError("incomplete native element attributes: " + ", ".join(sorted(incomplete)))
 
 
+def _drill_spacing(root, rules):
+    drilled, _ = design_holes(root)
+    holes = sorted(drilled.holes, key=lambda hole: (hole[1], hole[2], hole[0]))
+    minimum = rule_mm(rules.get("mdDrill")) or 0.0
+    largest_radius = max((drill / 2 for drill, _, _ in holes), default=0.0)
+    violations = []
+    for index, (drill, x, y) in enumerate(holes):
+        for next_index in range(index + 1, len(holes)):
+            other, xx, yy = holes[next_index]
+            if xx - x >= minimum + drill / 2 + largest_radius:
+                break
+            gap = math.hypot(xx - x, yy - y) - (drill + other) / 2
+            if gap < minimum - 1e-6:
+                violations.append(f"({x:g}, {y:g}) to ({xx:g}, {yy:g}): {gap:.4f} mm")
+    if violations:
+        raise ValueError(f"{len(violations)} drill spacings below {minimum:g} mm: " + ", ".join(violations[:10]))
+
+
+def _via_annulus_overlaps(design, stack):
+    vias = sorted((via.x, via.y, name, via.drill, via.diameter)
+                  for name, signal in design.signals.items() for via in signal.vias
+                  if via.extent == f"{stack[0]}-{stack[-1]}" and via.drill > 0
+                  and all(math.isfinite(n) for n in (via.x, via.y, via.drill, via.diameter)))
+    radii = [annular_copper(design.rules, "Via", drill, diameter, inner=len(stack) > 2)
+             for _, _, _, drill, diameter in vias]
+    largest = max((max(row.values()) / 2 for row in radii), default=0)
+    same_net, foreign = [], []
+    for i, (x, y, net, _, _) in enumerate(vias):
+        for j in range(i + 1, len(vias)):
+            xx, yy, other, _, _ = vias[j]
+            if xx - x >= 2 * largest:
+                break
+            threshold = max((diameter + radii[j][side]) / 2 for side, diameter in radii[i].items())
+            if math.hypot(xx - x, yy - y) < threshold - 1e-6:
+                (same_net if net == other else foreign).append(f"{net} ({x:g}, {y:g}) / {other} ({xx:g}, {yy:g})")
+    return same_net, foreign
+
+
 def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict, *,
                        provenance=None, measured_fills=None, measured_fills_complete=False) -> dict:
     """Check paired bytes and return deterministic findings and physical contact groups."""
@@ -529,6 +588,14 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
                 _check("element_attributes", lambda: _element_attributes(board))]
     sch, design = parse_schematic_design(sch_root), parse_board_design(board_root)
     stack = tuple(design.copper_layers)
+    findings.append(_check("drill_spacing", lambda: _drill_spacing(board_root, design.rules)))
+    try:
+        shared_annuli, foreign_annuli = _via_annulus_overlaps(design, stack)
+        findings.append(_finding("via_annuli", "fail" if foreign_annuli else "pass",
+                                 f"{len(foreign_annuli)} different-net and {len(shared_annuli)} same-net overlaps"
+                                 + (f". Different-net: {', '.join(foreign_annuli[:10])}" if foreign_annuli else "")))
+    except (ValueError, OverflowError) as error:
+        findings.append(_finding("via_annuli", "unverified", str(error)))
     pads = {}
 
     def verify_contacts():
@@ -584,11 +651,12 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             routing_errors.append(f"{name}: polygon uses absent or disallowed copper layer")
         fill_layers = {int(p.attrib["layer"]) for p in pours}
         fills = [row for row in fills_by_net[name] if row["layer"] in fill_layers & allowed & set(stack)]
+        width, drill = route_minimums(board, xml_signal.get("class", "0"), design.rules)
         groups[name], errors, unknown = _route_components(
             signal, pads, stack, allowed & set(stack),
             min(limit, policy.get("max_vias_per_connection", limit)),
             [owners.get((name, canonical_digest(route_geometry(via)))) for via in xml_signal.findall("via")],
-            outline, design.rules, policy.get("via_spans"),
+            outline, design.rules, policy.get("via_spans"), (max(width, policy.get("min_width_mm", 0)), drill),
             fills=fills if measured_fills_complete and name not in unsupported_fills else (),
             has_pour=bool(pours), fill_pad_copper=fill_pad_copper,
         )

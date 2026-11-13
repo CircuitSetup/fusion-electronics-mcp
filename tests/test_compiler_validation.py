@@ -89,6 +89,43 @@ class CompilerValidationTest(unittest.TestCase):
                 self.assertEqual(report["airwires_by_net"]["VCC"], 1)
                 self.assertEqual(report["status"], "fail")
 
+    def test_serialized_overlapping_drills_and_underwidth_power_are_rejected(self):
+        self.add_preroute()
+        self.data["routing"]["policies"]["VCC"] = {"min_width_mm": 0.3}
+        candidate = self.compile()
+
+        def bad_copper(root):
+            rules = root.find(".//board/designrules")
+            ET.SubElement(rules, "param", name="mdDrill", value="6mil")
+            ET.SubElement(rules, "param", name="msDrill", value="0.20mm")
+            signal = root.find(".//signal[@name='VCC']")
+            ET.SubElement(signal, "via", x="8.05", y="16", drill="0.2", diameter="0.6", extent="1-16")
+            signal.find("wire[@layer='1']").set("width", "0.18")
+
+        report = self.report(candidate, bad_copper)
+        findings = {row["check"]: row for row in report["findings"]}
+        self.assertEqual(findings["drill_spacing"]["status"], "fail")
+        self.assertIn("below 0.1524 mm", findings["drill_spacing"]["detail"])
+        self.assertIn("1 same-net overlaps", findings["via_annuli"]["detail"])
+        self.assertIn("0.18 mm wide, below 0.3 mm", findings["routing_geometry"]["detail"])
+
+    def test_preroute_merges_overlaps_with_the_wider_shared_trunk(self):
+        self.add_preroute()
+        self.data["nets"][0]["wires"].append(
+            {"x1": 8, "y1": 16, "x2": 6, "y2": 13, "layer": 16, "width": 0.5})
+        candidate = self.compile()
+        signal = ET.fromstring(candidate.read_artifact("board")).find(".//signal[@name='VCC']")
+        self.assertEqual(sorted(float(w.attrib["width"]) for w in signal.findall("wire[@layer='16']")), [0.4, 0.5])
+        self.assertEqual(self.report(candidate)["airwires_by_net"]["VCC"], 0)
+
+        def add_partial_overlap(root):
+            signal = root.find(".//signal[@name='VCC']")
+            ET.SubElement(signal, "wire", x1="8", y1="16", x2="5", y2="11.5", layer="16", width=".4")
+
+        report = self.report(candidate, add_partial_overlap)
+        self.assertIn("overlapping collinear traces", next(row["detail"] for row in report["findings"]
+                                                            if row["check"] == "routing_geometry"))
+
     def test_pour_outline_is_pending_native_fill(self):
         candidate = self.compile()
 

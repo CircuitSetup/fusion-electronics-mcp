@@ -10,6 +10,17 @@ _TAP_TOLERANCE = 0.000071
 _VIA_TOLERANCE = 0.01
 
 
+def overlapping_runs(a, b, c, d):
+    """Return whether two straight, collinear runs share positive length."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = dist(a, b)
+    if not length or any(abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) > length * _TAP_TOLERANCE
+                         for p in (c, d)):
+        return False
+    start, end = sorted(((x - a[0]) * dx + (y - a[1]) * dy) / length for x, y in (c, d))
+    return min(length, end) - max(0, start) > _TAP_TOLERANCE
+
+
 def canonicalize_signal(signal, anchors=(), *, via_tolerance=_VIA_TOLERANCE):
     """Snap unambiguous via landings and split host wires at same-layer endpoints."""
     anchors = set(anchors)
@@ -79,3 +90,20 @@ def canonicalize_signal(signal, anchors=(), *, via_tolerance=_VIA_TOLERANCE):
                                         "x2": str(end[0]), "y2": str(end[1])})
             signal.insert(index, piece)
             index += 1
+
+    runs = {}
+    for wire in signal.findall("wire"):
+        if wire.get("layer") == "19" or float(wire.get("curve", "0")):
+            continue
+        ends = frozenset(tuple(float(wire.attrib[f"{axis}{index}"]) for axis in "xy") for index in (1, 2))
+        key = int(wire.attrib["layer"]), ends
+        previous = runs.get(key)
+        if previous is None:
+            runs[key] = wire
+            continue
+        if (float(wire.attrib["width"]), not wire.get("mcp_conn")) > (
+                float(previous.attrib["width"]), not previous.get("mcp_conn")):
+            runs[key] = wire
+            signal.remove(previous)
+        else:
+            signal.remove(wire)

@@ -39,6 +39,29 @@ def route(root, budget, **options):
 
 
 class RoutingBudgetTests(unittest.TestCase):
+    def test_incremental_route_taps_shared_escape_at_the_effective_width(self):
+        root = board()
+        signal = root.find(".//signal[@name='S']")
+        ET.SubElement(signal, "wire", x1="5.03", y1="10.07", x2="12", y2="10.07", layer="1", width=".27")
+        source = (5.03, 10.07)
+        added = RA.Conn("branch", "S", source, (1,), (15, 14), (1,), width=.18)
+        result = RA.route_all(root, [added], vias=False, budget=RoutingBudget(),
+                              policies={"S": {"min_width_mm": .27}})
+        route = result.routes["branch"]
+        self.assertEqual(route.joined, "existing trace")
+        self.assertNotEqual(route.legs[0][1][0], source)
+        self.assertTrue(all(width == .27 for _, _, width in route.pieces(added.width)))
+
+    def test_grid_and_final_route_check_block_drill_spacing_on_own_net(self):
+        root = board()
+        ET.SubElement(root.find(".//designrules"), "param", name="mdDrill", value="6mil")
+        ET.SubElement(root.find(".//signal[@name='S']"), "via", x="12", y="12", drill=".3", extent="1-16")
+        grid = R.Grid(root, "S", .25, None, .1, (12, 12), via_drill=.2)
+        self.assertTrue(grid.via_blocked[grid.ij(12.3, 12)])
+        self.assertFalse(grid.via_blocked[grid.ij(12.5, 12)])
+        route = R.Route("S", vias=[(12.3, 12)], via_drill=.2)
+        self.assertIn("drill spacing", R.check_route(grid, route)[0])
+
     def test_final_route_check_rejects_copper_outside_outline_or_edge_clearance(self):
         root = board()
         plain = root.find(".//plain")

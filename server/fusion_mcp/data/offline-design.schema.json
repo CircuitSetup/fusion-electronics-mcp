@@ -274,6 +274,7 @@
                 "uniqueItems": true
               },
               "max_vias_per_connection": {"type":"integer","minimum":1,"maximum":8},
+              "min_width_mm": {"type":"number","exclusiveMinimum":0},
               "via_spans": {"type":"array","maxItems":1,"items":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"integer","minimum":1,"maximum":304}}}
             }
           }

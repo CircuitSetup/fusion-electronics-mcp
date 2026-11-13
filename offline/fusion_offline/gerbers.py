@@ -269,7 +269,7 @@ def _xf(px, py, x, y, angle, mirror):
     return x + rx, y + ry
 
 
-def design_holes(root: ET.Element) -> tuple[DrillFile, dict]:
+def design_holes(root: ET.Element, *, checkpoint=None) -> tuple[DrillFile, dict]:
     """Every drilled hole of the board export (pad drills, via drills, package
     and board holes), plus pad counts per side for the report."""
     board = root.find("./drawing/board")
@@ -278,6 +278,8 @@ def design_holes(root: ET.Element) -> tuple[DrillFile, dict]:
     pkgs = {(lib.get("name"), pk.get("name")): pk for lib in board.iterfind("./libraries/library")
             for pk in lib.iterfind("./packages/package")}
     for el in board.iterfind("./elements/element"):
+        if checkpoint:
+            checkpoint()
         pk = pkgs.get((el.get("library"), el.get("package")))
         if pk is None:
             continue
@@ -297,6 +299,8 @@ def design_holes(root: ET.Element) -> tuple[DrillFile, dict]:
             counts["smd_top" if top else "smd_bottom"] += 1
     for s in board.iterfind("./signals/signal"):
         for v in s.iterfind("via"):
+            if checkpoint:
+                checkpoint()
             df.holes.append((round(_f(v, "drill"), 4), _f(v, "x"), _f(v, "y")))
             counts["vias"] += 1
     for h in board.iterfind("./plain/hole"):

@@ -3349,7 +3349,8 @@ def fanout_pad(ref: str, pad: str, layer: str = "top", trace_width_mm: float = 0
                          "move parts or allow a longer fanout")
     wl = _write_layer(layer)
     (x0, y0), (x1, y1) = plan["from"], plan["via"]
-    cmd = (f"GRID MM; LAYER {C.layer_token(wl)}; CHANGE WIDTH {C.n(trace_width_mm)}; WIRE {C.q(net)} {C.n(trace_width_mm)} "
+    trace_width = plan["trace_width"]
+    cmd = (f"GRID MM; LAYER {C.layer_token(wl)}; CHANGE WIDTH {C.n(trace_width)}; WIRE {C.q(net)} {C.n(trace_width)} "
            f"{C.pt(x0, y0)} {C.pt(x1, y1)}; CHANGE DRILL {C.n(plan['drill'])}; "
            f"VIA {C.q(net)} {C.n(plan['diameter'])} round {C.pt(x1, y1)};")
 
@@ -3398,7 +3399,7 @@ def ground_vias(net: str = "GND", max_dist_mm: float = 1.5, trace_width_mm: floa
             v = ET.SubElement(sig, "via", {"x": str(plan["via"][0]), "y": str(plan["via"][1]),
                                            "extent": "1-16", "drill": str(plan["drill"]), "diameter": str(plan["diameter"])})
             ET.SubElement(sig, "wire", {"x1": str(plan["from"][0]), "y1": str(plan["from"][1]), "x2": str(plan["via"][0]),
-                                        "y2": str(plan["via"][1]), "width": str(trace_width_mm), "layer": str(layers[0])})
+                                        "y2": str(plan["via"][1]), "width": str(plan["trace_width"]), "layer": str(layers[0])})
     out = {"planned": len(plans), "no_spot": missed,
            "vias": [{"pad": n, "via": p["via"], "trace_mm": p["distance"]} for n, _, p in plans]}
     if dry_run or not plans:
@@ -3406,7 +3407,7 @@ def ground_vias(net: str = "GND", max_dist_mm: float = 1.5, trace_width_mm: floa
     wmap = _route_write_map(root, used_layers={l for _, l, _ in plans})
     cmds = ["GRID MM;"]
     for n, l, p in plans:
-        cmds.append(C.add_trace(net, wmap[l], trace_width_mm, [p["from"], p["via"]]).replace("GRID MM; ", ""))
+        cmds.append(C.add_trace(net, wmap[l], p["trace_width"], [p["from"], p["via"]]).replace("GRID MM; ", ""))
         cmds.append(C.add_via(net, p["via"][0], p["via"][1], p["drill"], p["diameter"]).replace("GRID MM; ", ""))
     n0 = len(snap.board().signals[net].vias)
 

@@ -105,6 +105,10 @@ Per-net `allowed_layers` limits traces. Set `via_spans` to the full-stack endpoi
 (for example, `[[1,16]]`), or to `[]` to forbid through vias. Through vias check clearance on
 every layer they cross, including any reserved reference plane. A pre-routed pad-to-via escape
 can serve as the launch point for an inner-layer routing job.
+The router uses the greater of the board width minimum, net class width, and any per-net
+`min_width_mm`. Enter power widths after sizing the shared segments for combined load and copper
+thickness. Preflight rejects narrower traces, overlapping collinear runs, and drill spacing below
+the board's `mdDrill` rule. Same-net annulus overlap is reported separately from drill spacing.
 
 `board.keepouts[].layers` accepts enabled copper export IDs, including inner layers.
 The compiler emits a layer-41 RestrictCopper mask for a keepout that includes inner copper.

@@ -406,6 +406,17 @@ def _inside(x, y, segs) -> bool:
     return inside
 
 
+def drill_keepouts(root, rules, drill, *, checkpoint=None):
+    """Existing hole footprints enlarged by the new drill radius and edge gap."""
+    from .gerbers import design_holes
+    from .net_classes import _mm as rule_mm
+
+    drilled, _ = design_holes(root, checkpoint=checkpoint)
+    gap = rule_mm(rules.get("mdDrill")) or 0.0
+    return [Obstacle("circle", None, False, (x, y, (size + drill) / 2 + gap))
+            for size, x, y in drilled.holes]
+
+
 def plan_stitching(root: ET.Element, net: str, pitch: float = 2.0, drill: float | None = None,
                    clearance: float | None = None, min_spacing: float | None = None,
                    keep_away: dict[str, float] | None = None, diameter: float | None = None,
@@ -421,9 +432,9 @@ def plan_stitching(root: ET.Element, net: str, pitch: float = 2.0, drill: float 
         raise ValueError("board has no outline")
     # 0.3 mm is the smallest drill at JLC's standard price; smaller costs extra, so the design's
     # minimum (often 0.2) is NOT used unless asked for
-    drill = drill or max(0.3, _mm(rules.get("msDrill"), 0.3))
-    ring = max(0.25 * drill, _mm(rules.get("rlMinViaOuter"), 0.2032))
-    r = max(drill + 2 * ring, diameter or 0.6) / 2
+    drill, diameter, r, _ = _via_plan_rules(root, net, rules, drill, diameter)
+    drill_exclusions = drill_keepouts(root, rules, drill)
+    from .net_classes import _mm as rule_mm
     allow = re.compile(under_parts) if under_parts else None
     bodies = [b for ref, b in part_bodies(root) if not (allow and allow.fullmatch(ref))]
     if allow:
@@ -432,7 +443,8 @@ def plan_stitching(root: ET.Element, net: str, pitch: float = 2.0, drill: float 
         bodies += [b for ref, b in pin_fields(root, pin_field_margin) if allow.fullmatch(ref)]
     clr = clearance if clearance is not None else max(_mm(rules.get("mdWireVia"), 0.2), _mm(rules.get("mdPadVia"), 0.2))
     edge = _mm(rules.get("mdCopperDimension"), 0.3)
-    spacing = min_spacing if min_spacing is not None else pitch * 0.9
+    spacing = max(min_spacing if min_spacing is not None else pitch * 0.9,
+                  drill + (rule_mm(rules.get("mdDrill")) or 0.0))
     xs = [v for s in outline for v in (s[0], s[2])]
     ys = [v for s in outline for v in (s[1], s[3])]
     x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
@@ -490,11 +502,12 @@ def plan_stitching(root: ET.Element, net: str, pitch: float = 2.0, drill: float 
             if bad:
                 reasons[bad] += 1
                 continue
-            if any(math.hypot(x - a, y - b) < spacing for a, b in chosen + existing):
+            if (any(math.hypot(x - a, y - b) < spacing - 1e-6 for a, b in chosen + existing)
+                    or any(hole.distance(x, y) < -1e-6 for hole in drill_exclusions)):
                 reasons["spacing"] += 1
                 continue
             chosen.append((x, y))
-    return {"net": net, "vias": chosen, "drill_mm": drill, "diameter_mm": round(2 * r, 4),
+    return {"net": net, "vias": chosen, "drill_mm": drill, "diameter_mm": diameter,
             "clearance_mm": clr, "edge_clearance_mm": edge, "pitch_mm": pitch, "rejected": reasons}
 
 
@@ -565,6 +578,21 @@ def part_bodies(root: ET.Element, margin: float = 0.15) -> list[tuple[str, tuple
     return out
 
 
+def _via_plan_rules(root, net, rules, drill, diameter):
+    from .annular import copper, required_diameter
+    from .router import copper_layers, route_minimums
+
+    board = root.find("./drawing/board")
+    signal = next((row for row in board.findall("./signals/signal") if row.get("name") == net), None)
+    width, minimum = route_minimums(board, signal.get("class", "0") if signal is not None else "0", rules)
+    drill = max(0.3, minimum) if drill is None else drill
+    if not math.isfinite(drill) or drill <= 0 or drill < minimum - 1e-6:
+        raise ValueError(f"via drill must be positive and at least {minimum:g} mm under the board rules")
+    rings = copper(rules, "Via", drill, diameter or 0.6, inner=len(copper_layers(root)) > 2)
+    diameter = max(required_diameter(drill), diameter or 0.6, rings["outer"])
+    return drill, diameter, max(diameter, *rings.values()) / 2, width
+
+
 def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: float = 0.25,
                 max_dist: float = 3.0, step: float = 0.1, drill: float | None = None,
                 diameter: float | None = None, trace_layer: int | None = None) -> dict | None:
@@ -584,9 +612,9 @@ def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: flo
         raise ValueError('Fanout trace layer does not reach the source pad')
     # 0.3 mm is the smallest drill at JLC's standard price; smaller costs extra, so the design's
     # minimum (often 0.2) is NOT used unless asked for
-    drill = drill or max(0.3, _mm(rules.get("msDrill"), 0.3))
-    ring = max(0.25 * drill, _mm(rules.get("rlMinViaOuter"), 0.2032))
-    r = max(drill + 2 * ring, diameter or 0.6) / 2
+    drill, diameter, r, minimum_width = _via_plan_rules(root, net, rules, drill, diameter)
+    trace_width = max(trace_width, minimum_width)
+    drill_exclusions = drill_keepouts(root, rules, drill)
     bodies = [b for _, b in part_bodies(root)]
     clr = max(_mm(rules.get("mdWireVia"), 0.2), _mm(rules.get("mdPadVia"), 0.2))
     wclr = max(_mm(rules.get("mdWireWire"), 0.15), _mm(rules.get("mdWirePad"), 0.15))
@@ -609,6 +637,8 @@ def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: flo
                 continue                       # not under a part
             if any(o.distance(x, y) < r + (clr if (o.is_pad or o.net) else 0.0) for o in blockers + others):
                 continue
+            if any(hole.distance(x, y) < -1e-6 for hole in drill_exclusions):
+                continue
             ok = True
             for k in range(21):
                 px, py = c[0] + (x - c[0]) * k / 20, c[1] + (y - c[1]) * k / 20
@@ -617,7 +647,7 @@ def plan_fanout(root: ET.Element, ref: str, pad: str, net: str, trace_width: flo
                     break
             if ok:
                 best = {"via": (round(x, 4), round(y, 4)), "from": (round(c[0], 4), round(c[1], 4)),
-                        "distance": round(dist, 3), "drill": drill, "diameter": round(2 * r, 4)}
+                        "distance": round(dist, 3), "drill": drill, "diameter": diameter, "trace_width": trace_width}
     return best
 
 

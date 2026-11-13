@@ -5,9 +5,9 @@ from itertools import pairwise
 import json
 import xml.etree.ElementTree as ET
 
-from ..design import parse_schematic_design
+from ..design import parse_board_design, parse_schematic_design
 from ..route_all import Conn, _commit, canonicalize_routed_signals, route_all
-from ..router import Route, copper_layers, via_layers
+from ..router import Route, copper_layers, route_minimums, via_layers
 from ..routing_budget import RoutingBudget
 from . import ROUTER_CONTRACT_VERSION
 from .board import route_geometry, route_owners
@@ -139,12 +139,18 @@ def _request(base, board, selected_nets, prior):
     stack = copper_layers(root)
     pads = _pad_centres(document, parse_schematic_design(ET.fromstring(schematic)), stack)
     widths = {node.get("number"): float(node.get("width", "0")) for node in document.findall("./classes/class")}
+    rules = parse_board_design(root).rules
     classes = {node.get("name"): node.get("class", "0") for node in document.findall("./signals/signal")}
     signals = {node.attrib["name"]: node for node in document.findall("./signals/signal")}
     connections = []
     for net in policy["selected_nets"]:
         groups = report["contact_components"].get(net, [])
+        if len(groups) < 2:
+            continue
         allowed = policy["policies"].get(net, {}).get("allowed_layers", stack)
+        minimum_width, _ = route_minimums(document, classes[net], rules)
+        width = max(widths[classes[net]] or 0.25, minimum_width,
+                    policy["policies"].get(net, {}).get("min_width_mm", 0))
         escapes = {}
         if net in signals and set(allowed).intersection(stack[1:-1]):
             for via in signals[net].findall("via"):
@@ -178,8 +184,7 @@ def _request(base, board, selected_nets, prior):
             source, source_layers = launch(pads[start], pads[goal][0][:2])
             target, target_layers = launch(pads[goal], source)
             conn = Conn(f"{net}:{canonical_digest([net, start, goal])}", net, source,
-                        source_layers, target, target_layers,
-                        widths[classes[net]] or 0.25, f"{'.'.join(start)} -> {'.'.join(goal)}")
+                        source_layers, target, target_layers, width, f"{'.'.join(start)} -> {'.'.join(goal)}")
             connections.append(conn)
     connections.sort(key=lambda conn: conn.id)
     return {

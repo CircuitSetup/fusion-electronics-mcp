@@ -353,9 +353,13 @@ def _routing(routing, nets, *, board_nets):
         _identifier(name, "policy net")
         if name not in nets:
             raise ValueError(f"policy refers to undeclared net {name}")
-        _object(policy, "policy", "", "allowed_layers max_vias_per_connection via_spans")
+        _object(policy, "policy", "", "allowed_layers max_vias_per_connection via_spans min_width_mm")
         if "allowed_layers" in policy:
             _layers(policy["allowed_layers"])
+        if "min_width_mm" in policy:
+            _number(policy["min_width_mm"], "min_width_mm")
+            if policy["min_width_mm"] <= 0:
+                raise ValueError("min_width_mm must be positive")
         if "max_vias_per_connection" in policy:
             _budget_value("max_vias_per_connection", policy["max_vias_per_connection"])
         if "via_spans" in policy:
