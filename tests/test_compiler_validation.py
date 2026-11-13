@@ -103,6 +103,55 @@ class CompilerValidationTest(unittest.TestCase):
         finding = next(row for row in report["findings"] if row["check"] == "full_routing")
         self.assertIn("Native fill connectivity required for VCC", finding["detail"])
 
+    def test_measured_plane_islands_do_not_hide_return_opens(self):
+        candidate = self.compile()
+
+        def add_pour(root):
+            signal = root.find(".//signal[@name='VCC']")
+            polygon = ET.SubElement(signal, "polygon", layer="1", width="0.2", rank="2", thermals="yes")
+            for x, y in ((1, 1), (39, 1), (39, 29), (1, 29)):
+                ET.SubElement(polygon, "vertex", x=str(x), y=str(y))
+
+        def island(x, y, xx, yy):
+            return {"net": "VCC", "layer": 1, "rings": [[(x, y), (xx, y), (xx, yy), (x, yy)]]}
+
+        split = [island(2, 8, 6, 12), island(12, 19, 16, 23)]
+        joined = [island(2, 8, 16, 23)]
+        isolated_pad = (joined[0]["rings"][0], [(13, 20), (15, 20), (15, 22), (13, 22)])
+        for fills, complete, status, opens in (
+            (None, False, "unverified", 1), (joined, False, "unverified", 1),
+            (split, True, "fail", 1), (joined, True, "pass", 0),
+            ([{"net": "VCC", "layer": 1, "rings": isolated_pad}], True, "fail", 1),
+        ):
+            with self.subTest(status=status, fills=fills):
+                report = self.report(candidate, add_pour, measured_fills=fills, measured_fills_complete=complete)
+                self.assertEqual(report["planes"]["VCC"]["status"], status)
+                self.assertEqual(report["airwires_by_net"]["VCC"], opens)
+
+    def test_measured_plane_stitch_requires_copper_on_both_sides(self):
+        upper = [(7, 15), (16, 15), (16, 23), (7, 23)]
+        lower = [(3, 9), (9, 9), (9, 17), (3, 17)]
+        self.data["board"]["pours"] = [
+            {"net": "VCC", "layer": layer, "vertices": ring, "width": 0.2}
+            for layer, ring in ((1, upper), (16, lower))
+        ]
+        self.data["nets"][0]["vias"] = [{"x": 8, "y": 16, "extent": "1-16", "drill": 0.3, "diameter": 0.8}]
+        candidate = self.compile()
+        for bottom_ring, status in ((lower, "pass"), ([(3, 9), (6, 9), (6, 12), (3, 12)], "fail")):
+            fills = [{"net": "VCC", "layer": layer, "rings": [ring]}
+                     for layer, ring in ((1, upper), (16, bottom_ring))]
+            report = self.report(candidate, measured_fills=fills, measured_fills_complete=True)
+            self.assertEqual(report["planes"]["VCC"]["status"], status)
+
+    def test_clearance_polygon_corner_does_not_prove_contact(self):
+        from fusion_offline.compiler.validate import _fill_contacts, _ring_samples
+
+        for x, y, expected in ((0.5, 0.09945618, []), (0, 0, []), (0.35, 0, [(0, 0, 1)])):
+            island = {"layer": 1, "rings": [[(x - .001, y - .001), (x + .001, y - .001),
+                                              (x + .001, y + .001), (x - .001, y + .001)]]}
+            self.assertEqual(_fill_contacts(island, {(0, 0, 1)}, [], {(0, 0, 1): _ring_samples(0, 0, .4, 1)}),
+                             expected)
+
     def test_inner_keepout_checks_measured_fill_and_its_holes(self):
         for row in self.data["templates"].values():
             template = ET.parse(row["path"]).getroot()

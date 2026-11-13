@@ -56,8 +56,12 @@ def _validate(manifest_path, manifest_sha256, args):
                   if data["routing_job"] else None)
     if data["routing_job"] and not isinstance(provenance, dict):
         raise ValueError("Candidate routing provenance must be an object")
-    if validate_candidate(*raw, intent, provenance=provenance)["status"] != "pass":
-        raise ValueError("Pinned candidate pair and routing intent failed offline revalidation")
+    report = validate_candidate(*raw, intent, provenance=provenance)
+    if report["status"] != "pass":
+        failed_attributes = next((row["detail"] for row in report["findings"]
+                                  if row["check"] == "element_attributes" and row["status"] != "pass"), "")
+        detail = f": {failed_attributes}" if failed_attributes else ""
+        raise ValueError(f"Pinned candidate pair and routing intent failed offline revalidation{detail}")
     return dict(manifest_path=str(manifest_path), manifest_sha256=manifest_sha256,
                 candidate_id=data["candidate_id"], artifacts=data["artifacts"], args=args,
                 expected=eagle_import.summary(signature))

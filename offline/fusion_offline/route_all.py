@@ -46,14 +46,14 @@ def _sig(root, net):
     return next(s for s in root.iterfind("./drawing/board/signals/signal") if s.get("name") == net)
 
 
-def canonicalize_routed_signals(root, nets):
+def canonicalize_routed_signals(root, nets, **options):
     for net in sorted(set(nets)):
         signal = _sig(root, net)
         anchors = []
         for contact in signal.findall("contactref"):
             x, y, layers, _ = RT.pad_target(root, contact.attrib["element"], contact.attrib["pad"])
-            anchors.extend((x, y, layer) for layer in layers)
-        canonicalize_signal(signal, anchors)
+            anchors.extend((round(x, 4), round(y, 4), layer) for layer in layers)
+        canonicalize_signal(signal, anchors, **options)
 
 
 def _commit(root, c: Conn, r):

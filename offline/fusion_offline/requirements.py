@@ -128,11 +128,11 @@ def path_length(root, pads, net):
         return None
     wires = RT._net_traces(root, net)
     layers = tuple(D.parse_board_design(root).copper_layers)
-    nodes = {(round(p[0], 4), round(p[1], 4), l) for l, a, b in wires for p in (a, b)}
+    nodes = {(*p, layer) for layer, a, b in wires for p in (a, b)}
     joins = []
     for c in sig.findall('contactref'):
         x, y, ls, _ = RT.pad_target(root, c.get('element'), c.get('pad'))
-        group = [(x, y, l) for l in ls]
+        group = [(round(x, 4), round(y, 4), l) for l in ls]
         nodes.update(group)
         joins.append(group)
     for v in sig.findall('via'):
@@ -140,22 +140,25 @@ def path_length(root, pads, net):
         if len(ends) != 2 or any(n not in layers for n in ends):
             return None
         i, j = sorted(layers.index(n) for n in ends)
-        group = [(round(float(v.get('x')), 4), round(float(v.get('y')), 4), l) for l in layers[i:j+1]]
+        group = [(float(v.get('x')), float(v.get('y')), l) for l in layers[i:j+1]]
         nodes.update(group)
         joins.append(group)
-    for x, y, ls, _ in targets:
-        nodes.update((x, y, l) for l in ls)
+    def target_nodes(target, reference):
+        x, y, layers, _ = target
+        if isinstance(reference, str):
+            x, y = round(x, 4), round(y, 4)
+        return {(x, y, layer) for layer in layers}
+
+    starts = target_nodes(targets[0], pads[0])
+    goals = target_nodes(targets[-1], pads[-1])
+    nodes.update(starts | goals)
     graph = {p: [] for p in nodes}
     def edge(a, b, distance):
         graph[a].append((b, distance)); graph[b].append((a, distance))
     for layer, a, b in wires:
-        on = [p for p in nodes if p[2] == layer and RT._seg_dist(p[0], p[1], (*a, *b)) <= .001]
-        on.sort(key=lambda p: math.dist(p[:2], a))
-        for p, q in zip(on, on[1:]): edge(p, q, math.dist(p[:2], q[:2]))
+        edge((*a, layer), (*b, layer), math.dist(a, b))
     for group in joins:
         for p, q in zip(group, group[1:]): edge(p, q, 0)
-    starts = {(targets[0][0], targets[0][1], l) for l in targets[0][2]}
-    goals = {(targets[-1][0], targets[-1][1], l) for l in targets[-1][2]}
     queue = [(0., p) for p in starts if p in graph]; heapq.heapify(queue)
     seen = set()
     while queue:

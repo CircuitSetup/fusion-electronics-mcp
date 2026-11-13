@@ -3,17 +3,33 @@ if (argc != 1 || !board) exit(1);
 
 output(MCP_OUTPUT, "wt") {
   int airwires = 0, pours = 0;
-  printf("{\"schema\":1,\"mode\":\"read\",\"editor\":\"board\",\"data\":{\"fills\":[");
+  printf("{\"schema\":1,\"mode\":\"read\",\"editor\":\"board\",\"data\":{\"airwire_spans\":[");
   board(B) {
     B.signals(S) {
+      // The compiler emits only these JSON-safe identifier characters.
+      if (strxstr(S.name, "[^A-Za-z0-9_.$@+!~-]") >= 0) exit(1);
       S.wires(W) {
-        if (W.layer == 19) airwires++;
+        if (W.layer == LAYER_UNROUTED) {
+          if (airwires++) printf(",");
+          printf("{\"net\":\"%s\",\"start_mm\":[%.9f,%.9f],\"end_mm\":[%.9f,%.9f]}",
+                 S.name, u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2));
+        }
       }
+    }
+  }
+  printf("],\"airwires\":%d,\"fills\":[", airwires);
+  board(B) {
+    B.signals(S) {
       S.polypours(P) {
         int contour_wires = 0;
         real twice_area = 0.0;
+        if (pours++) printf(",");
+        printf("{\"net\":\"%s\",\"layer\":%d,\"hatched\":%d,\"edges_mm\":[",
+               S.name, P.layer, P.hatched);
         P.contours(W) {
-          contour_wires++;
+          if (contour_wires++) printf(",");
+          printf("[%.9f,%.9f,%.9f,%.9f,%.9f]",
+                 u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), W.curve);
           twice_area += u2mm(W.x1) * u2mm(W.y2) - u2mm(W.x2) * u2mm(W.y1);
           if (W.arc) {
             real angle = W.curve * 0.017453292519943295;
@@ -22,12 +38,10 @@ output(MCP_OUTPUT, "wt") {
           }
         }
         // Autodesk directs outer fill contours clockwise and void contours counterclockwise.
-        if (pours++) printf(",");
-        printf("{\"net\":\"%s\",\"layer\":%d,\"contour_wires\":%d,\"area_mm2\":%.9f}",
-               S.name, P.layer, contour_wires, -0.5 * twice_area);
+        printf("],\"contour_wires\":%d,\"area_mm2\":%.9f}", contour_wires, -0.5 * twice_area);
       }
     }
   }
-  printf("],\"airwires\":%d},\"complete\":true}", airwires);
+  printf("]},\"complete\":true}");
 }
 exit(0);

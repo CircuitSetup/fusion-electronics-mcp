@@ -8,6 +8,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import xml.etree.ElementTree as ET
 
 from fusion_mcp import eagle_pair_picker as picker, server
 from fusion_mcp.addin.FusionElectronicsMCP import eagle_import
@@ -136,6 +137,24 @@ class CandidateImportTest(unittest.TestCase):
         raw = canonical_json_bytes(manifest)
         self.candidate.path.write_bytes(raw)
         self.assertEqual(self.import_(expected_manifest_sha256=sha256(raw).hexdigest())["status"], "failed")
+        self.assertEqual(self.calls, [])
+
+    def test_preflight_refuses_repinned_incomplete_board_attribute(self):
+        manifest = self.candidate.data
+        root = ET.fromstring(self.candidate.read_artifact("board"))
+        attribute = root.find(".//element[@name='R1']/attribute[@name='MPN']")
+        name, value = attribute.attrib["name"], attribute.attrib["value"]
+        attribute.attrib.clear()
+        attribute.attrib.update(name=name, value=value)
+        board = ET.tostring(root)
+        (self.candidate.path.parent / manifest["artifacts"]["board"]["path"]).write_bytes(board)
+        manifest["artifacts"]["board"]["sha256"] = sha256(board).hexdigest()
+        raw = canonical_json_bytes(manifest)
+        self.candidate.path.write_bytes(raw)
+
+        result = self.import_(expected_manifest_sha256=sha256(raw).hexdigest())
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("R1.MPN", result["error"])
         self.assertEqual(self.calls, [])
 
     def test_import_uses_existing_pair_reader_before_start(self):

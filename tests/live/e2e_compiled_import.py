@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from functools import partial
 from hashlib import sha256
 import json
-from math import isfinite
+from math import isclose, isfinite
 import os
 from pathlib import Path
 import sys
@@ -175,6 +175,27 @@ def pair_signatures(schematic, board):
             "physical_pair": eagle_import.signature(sch, brd)}
 
 
+def copper_signature(board):
+    """Compare saved route geometry at EAGLE export precision, excluding airwires."""
+    root = ET.fromstring(board)
+    copper = []
+    for signal in root.findall("./drawing/board/signals/signal"):
+        name = signal.attrib["name"]
+        for wire in signal.findall("wire"):
+            layer = int(wire.attrib["layer"])
+            if layer == 19:
+                continue
+            a, b = (tuple(round(float(wire.attrib[f"{axis}{end}"]), 5) for axis in "xy") for end in (1, 2))
+            curve = round(float(wire.get("curve", "0")), 5)
+            if a > b:
+                a, b, curve = b, a, -curve
+            copper.append((name, "wire", layer, a, b, round(float(wire.attrib["width"]), 5), curve))
+        for via in signal.findall("via"):
+            sizes = tuple(round(float(via.get(key, "0")), 5) for key in ("x", "y", "drill", "diameter"))
+            copper.append((name, "via", via.attrib["extent"], sizes, via.get("shape", "round")))
+    return Counter(copper)
+
+
 def verify_active(server, kind, doc, operation):
     context = server.get_context()
     require(is_active_member(context, kind, doc)
@@ -203,16 +224,94 @@ def native_repour(server, saved, request_id, phase):
             "Repoured copper measurement was returned for a different document")
     require(observed["sha256"] == digest, "Native fill measurement used an unexpected ULP source")
     phase["measurement_document_id"] = doc["document_id"]
+    phase["measurement_data_file_id"] = doc["data_file_id"]
     phase["measurement_ulp_sha256"] = digest
     phase["measurement"] = observed["data"]
+
+
+def compare_airwires(exported, measurement):
+    """Compare undirected spans while keeping the exact live coordinates in the report."""
+    def point(value):
+        require(isinstance(value, (list, tuple)) and len(value) == 2
+                and all(type(v) in (int, float) and isfinite(v) for v in value),
+                "Invalid native airwire endpoint")
+        return tuple(value)
+
+    def key(net, start, end):
+        require(isinstance(net, str) and net, "Invalid native airwire net")
+        return net, *sorted((point(start), point(end)))
+
+    def evidence(counts):
+        return [{"net": net, "start_mm": list(start), "end_mm": list(end)}
+                for net, start, end in sorted(counts.elements())]
+
+    native = measurement.get("airwire_spans")
+    count = measurement.get("airwires")
+    require(isinstance(native, list) and type(count) is int and count == len(native),
+            "Native airwire count does not match endpoint evidence")
+    live_counts = Counter(key(row["net"], row["start_mm"], row["end_mm"]) for row in native)
+    xml_counts = Counter(
+        key(signal.attrib["name"], [float(wire.attrib[axis]) for axis in ("x1", "y1")],
+            [float(wire.attrib[axis]) for axis in ("x2", "y2")])
+        for signal in ET.fromstring(exported).findall("./drawing/board/signals/signal")
+        for wire in signal.findall("wire[@layer='19']")
+    )
+    return {"native_by_net": dict(Counter(net for net, _, _ in live_counts.elements())),
+            "export_by_net": dict(Counter(net for net, _, _ in xml_counts.elements())),
+            "native_only": evidence(live_counts - xml_counts),
+            "export_only": evidence(xml_counts - live_counts),
+            "matching": evidence(live_counts & xml_counts)}
+
+
+def measured_fill_rows(measurement):
+    """Convert live directed contour edges into filled islands with their own void rings."""
+    from fusion_offline.pour_clearance import _inside
+
+    rows = []
+    for fill in measurement["fills"]:
+        edges = fill.get("edges_mm")
+        require(type(fill.get("hatched")) is int and fill["hatched"] == 0
+                and isinstance(edges, list) and len(edges) == fill["contour_wires"] and edges,
+                "Incomplete or unsupported native fill contours")
+        outer, holes, points = [], [], []
+        twice_area = 0
+        last = None
+        for edge in edges:
+            require(isinstance(edge, list) and len(edge) == 5
+                    and all(type(v) in (int, float) and isfinite(v) for v in edge) and edge[4] == 0,
+                    "Unsupported curved or invalid native fill contour")
+            start, end = tuple(edge[:2]), tuple(edge[2:4])
+            require(start != end and (not points or start == last), "Disconnected native fill contour")
+            points.append(start)
+            last = end
+            if end != points[0]:
+                continue
+            require(len(points) >= 3, "Degenerate native fill contour")
+            area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1]))
+            require(area != 0, "Degenerate native fill contour")
+            twice_area += area
+            if area < 0:
+                outer.append((-area, [points]))
+            else:
+                holes.append(points)
+            points = []
+        require(not points and outer, "Incomplete native fill contour")
+        require(isclose(-twice_area / 2, fill["area_mm2"], rel_tol=1e-8, abs_tol=1e-8),
+                "Native fill contour area differs from the measurement")
+        for hole in holes:
+            containers = [(area, rings) for area, rings in outer if _inside(rings[0], *hole[0])]
+            require(containers, "Native fill contour hole has no enclosing island")
+            min(containers, key=lambda row: row[0])[1].append(hole)
+        rows.extend({"net": fill["net"], "layer": fill["layer"], "rings": rings} for _, rings in outer)
+    return rows
 
 
 def require_measured_fills(board, measurement):
     expected = Counter((signal.attrib["name"], int(polygon.attrib["layer"]))
                        for signal in ET.fromstring(board).findall(".//signal")
-                       for polygon in signal.findall("polygon"))
+                       for polygon in signal.findall("polygon") if polygon.get("pour") != "cutout")
     fills = measurement["fills"]
-    require(expected and Counter((row["net"], row["layer"]) for row in fills) == expected,
+    require(Counter((row["net"], row["layer"]) for row in fills) == expected,
             "Native fill measurements do not match the candidate's declared pours")
     require(all(type(row["contour_wires"]) is int and row["contour_wires"] > 0
                 and type(row["area_mm2"]) in (int, float)
@@ -265,28 +364,65 @@ def require_inner_restrict_round_trip(candidate, exported):
     return [{"bounds": list(bounds), "layers": list(layers)} for bounds, layers, _, _ in actual]
 
 
-def require_inner_fill_keepouts(server, saved, exported, measurement):
-    from fusion_offline.compiler.validate import check_fill_keepouts
-    from fusion_offline.design import parse_board_design, read_xml
-    from fusion_offline.pour_clearance import fills, remap
-    from fusion_offline.stackup import parse_stackup
+def native_board_semantics(server, saved, candidate_board, exported_board):
+    from fusion_mcp.bridge import BridgeOpError
+    from fusion_offline.compiler.roundtrip import compare_native_board
 
+    source = {}
     doc = active_member(server, "board", saved)
-    working = server.session.bridge.call("design_rules", timeout=60)
-    verify_active(server, "board", doc, "measured keepout fill")
-    require(working["board"] == doc["name"], "Working copy belongs to a different board")
-    native_stack = parse_stackup(working["xml"])
-    board = read_xml(exported)
-    stack = parse_board_design(board).copper_layers
-    require(native_stack is not None and len(native_stack.copper) == len(stack),
-            "Cannot map Fusion working-copy fill layers")
-    native_ids = [layer.number for layer in native_stack.copper]
-    rows = remap(fills(read_xml(working["path"]), measured_only=True), native_ids, stack)
-    expected = {(row["net"], row["layer"]) for row in measurement["fills"] if row["layer"] in stack[1:-1]}
-    observed = check_fill_keepouts(board, rows)
-    require(expected and expected <= observed, "Missing measured inner-layer fill contours")
-    return {"source": "Fusion saved working-copy contours", "modified": working["modified"],
-            "checked": [{"net": net, "layer": layer} for net, layer in sorted(expected)]}
+    rules_xml = None
+    try:
+        working = server.session.bridge.call("design_rules", timeout=60)
+    except BridgeOpError as error:
+        if error.code != "not_found":
+            raise
+        source["unavailable"] = str(error)
+    else:
+        require(working["board"] == doc["name"], "Working copy belongs to a different board")
+        rules_xml = working["xml"]
+        source.update(board=working["board"], modified=working["modified"],
+                      sha256=sha256(rules_xml.encode()).hexdigest())
+    verify_active(server, "board", doc, "native rule readback")
+    result = compare_native_board(candidate_board, exported_board, native_rules_xml=rules_xml)
+    return {**result, "working_copy_rules": source, "data_file_id": doc["data_file_id"]}
+
+
+def require_native_board_semantics(semantics):
+    for group in ("rules", "restrictions"):
+        require(semantics[group]["status"] == "pass", f"Native board {group} are not verified")
+
+
+def measured_fill_validation(candidate, schematic, board, measurement):
+    from fusion_offline.compiler.validate import validate_candidate
+
+    try:
+        require_measured_fills(board, measurement)
+        rows = measured_fill_rows(measurement)
+        intent = json.loads(candidate.read_artifact("routing_intent"))
+        candidate_board = candidate.read_artifact("board")
+        provenance = None
+        # Native export can split or normalize copper, invalidating original geometry ownership.
+        if board == candidate_board and candidate.data.get("routing_job"):
+            provenance = json.loads(candidate.read_artifact("routing_provenance"))
+        report = validate_candidate(schematic, board, intent, provenance=provenance, measured_fills=rows,
+                                    measured_fills_complete=True)
+    except (ValueError, RuntimeError) as error:
+        return {"status": "unverified", "detail": str(error)}
+    findings = [row for row in report["findings"] if row["required"] or row["check"] == "full_routing"]
+    statuses = {row["status"] for row in findings}
+    status = "fail" if "fail" in statuses else "pass" if statuses == {"pass"} else "unverified"
+    return {"status": status, "source": "Live Fusion post-RATSNEST polygon contours",
+            "findings": findings, "airwires": report["airwires"], "planes": report["planes"]}
+
+
+def require_offline_acceptance(validation):
+    counts = validation.get("airwires_by_net", {})
+    planes = validation.get("planes", {})
+    require(validation["status"] == "pass"
+            and validation["airwires"] == sum(counts.values())
+            and all(count == 0 or planes.get(net, {}).get("status") == "unverified"
+                    for net, count in counts.items()),
+            "The offline candidate must pass with any remaining opens awaiting native plane fill")
 
 
 def run_acceptance(server, report, build, materialize, *, inner_restrict=False):
@@ -297,11 +433,12 @@ def run_acceptance(server, report, build, materialize, *, inner_restrict=False):
     with report.phase("offline_compile_validate") as phase:
         _, job, candidate = build(report.root, materialize(report.root))
         validation = json.loads(candidate.read_artifact("report"))
+        routing_job = candidate.data.get("routing_job") or {}
         phase.update(candidate_id=candidate.data["candidate_id"], manifest=str(candidate.path),
-                     manifest_sha256=candidate.sha256, routing_job_id=job.data["job_id"],
+                     manifest_sha256=candidate.sha256,
+                     routing_job_id=job.data["job_id"] if job else routing_job.get("job_id"),
                      validation=validation)
-        require(validation["status"] == "pass" and validation["airwires"] == 0,
-                "The offline candidate did not pass with zero proven airwires")
+        require_offline_acceptance(validation)
 
     with bridge.lock.hold("compiled candidate live acceptance"):
         with report.phase("preflight") as phase:
@@ -339,6 +476,7 @@ def run_acceptance(server, report, build, materialize, *, inner_restrict=False):
             candidate_board = candidate.read_artifact("board")
             comparison["expected"] = pair_signatures(candidate.read_artifact("schematic"), candidate_board)
             comparison["exported"] = pair_signatures(actual["schematic"], actual["board"])
+            comparison["export_sha256"] = {kind: sha256(raw).hexdigest() for kind, raw in actual.items()}
             comparison["matches"] = comparison["expected"] == comparison["exported"]
             if inner_restrict:
                 comparison["inner_restrict"] = require_inner_restrict_round_trip(candidate_board, actual["board"])
@@ -349,20 +487,41 @@ def run_acceptance(server, report, build, materialize, *, inner_restrict=False):
             erc.update(native_check(server, "schematic", "ERC;", saved))
         with report.phase("native_repour_airwires") as repour:
             native_repour(server, saved, report.data["request_id"], repour)
-            if inner_restrict:
-                repour["inner_fill_keepouts"] = require_inner_fill_keepouts(server, saved, actual["board"],
-                                                                          repour["measurement"])
+            repour["airwire_comparison"] = compare_airwires(actual["board"], repour["measurement"])
+            board_doc = active_member(server, "board", saved)
+            repoured_board = server.session.export("board")
+            verify_active(server, "board", board_doc, "post-repour board export")
+            (report.root / "repoured.brd").write_bytes(repoured_board)
+            repour["board_sha256"] = sha256(repoured_board).hexdigest()
+            repour["post_repour_airwire_comparison"] = compare_airwires(repoured_board, repour["measurement"])
+            repour["post_repour_signature_matches"] = (
+                pair_signatures(actual["schematic"], repoured_board) == comparison["exported"]
+            )
+            expected_copper, observed_copper = map(copper_signature, (candidate_board, repoured_board))
+            repour["route_geometry_changes"] = {
+                "missing": sorted((expected_copper - observed_copper).elements()),
+                "added": sorted((observed_copper - expected_copper).elements()),
+            }
+        with report.phase("native_board_semantics") as semantics:
+            semantics.update(native_board_semantics(server, saved, candidate_board, repoured_board))
+        with report.phase("measured_fill_connectivity") as fills:
+            fills.update(measured_fill_validation(candidate, actual["schematic"], repoured_board,
+                                                  repour["measurement"]))
         with report.phase("native_drc") as drc:
             drc.update(native_check(server, "board", "DRC;", saved))
             drc["summary"] = summarize(drc["findings"]["errors"])
         with report.phase("acceptance"):
             unchanged(original, server.get_context())
             require(comparison["matches"], "Reopened electrical or physical contact signature differs")
+            require(repour["post_repour_signature_matches"], "Post-repour electrical or physical contact signature differs")
+            require(not any(repour["route_geometry_changes"].values()), "Post-repour trace or via geometry differs")
             measurement = repour["measurement"]
             require(type(measurement["airwires"]) is int
                     and measurement["airwires"] == drc["summary"]["airwires"] == 0,
                     "The repoured board has native airwires")
             require_measured_fills(candidate_board, measurement)
+            require_native_board_semantics(semantics)
+            require(fills["status"] == "pass", "Post-repour routing, fill connectivity, or keepouts failed validation")
             for result in (erc, drc):
                 require(result["findings"]["count"] == 0 and result["findings"]["errors"] == [],
                         f"Unexpected native {result['findings']['kind']} findings")
@@ -374,9 +533,13 @@ def main(argv=None):
     parser.add_argument("--name", required=True, help="New Fusion product name in the disposable project root")
     parser.add_argument("--artifacts", type=Path, help="New directory for the acceptance report and exports")
     parser.add_argument("--inner-restrict", action="store_true", help="Use the four-layer restriction fixture")
+    parser.add_argument("--manifest", type=Path, help="Existing compiler candidate manifest")
+    parser.add_argument("--manifest-sha256", help="Exact SHA-256 of the existing compiler candidate manifest")
     args = parser.parse_args(argv)
     if not args.disposable_project_id.strip() or not args.name.strip():
         parser.error("The disposable project ID and destination name must be nonempty")
+    if bool(args.manifest) != bool(args.manifest_sha256) or (args.manifest and args.inner_restrict):
+        parser.error("Provide both manifest flags and omit --inner-restrict for an existing candidate")
     if sys.platform != "win32":
         parser.error("This harness requires Windows and the authenticated Fusion add-in picker")
     if args.artifacts:
@@ -393,8 +556,16 @@ def main(argv=None):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
         from test_compiler_e2e import build_routed_fixture, materialize_spec
 
-        run_acceptance(server, report, build_routed_fixture,
-                       partial(materialize_spec, inner_restrict=args.inner_restrict), inner_restrict=args.inner_restrict)
+        if args.manifest:
+            from fusion_offline.compiler.manifest import load_candidate_manifest
+
+            def build_pinned(_root, pins):
+                return None, None, load_candidate_manifest(*pins)
+
+            run_acceptance(server, report, build_pinned, lambda _: (args.manifest, args.manifest_sha256))
+        else:
+            run_acceptance(server, report, build_routed_fixture,
+                           partial(materialize_spec, inner_restrict=args.inner_restrict), inner_restrict=args.inner_restrict)
         report.data["status"] = "pass"
     except Exception as error:
         if report.data["status"] == "running":

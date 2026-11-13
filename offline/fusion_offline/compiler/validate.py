@@ -196,18 +196,59 @@ class _Components:
             self.parents[self.root(point)] = root
 
 
-def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules, via_spans):
+def _fill_contacts(fill, nodes, wires, footprints):
+    """Join an island only where it overlaps sampled copper or a trace centerline."""
+    rings = fill["rings"]
+    layer = fill["layer"]
+
+    def inside(point):
+        if not _inside_poly(rings[0], *point) or any(_inside_poly(hole, *point) for hole in rings[1:]):
+            return False
+        return all(_seg_dist(point, point, a, b) > 1e-7
+                   for ring in rings for a, b in pairwise((*ring, ring[0])))
+
+    touched = {node for node in nodes if node[2] == layer and (
+        any(inside(point) for point in footprints.get(node, (node[:2],)))
+    )}
+    for a, b in wires:
+        if a[2] != layer or a in touched or b in touched:
+            continue
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        cuts = {0.0, 1.0}
+        for ring in rings:
+            for c, d in pairwise((*ring, ring[0])):
+                ex, ey = d[0] - c[0], d[1] - c[1]
+                denominator = dx * ey - dy * ex
+                if abs(denominator) < 1e-12:
+                    continue
+                px, py = c[0] - a[0], c[1] - a[1]
+                t, u = (px * ey - py * ex) / denominator, (px * dy - py * dx) / denominator
+                if 0 < t < 1 and 0 <= u <= 1:
+                    cuts.add(t)
+        if any(inside((a[0] + dx * (lo + hi) / 2, a[1] + dy * (lo + hi) / 2))
+               for lo, hi in pairwise(sorted(cuts))):
+            touched.add(a)
+    return sorted(touched)
+
+
+def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outline, rules, via_spans,
+                      *, fills=(), has_pour=False, fill_pad_copper=None):
     """Return contact groups proved by pad centres, straight traces and through vias."""
     components = _Components()
     errors, unknown = [], []
     anchors = set()
+    footprints = {}
     for contact in signal.contacts:
         centers = pads[contact]
         components.join(centers)
         anchors.update(centers)
+        if fill_pad_copper:
+            for node in centers:
+                footprints[node] = fill_pad_copper.get((*contact, node[2]), ())
 
     degree = Counter()
     seen_wires = set()
+    wires = []
     for wire in signal.wires:
         if wire.layer == 19:
             continue
@@ -224,6 +265,7 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
             seen_wires.add(frozenset((a, b)))
             components.join((a, b))
             degree.update((a, b))
+            wires.append((a, b))
             if outline and not _trace_inside(outline, a[:2], b[:2]):
                 errors.append("trace leaves the board outline")
 
@@ -239,7 +281,7 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
             errors.append("unsupported or disallowed via extent or dimensions")
         elif point in via_points:
             errors.append("duplicate via")
-        elif not degree.keys() & set(nodes):
+        elif not has_pour and not (degree.keys() | anchors) & set(nodes):
             errors.append("via has no trace endpoint at its centre")
         else:
             minimum = annular_copper(rules, "Via", via.drill, 0, inner=False)["outer"]
@@ -249,19 +291,31 @@ def _route_components(signal, pads, stack, allowed, via_limit, via_owners, outli
             via_nodes.update(nodes)
             components.join(nodes)
             vias.append((owner, nodes[0]))
+            if fills:
+                diameters = annular_copper(rules, "Via", via.drill, via.diameter, inner=len(stack) > 2)
+                for x, y, layer in nodes:
+                    side = "outer" if layer in (stack[0], stack[-1]) else "inner"
+                    points = _ring_samples(x, y, via.drill, diameters[side])
+                    footprints[x, y, layer] = [*footprints.get((x, y, layer), ()), *points]
             if outline and not _inside_outline(outline, point):
                 errors.append("via centre is outside the board outline")
     endpoints = anchors | via_nodes
-    if any(count == 1 and node not in endpoints for node, count in degree.items()):
-        errors.append("trace endpoint misses its pad, via or joined trace")
-    anchor_roots = {components.root(node) for node in anchors}
-    if any(components.root(node) not in anchor_roots for node in degree):
-        errors.append("trace component has no contact pad")
-    # Explicit copper has no per-connection ownership. Bound its connected groups.
+    # Count routed vias before adding any plane connections to the trace graph.
     counts = Counter(tag if tag else components.root(node) for tag, node in vias)
     if any(count > via_limit for count in counts.values()):
         errors.append(f"connection exceeds its via budget of {via_limit}")
-
+    filled_endpoints = set()
+    for fill in fills:
+        touched = _fill_contacts(fill, endpoints | degree.keys(), wires, footprints)
+        if touched:
+            components.join(touched)
+            filled_endpoints.update(_fill_contacts(fill, touched, (), footprints))
+    if any(count == 1 and node not in endpoints | filled_endpoints for node, count in degree.items()):
+        errors.append("trace endpoint misses its pad, via or joined trace")
+    anchor_roots = {components.root(node) for node in anchors}
+    if any(components.root(node) not in anchor_roots for node in degree):
+        if not has_pour:
+            errors.append("trace component has no contact pad")
     groups = defaultdict(list)
     for contact in sorted(signal.contacts):
         groups[components.root(pads[contact][0])].append(contact)
@@ -309,7 +363,13 @@ def _copper_hits(copper, restriction):
     return _area_hits(points, 0, restriction)
 
 
-def _pad_copper(root, board, rules, stack):
+def _ring_samples(x, y, drill, diameter):
+    return [(x + radius * math.cos(i * math.pi / 8), y + radius * math.sin(i * math.pi / 8))
+            for radius in ((drill + diameter) / 4, diameter / 2 - 1e-7) if radius > drill / 2
+            for i in range(16)]
+
+
+def _pad_copper(root, board, rules, stack, *, samples=False):
     library_packages = packages(board)
     definitions = {}
     for el in board.findall("./elements/element"):
@@ -319,30 +379,50 @@ def _pad_copper(root, board, rules, stack):
             if node.tag in ("pad", "smd"):
                 definitions[el.attrib["name"], node.attrib["name"]] = node, mirrored
     for pad in placed_pads(root):
-        label = f"{pad.ref}.{pad.name}"
+        label = pad.ref, pad.name
         node, mirrored = definitions[pad.ref, pad.name]
         if pad.size <= 0 or not math.isfinite(pad.size):
-            raise ValueError(f"{label}: invalid copper pad size")
+            raise ValueError(f"{'.'.join(label)}: invalid copper pad size")
         if pad.smd:
-            yield label, _smd_layer(node, stack, mirrored), pad.poly
+            points = pad.poly
+            if samples:
+                # Rounded copper contains the central disk even when the clearance polygon encloses it.
+                edge = (_ring_samples(pad.x, pad.y, 0, pad.size) if float(node.get("roundness", "0"))
+                        else points)
+                points = [(pad.x, pad.y), *edge]
+            yield label, _smd_layer(node, stack, mirrored), points
         else:
             shape = node.get("shape", "round").lower()
             if shape not in ("round", "square", "octagon", "long", "offset"):
-                raise UnverifiedGeometry(f"{label}: unsupported copper pad shape {shape}")
+                raise UnverifiedGeometry(f"{'.'.join(label)}: unsupported copper pad shape {shape}")
             if any(rules.get(rule, "-1") != "-1" for rule in ("psTop", "psBottom", "psFirst")):
-                raise UnverifiedGeometry(f"{label}: unsupported design-rule pad shape override")
+                raise UnverifiedGeometry(f"{'.'.join(label)}: unsupported design-rule pad shape override")
             elongation = "psElongationOffset" if shape == "offset" else "psElongationLong"
             if shape in ("long", "offset") and float(rules.get(elongation, "100")) != 100:
-                raise UnverifiedGeometry(f"{label}: unsupported design-rule pad elongation")
+                raise UnverifiedGeometry(f"{'.'.join(label)}: unsupported design-rule pad elongation")
             diameters = annular_copper(
                 rules, "Pad", float(node.attrib["drill"]), float(node.get("diameter", "0")), inner=len(stack) > 2,
             )
             for layer in stack:
                 side = "top" if layer == stack[0] else "bottom" if layer == stack[-1] else "inner"
+                if samples:
+                    diameter = diameters[side] * (math.cos(math.pi / 8) if shape == "octagon" else 1)
+                    yield label, layer, _ring_samples(pad.x, pad.y, float(node.attrib["drill"]), diameter)
+                    continue
                 # The existing pad polygons use the top ring. Cover larger side-specific rings.
-                scale = max(1, diameters[side] / pad.size)
+                scale = diameters[side] / pad.size
                 points = [(pad.x + (x - pad.x) * scale, pad.y + (y - pad.y) * scale) for x, y in pad.poly]
                 yield label, layer, points
+
+
+def _check_fill_rings(fill):
+    rings = fill["rings"]
+    if fill.get("curved") or not rings or any(
+        len(ring) < 3 or any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in ring)
+        for ring in rings
+    ):
+        raise UnverifiedGeometry(f"{fill['net']}: unsupported measured fill contours on copper layer {fill['layer']}")
+    return rings
 
 
 def check_fill_keepouts(root, measured_fills, *, restrictions=None):
@@ -358,13 +438,7 @@ def check_fill_keepouts(root, measured_fills, *, restrictions=None):
         applicable = [r for r in restrictions if _restricts_layer(r, layer, stack)]
         if not applicable:
             continue
-        rings = fill["rings"]
-        if fill.get("curved") or not rings or any(
-            len(ring) < 3 or any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in ring)
-            for ring in rings
-        ):
-            raise UnverifiedGeometry(f"{name}: unsupported measured fill contours on copper layer {layer}")
-        outer, *holes = rings
+        outer, *holes = _check_fill_rings(fill)
         if any(_area_hits(outer, 0, restriction, holes=holes) for restriction in applicable):
             raise ValueError(f"{name}: measured copper fill overlaps a keepout on copper layer {layer}")
         measured.add((name, layer))
@@ -389,7 +463,7 @@ def _keepouts(root, board, stack, measured_fills=None):
     for restriction in restrictions:
         for label, layer, points in pad_copper:
             if _restricts_layer(restriction, layer, stack) and _area_hits(points, 0, restriction):
-                raise ValueError(f"{label} overlaps restrict layer {restriction.restrict_layer}")
+                raise ValueError(f"{'.'.join(label)} overlaps restrict layer {restriction.restrict_layer}")
         for copper in obstacles:
             if copper.restrict_layer or copper.is_pad:
                 continue
@@ -418,8 +492,29 @@ def _keepouts(root, board, stack, measured_fills=None):
                 raise UnverifiedGeometry("polygon outline intersects a keepout; actual fill is unavailable")
 
 
+def _element_attributes(board):
+    incomplete = []
+    for element in board.findall("./elements/element"):
+        _, mirrored = parse_rot(element.get("rot"))
+        for attribute in element.findall("attribute"):
+            name = attribute.get("name", "")
+            if name.upper() in ("NAME", "VALUE"):
+                continue
+            try:
+                x, y, size = (float(attribute.attrib[field]) for field in ("x", "y", "size"))
+            except (KeyError, ValueError):
+                x, y, size = 0, 0, 0
+            if (not name or "value" not in attribute.attrib or size <= 0
+                    or not all(math.isfinite(value) for value in (x, y, size))
+                    or attribute.get("layer") != ("28" if mirrored else "27")
+                    or attribute.get("display") != "off"):
+                incomplete.append(f"{element.attrib['name']}.{name or '<unnamed>'}")
+    if incomplete:
+        raise ValueError("incomplete native element attributes: " + ", ".join(sorted(incomplete)))
+
+
 def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict, *,
-                       provenance=None, measured_fills=None) -> dict:
+                       provenance=None, measured_fills=None, measured_fills_complete=False) -> dict:
     """Check paired bytes and return deterministic findings and physical contact groups."""
     _validate_source_xml(schematic_xml, "schematic")
     _validate_source_xml(board_xml, "board")
@@ -430,7 +525,8 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             or len(board_root.findall("./drawing/board")) != 1):
         raise ValueError("expected one flat EAGLE schematic and board")
     owners = route_owners(board_root, provenance) if provenance else {}
-    findings = [_check("pair_signature", lambda: signature(sch_root, board_root))]
+    findings = [_check("pair_signature", lambda: signature(sch_root, board_root)),
+                _check("element_attributes", lambda: _element_attributes(board))]
     sch, design = parse_schematic_design(sch_root), parse_board_design(board_root)
     stack = tuple(design.copper_layers)
     pads = {}
@@ -453,6 +549,22 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
     routing = routing_intent["routing"]
     groups, routing_errors, routing_unknown = {}, [], []
     poured = set()
+    plane_results, fills_by_net, unsupported_fills = {}, defaultdict(list), set()
+    for fill in measured_fills or ():
+        try:
+            _check_fill_rings(fill)
+        except UnverifiedGeometry:
+            unsupported_fills.add(fill["net"])
+            continue
+        fills_by_net[fill["net"]].append(fill)
+    fill_pad_copper = {}
+    if measured_fills_complete and fills_by_net and pads:
+        try:
+            fill_pad_copper = {(ref, name, layer): points for (ref, name), layer, points in
+                               _pad_copper(board_root, board, design.rules, stack, samples=True)}
+        except (KeyError, ValueError):
+            unsupported_fills.update(fills_by_net)
+    xml_signals = {signal.get("name"): signal for signal in board.findall("./signals/signal")}
     for name, signal in sorted(design.signals.items()):
         if not set(signal.contacts) <= pads.keys():
             routing_unknown.append(f"{name}: board pad centres could not be resolved")
@@ -464,17 +576,30 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
         if any(tuple(span) != (stack[0], stack[-1]) for span in policy.get("via_spans", ())):
             routing_errors.append(f"{name}: policy names an unsupported via span")
         limit = routing["budget"]["max_vias_per_connection"]
-        xml_signal = next(s for s in board.findall("./signals/signal") if s.get("name") == name)
-        if xml_signal.find("polygon") is not None:
+        xml_signal = xml_signals[name]
+        pours = [p for p in xml_signal.findall("polygon") if p.get("pour") != "cutout"]
+        if pours:
             poured.add(name)
         if any(int(p.attrib["layer"]) not in allowed for p in xml_signal.findall("polygon")):
             routing_errors.append(f"{name}: polygon uses absent or disallowed copper layer")
+        fill_layers = {int(p.attrib["layer"]) for p in pours}
+        fills = [row for row in fills_by_net[name] if row["layer"] in fill_layers & allowed & set(stack)]
         groups[name], errors, unknown = _route_components(
             signal, pads, stack, allowed & set(stack),
             min(limit, policy.get("max_vias_per_connection", limit)),
             [owners.get((name, canonical_digest(route_geometry(via)))) for via in xml_signal.findall("via")],
             outline, design.rules, policy.get("via_spans"),
+            fills=fills if measured_fills_complete and name not in unsupported_fills else (),
+            has_pour=bool(pours), fill_pad_copper=fill_pad_copper,
         )
+        if pours:
+            missing = sorted(fill_layers - {row["layer"] for row in fills})
+            count = max(0, len(groups[name]) - 1)
+            if missing or name in unsupported_fills or not measured_fills_complete:
+                status = "unverified"
+            else:
+                status = "fail" if count else "pass"
+            plane_results[name] = {"status": status, "unjoined_contact_pairs": count, "unmeasured_layers": missing}
         routing_errors.extend(f"{name}: {error}" for error in sorted(set(errors)))
         routing_unknown.extend(f"{name}: {reason}" for reason in sorted(set(unknown)))
     findings.append(_finding(
@@ -484,17 +609,25 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
     findings.append(_check("keepouts", lambda: _keepouts(board_root, board, stack, measured_fills)))
     airwires_by_net = {name: max(0, len(contacts) - 1) for name, contacts in groups.items()}
     airwires = sum(airwires_by_net.values())
-    pending_pours = sorted(name for name in poured if airwires_by_net[name])
-    unrouted = sum(count for name, count in airwires_by_net.items() if name not in poured)
+    pending_pours = sorted(name for name, row in plane_results.items() if row["status"] == "unverified")
+    pending_connections = [name for name in pending_pours if airwires_by_net[name]]
+    open_pours = sorted(name for name, row in plane_results.items() if row["status"] == "fail")
+    unrouted = sum(count for name, count in airwires_by_net.items() if name not in poured or name in open_pours)
     findings.append(_finding(
-        "full_routing", "fail" if unrouted else "unverified" if routing_unknown or pending_pours else "pass",
-        f"{airwires} unjoined contact pairs from serialized traces and vias"
-        + (f". Native fill connectivity required for {', '.join(pending_pours)}" if pending_pours else ""),
+        "plane_connectivity", "fail" if open_pours else "unverified" if pending_pours else "pass",
+        ", ".join(f"{name}: {row['status']} ({row['unjoined_contact_pairs']} unjoined contact pairs)"
+                  for name, row in sorted(plane_results.items())),
+        measured_fills_complete,
+    ))
+    findings.append(_finding(
+        "full_routing", "fail" if unrouted else "unverified" if routing_unknown or pending_connections else "pass",
+        f"{airwires} unjoined contact pairs from serialized traces, vias and available measured fills"
+        + (f". Native fill connectivity required for {', '.join(pending_connections)}" if pending_connections else ""),
         routing["require_fully_routed"],
     ))
     for check in ("native_erc", "native_drc", "native_polygon_refill", "native_3d", "manufacturing_review"):
         findings.append(_finding(check, "unverified", "Requires a separate acceptance step", False))
     return {
         "status": finding_status(findings), "findings": findings, "airwires": airwires,
-        "airwires_by_net": airwires_by_net, "contact_components": groups,
+        "airwires_by_net": airwires_by_net, "contact_components": groups, "planes": plane_results,
     }

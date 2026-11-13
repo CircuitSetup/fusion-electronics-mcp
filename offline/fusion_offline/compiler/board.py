@@ -136,7 +136,8 @@ def _emit_elements(elements, spec, libraries, stack):
         })
         for name, value in sorted((dict(part.attributes) | dict(row["attributes"])).items()):
             if name.upper() not in ("NAME", "VALUE"):
-                _append(element, "attribute", dict(name=name, value=value, display="off"))
+                _append(element, "attribute", dict(name=name, value=value, x=x, y=y, size=1.02,
+                                                  layer=28 if mirror else 27, display="off"))
         package = packages[part.library, part.package]
         emit_part_labels(element, package, (x, y, angle, mirror), (26, 28) if mirror else (25, 27),
                          _package_label_bounds(package), size=0.8, gap=0.4)
@@ -180,7 +181,7 @@ def _contacts(net, parts):
     return sorted(contacts)
 
 
-def _emit_preroute(signal, net, stack, routing, contact_centres, rules):
+def _emit_preroute(signal, net, stack, routing, contact_centres, rules, *, has_pour):
     wires, vias = net.get("wires", ()), net.get("vias", ())
     if not wires and not vias:
         return
@@ -222,12 +223,13 @@ def _emit_preroute(signal, net, stack, routing, contact_centres, rules):
             raise ValueError(f"{name}: duplicate via")
         via_points.add(xy)
         nodes = {(*xy, layer) for layer in stack}
-        touched = nodes & degree.keys()
-        if not touched:
+        touched = nodes & (degree.keys() | anchors)
+        if not touched and not has_pour:
             raise ValueError(f"{name}: via has no trace endpoint at its centre")
-        via_nodes.update(touched)
-        for node in touched:
-            wire_graph[node].update(touched - {node})
+        joined = touched or {(*xy, stack[0])}
+        via_nodes.update(joined)
+        for node in joined:
+            wire_graph[node].update(joined - {node})
 
     if any(count == 1 and node not in anchors and node not in via_nodes for node, count in degree.items()):
         raise ValueError(f"{name}: trace endpoint must meet a pad or via centre or another trace vertex")
@@ -249,7 +251,7 @@ def _emit_preroute(signal, net, stack, routing, contact_centres, rules):
             adjacent = wire_graph[node] & remaining
             remaining.difference_update(adjacent)
             pending.extend(adjacent)
-        if not component & anchors:
+        if not has_pour and not component & anchors:
             raise ValueError(f"{name}: disconnected trace endpoints have no contact pad")
         # shortcut: an explicit copper component has no per-connection ownership; count its vias together.
         if len({node[:2] for node in component} & via_points) > limit:
@@ -341,6 +343,7 @@ def build_board(
         raise ValueError("schematic parts and nets must match the design spec")
     _check_schematic_parts(design, libraries.parts)
     board_signals = {}
+    poured_nets = {pour["net"] for pour in spec.board["pours"]}
     assigned = set()
     for name, net in sorted(design.nets.items()):
         contacts = _contacts(net, libraries.parts)
@@ -357,7 +360,8 @@ def build_board(
         board_signals[name] = signal
         for ref, pad in contacts:
             ET.SubElement(signal, "contactref", element=ref, pad=pad)
-        _emit_preroute(signal, nets[name], stack, spec.routing, [centres[contact] for contact in contacts], rules)
+        _emit_preroute(signal, nets[name], stack, spec.routing, [centres[contact] for contact in contacts], rules,
+                       has_pour=name in poured_nets)
     for pour in spec.board["pours"]:
         name = pour["net"]
         if name not in board_signals:

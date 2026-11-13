@@ -97,7 +97,8 @@ Verify the actual routing and lengths with Fusion's
 
 Routing uses the policy pinned in `routing.budget`. It preserves protected nets and subdivides
 selected same-net traces at tees so every branch ends at the same emitted point. Via landings use
-the via center. The board template supplies fabrication rules such as `rvViaOuter`,
+the via center. Readback checks require shared serialized trace endpoints, with pad centers
+rounded to the board writer's precision. The board template supplies fabrication rules such as `rvViaOuter`,
 `rlMinViaOuter` and `rlMaxViaOuter`. The compiler writes the 25%, 8 mil and 20 mil defaults
 respectively when the template omits them.
 Per-net `allowed_layers` limits traces. Set `via_spans` to the full-stack endpoint pair
@@ -175,8 +176,8 @@ before starting another import.
 ## Native acceptance
 
 The compiler supports flat designs and through vias. Hierarchical EAGLE modules, automatic part
-acquisition or substitution, blind or buried vias, arbitrary native slot verification and proof of
-filled polygon connectivity are outside its supported checks. After import, run native ERC and DRC
+acquisition or substitution, blind or buried vias and arbitrary native slot verification are
+outside its supported checks. Plane connectivity requires measured native fill. After import, run native ERC and DRC
 and review their findings. Refill and check polygons where applicable, inspect placement,
 footprints, routing and the 3D view, and verify manufacturing and datasheet requirements
 independently.
@@ -185,8 +186,10 @@ The live acceptance harness is opt-in and writes to the supplied disposable Fusi
 from the repository on Windows with the authenticated add-in, an explicit disposable project ID and
 an unused product name. The harness checks the imported family's identity and name uniqueness before
 closing it through Fusion's name-based native close. It then reopens by the pinned saved product ID.
-The report records offline validation, native ERC, post-repour airwires and measured filled area,
-and native DRC separately. Exported layer-19 spans are diagnostic. Pass `--artifacts PATH`
+The report records offline validation, native ERC, post-repour airwire endpoints, measured fill
+connectivity, native rule and restriction readback, and native DRC separately. It compares
+serialized trace and via geometry at five decimal places and checks routing policy again after
+refill. Exported layer-19 spans are compared with live endpoints for diagnosis. Pass `--artifacts PATH`
 to save the report and exports under a new directory.
 
 ```text
@@ -194,7 +197,9 @@ python tests/live/e2e_compiled_import.py --disposable-project-id ID --name NEW_P
 ```
 
 Add `--inner-restrict` to run the four-layer fixture and compare the two inner-layer restrictions
-after native reopen and export. The report distinguishes saved working-copy contour checks from
-live post-repour measurements.
+after native reopen and export. For an existing passing compiler candidate, supply both
+`--manifest PATH` and `--manifest-sha256 HASH` in place of the fixture selection. If its offline
+report leaves connections pending on unmeasured pours, the live run checks their repoured
+contours and still requires zero native airwires.
 
 Live acceptance is pending an explicit disposable project ID and new product name.

@@ -1,4 +1,5 @@
 """Native NAME and VALUE fields emitted by the paired compiler."""
+from copy import deepcopy
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -7,6 +8,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from fusion_offline.compiler.compile import compile_candidate
+from fusion_offline.compiler.validate import validate_candidate
 from fusion_offline.eagle import parse_board
 from fusion_offline.sch_labels import instances
 from test_compiler_schema import minimal_design
@@ -57,7 +59,8 @@ class CompilerLabelsTest(unittest.TestCase):
         root = ET.fromstring(board)
         for element in root.findall(".//board/elements/element"):
             self.assertEqual(element.get("smashed"), "yes")
-            labels = {node.get("name"): node for node in element.findall("attribute") if node.get("x")}
+            labels = {node.get("name"): node for node in element.findall("attribute")
+                      if node.get("name") in ("NAME", "VALUE")}
             expected = ("26", "28") if element.get("name") == "D1" else ("25", "27")
             self.assertEqual({name: node.get("layer") for name, node in labels.items()},
                              dict(zip(("NAME", "VALUE"), expected)))
@@ -68,3 +71,46 @@ class CompilerLabelsTest(unittest.TestCase):
         self.assertEqual(root.find(".//package[@name='LED_0805']/text").get("layer"), "25")
         self.assertEqual(next(row.attrs for row in parse_board(board).elements if row.name == "D1"),
                          {"MPN": "TEST-LED"})
+
+    def test_native_custom_attributes_match_the_repaired_21_mpn_rows(self):
+        data = minimal_design()
+        resistor = next(part for part in data["parts"] if part["ref"] == "R1")
+        data["parts"], data["nets"] = [], []
+        # Revision G .before-routing-tidy.brd omitted placement on all RA/RB/RC divider MPNs.
+        mpn = "TNPV1206240KBEEA"
+        expected = {}
+        for index, phase in enumerate("ABC"):
+            for number in range(1, 8):
+                ref = f"R{phase}{number}"
+                x, y = 4 + 5 * (number - 1), 5 + 7 * index
+                part = deepcopy(resistor)
+                part.update(ref=ref, attributes={"MPN": mpn})
+                part["units"][0].update(x=x * 4, y=y * 4)
+                part["board"].update(x=x, y=y, side="bottom" if phase == "C" else "top")
+                data["parts"].append(part)
+                expected[ref] = (x, y, "28" if phase == "C" else "27")
+
+        source = self.root / "design.json"
+        raw = json.dumps(data).encode()
+        source.write_bytes(raw)
+        candidate = compile_candidate(source, sha256(raw).hexdigest(), self.root / "candidate")
+        self.assertEqual(candidate.data["status"], "pass")
+        root = ET.fromstring(candidate.read_artifact("board"))
+        rows = {element.attrib["name"]: element.find("attribute[@name='MPN']")
+                for element in root.findall(".//board/elements/element")}
+        self.assertEqual(len(rows), 21)
+        for ref, row in rows.items():
+            x, y, layer = expected[ref]
+            self.assertEqual((float(row.get("x", "nan")), float(row.get("y", "nan")), row.get("layer")),
+                             (x, y, layer))
+            self.assertEqual((row.get("size"), row.get("display"), row.get("value")), ("1.02", "off", mpn))
+            row.attrib.clear()
+            row.attrib.update(name="MPN", value=mpn)
+
+        report = validate_candidate(candidate.read_artifact("schematic"), ET.tostring(root),
+                                    json.loads(candidate.read_artifact("routing_intent")))
+        self.assertEqual(report["status"], "fail")
+        finding = next(row for row in report["findings"] if row["check"] == "element_attributes")
+        self.assertTrue(finding["required"])
+        self.assertEqual(finding["status"], "fail")
+        self.assertTrue(all(f"{ref}.MPN" in finding["detail"] for ref in expected))

@@ -10,9 +10,11 @@ _TAP_TOLERANCE = 0.000071
 _VIA_TOLERANCE = 0.01
 
 
-def canonicalize_signal(signal, anchors=()):
+def canonicalize_signal(signal, anchors=(), *, via_tolerance=_VIA_TOLERANCE):
     """Snap unambiguous via landings and split host wires at same-layer endpoints."""
     anchors = set(anchors)
+    if not 0 <= via_tolerance <= 0.1:
+        raise ValueError("via landing tolerance must be between 0 and 0.1 mm")
     vias = defaultdict(set)
     for via in signal.findall("via"):
         first, last = map(int, via.attrib["extent"].split("-"))
@@ -22,6 +24,13 @@ def canonicalize_signal(signal, anchors=()):
 
     wires = {}
     points = defaultdict(set)
+    endpoints = defaultdict(int)
+    for wire in signal.findall("wire"):
+        layer = int(wire.attrib["layer"])
+        if layer != 19:
+            for index in (1, 2):
+                point = tuple(float(wire.attrib[f"{axis}{index}"]) for axis in "xy")
+                endpoints[*point, layer] += 1
     for wire in signal.findall("wire"):
         layer = int(wire.attrib["layer"])
         if layer == 19 or float(wire.get("curve", "0")):
@@ -29,8 +38,8 @@ def canonicalize_signal(signal, anchors=()):
         ends = []
         for index in (1, 2):
             point = tuple(float(wire.attrib[f"{axis}{index}"]) for axis in "xy")
-            if (*point, layer) not in anchors and point not in vias[layer]:
-                matches = [center for center in vias[layer] if dist(point, center) <= _VIA_TOLERANCE]
+            if (*point, layer) not in anchors and point not in vias[layer] and endpoints[*point, layer] == 1:
+                matches = [center for center in vias[layer] if dist(point, center) <= via_tolerance + 1e-12]
                 if len(matches) == 1:
                     point = matches[0]
                     for axis, value in zip("xy", point):
