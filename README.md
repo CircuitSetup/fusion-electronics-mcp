@@ -1,14 +1,192 @@
 # fusion-electronics-mcp
 
-For IC-based design, see the [datasheet workflow](docs/datasheet-workflow.md): search local and online libraries before creating missing symbols, footprints and 3D models; inspect manufacturer PDFs; apply source-linked component/layout requirements and constrained multilayer routing; and verify actual read-back. Install the `documents` extra and start with `get_datasheet_workflow`.
+Build new PCB designs offline and work on them in Autodesk Fusion Electronics through an
+MCP client. The offline EAGLE compiler turns a JSON design specification and local libraries
+into a paired `.sch` and `.brd`, with an HTML preview and a validation report. Use it from
+the terminal or through MCP with Fusion closed. The MCP server can import a reviewed pair
+as a new linked Electronics Design in Fusion, and it can also inspect and edit existing designs.
 
-An MCP server that lets AI agents read, review and edit PCB designs in
-Autodesk Fusion Electronics: schematic capture, placement, impedance-controlled
-routing, pours and stitching, design checks, and JLCPCB manufacturing outputs.
+- [Compile a fresh board offline](#compile-a-fresh-board-offline)
+- [Use the compiler with MCP](#use-the-compiler-with-mcp)
+- [Work on an existing Fusion design](#build-with-electronics-commands-and-scripts)
 
-Every change is verified by reading the design back from Fusion and is undone if
-the result does not match. Each tool call is one undo step in Fusion, and
-nothing is saved until you ask.
+## Install
+
+Python 3.12 or newer and Git are required for this setup. The clone includes the example
+files used below. The offline compiler needs only the base package.
+
+```bash
+git clone https://github.com/CircuitSetup/fusion-electronics-mcp.git
+cd fusion-electronics-mcp
+python -m pip install .
+fusion-electronics-mcp --version
+```
+
+Install `.[render]` for live `render_board` images or `.[documents]` for PDF inspection
+in the [datasheet workflow](docs/datasheet-workflow.md). The compiler's HTML and SVG
+previews are included in the base install. Use package version 0.4.0 or newer for the workflow below.
+
+## Compile a fresh board offline
+
+A design spec pins two empty EAGLE XML templates and local `.lbr` files by absolute path
+and SHA-256. The board template supplies the copper stack and design rules. The spec
+defines the outline, parts, schematic and board placements, and nets as explicit
+part/gate/pin connections. For your own board, start with the
+[LED switch spec](tests/fixtures/compiler/minimal/design.json), replace its inputs and
+design data, and check the [design schema](server/fusion_mcp/data/offline-design.schema.json).
+
+### Try the LED switch example
+
+Run this PowerShell example from the repository root after installing the package. It
+creates a temporary workspace, points a copy of the spec at the bundled inputs, and
+hashes the exact files the compiler will read.
+
+```powershell
+$fixture = (Resolve-Path ./tests/fixtures/compiler/minimal).Path
+$work = Join-Path ([IO.Path]::GetTempPath()) "fusion-compiler-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $work | Out-Null
+
+$spec = Get-Content -Raw (Join-Path $fixture design.json) | ConvertFrom-Json
+foreach ($asset in (@($spec.templates.schematic, $spec.templates.board) + $spec.libraries)) {
+    $asset.path = Join-Path $fixture (Split-Path -Leaf $asset.path)
+    $asset.sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $asset.path).Hash.ToLowerInvariant()
+}
+$spec.routing.selected_nets = @($spec.nets.name)
+$specPath = Join-Path $work design.json
+[IO.File]::WriteAllText($specPath, ($spec | ConvertTo-Json -Depth 30))
+$specHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $specPath).Hash.ToLowerInvariant()
+
+$base = fusion-electronics-mcp compile-candidate --spec $specPath --spec-sha256 $specHash `
+    --output-directory (Join-Path $work base) | ConvertFrom-Json
+$base.preview_path
+```
+
+Open the returned `preview_path` in your browser. The candidate directory contains
+`candidate.sch`, `candidate.brd`, `validation.json`, and `candidate-manifest.json`. Keep the
+manifest path and its returned SHA-256 together. To change the design, edit the spec,
+recompute its hash, and compile to a fresh directory.
+
+### Route and review the candidate
+
+Routing is optional. The example spec prepared above selects all five nets. Plan a job
+using that selection, or add `--net NAME` for each net you want to route. Open the job
+preview and review its diagnostics before promoting it.
+
+```powershell
+$job = fusion-electronics-mcp route-candidate --manifest $base.manifest_path `
+    --manifest-sha256 $base.manifest_sha256 | ConvertFrom-Json
+$job.preview_path
+$job.diagnostics
+```
+
+Promotion publishes the saved routing result as a new candidate. Use `$candidate = $base`
+if you skip routing.
+
+```powershell
+$candidate = fusion-electronics-mcp route-candidate --manifest $base.manifest_path `
+    --manifest-sha256 $base.manifest_sha256 --job-manifest $job.manifest_path `
+    --job-manifest-sha256 $job.manifest_sha256 --output-directory (Join-Path $work routed) | ConvertFrom-Json
+
+fusion-electronics-mcp render-candidate --manifest $candidate.manifest_path --manifest-sha256 $candidate.manifest_sha256
+fusion-electronics-mcp validate-candidate --manifest $candidate.manifest_path --manifest-sha256 $candidate.manifest_sha256
+```
+
+The routed example should report `report.status` of `pass` and zero `report.airwires`.
+Review the final preview and `report.findings` before import. A required finding of
+`fail` or `unverified` blocks import. For boards that require all connections routed,
+set `routing.require_fully_routed` in the spec. An unrouted base with that policy can
+return exit code 3 and still provide a manifest for routing.
+A budget-limited routing job can return exit code 4 with a saved preview and diagnostics.
+See the [offline compiler guide](docs/offline-compiler.md) for spec fields, routing limits,
+and exit codes.
+
+## Use the compiler with MCP
+
+### Add it to your MCP client
+
+Register `fusion-electronics-mcp` as a local stdio server. For example, in Claude Code:
+
+```bash
+claude mcp add fusion-electronics -- fusion-electronics-mcp
+```
+
+For Claude Desktop, add this entry to `claude_desktop_config.json`. Use the absolute path
+to the installed executable if the client cannot find it on `PATH`.
+
+```json
+{
+  "mcpServers": {
+    "fusion-electronics": { "command": "fusion-electronics-mcp" }
+  }
+}
+```
+
+### Compile or review through MCP
+
+Call `get_offline_compiler_workflow()` to find the installed schema and compiler workspace.
+Inputs use absolute local paths on the machine running the server. For MCP outputs, use
+a fresh relative path inside the workspace, such as `led-switch-base`, or an absolute
+path inside it. These tools work with Fusion closed.
+
+| Task | MCP tool and inputs |
+| --- | --- |
+| Compile the spec | `compile_eagle_candidate(spec_path, spec_sha256, output_directory)`. Use `$specPath` and `$specHash` from the example to try it. |
+| Plan routing (optional) | `plan_eagle_candidate_routing(manifest_path, manifest_sha256)` with optional `selected_nets`. Review the returned `preview_path` and `diagnostics`. |
+| Publish the reviewed routing job (optional) | `promote_eagle_candidate_routing(manifest_path, manifest_sha256, job_manifest_path, job_manifest_sha256, output_directory)` using the base candidate pins and the job pins. |
+| Review the final candidate | `render_eagle_candidate(manifest_path, manifest_sha256)` and `validate_eagle_candidate(manifest_path, manifest_sha256)`. Open `preview_path` and review `report.findings`. |
+
+For a candidate built at the terminal, start at the review step with its returned
+`manifest_path` and `manifest_sha256`. MCP can read that candidate from its original
+location. For example, ask your MCP client:
+
+> Review the compiler candidate at `<absolute manifest path>` with SHA-256 `<manifest hash>`.
+> Show me its preview path, required validation findings, and remaining airwires.
+
+Use the same manifest and hash when you import it.
+
+### Connect it to Fusion
+
+For native import, use Autodesk Fusion desktop on Windows or macOS with the bundled
+add-in (version 0.14.23 or newer).
+
+```bash
+fusion-electronics-mcp install-addin
+```
+
+In Fusion, open **Utilities > Add-Ins > Scripts and Add-Ins**, select
+`FusionElectronicsMCP` on the **Add-Ins** tab, and click **Run**. Enable **Run on Startup**
+if you want it to start with Fusion. When updating an existing installation, use
+`install-addin --force`, stop and run the add-in, and restart the MCP connection.
+
+### Check the setup
+
+With Fusion running, run `fusion-electronics-mcp doctor`, then call `get_context()`
+from your MCP client to confirm the connection and open documents. Fusion's built-in
+MCP transport (**Preferences > General > API > Fusion MCP Server**) is also available
+for supported live reads and edits. Paired import uses the bundled add-in.
+
+### Import the reviewed candidate into Fusion
+
+1. Review a candidate with `report.status` equal to `pass`. In Fusion, activate the
+   destination project, save all open documents, and clear pending edits and dialogs.
+   `list_designs()` returns the active `project_id`. Choose an unused product name and
+   an existing project-relative folder, or use `""` for the project root.
+2. Call `import_eagle_candidate(manifest_path, expected_manifest_sha256, request_id, project_id, name, folder)`.
+   Set `expected_manifest_sha256` to the reviewed candidate's `manifest_sha256`. Generate
+   one fresh 32-character lowercase hex `request_id` with `[guid]::NewGuid().ToString('N')`
+   in PowerShell and keep it for the whole import.
+3. For `pending`, follow `next_action` and call the same tool again with identical arguments.
+   On Windows the tool can submit the native file pickers. On macOS, select the returned
+   staged schematic, then the staged board in Fusion. `saved_linked` confirms the new
+   family was saved and returns its native IDs. If you get `state_unknown`, inspect
+   `get_eagle_pair_import_status(request_id)` and the Fusion dialogs before taking any
+   further action. See [paired import recovery](#import-a-local-eagle-schematic-and-board).
+4. Use `get_context()` to confirm the imported family. Run `run_erc()` on the schematic.
+   Refill polygons in Fusion where applicable, then run `run_drc()` on the board and
+   check airwires, plane connectivity, footprints, placement, and routing. Review the 3D
+   and manufacturing outputs before ordering. See [native acceptance](docs/offline-compiler.md#native-acceptance).
+
+## What it can do in Fusion
 
 ![A dual CRPS power-supply backplane designed in Fusion through the MCP](docs/images/crps-3d.png)
 
@@ -26,8 +204,6 @@ GND stitched, silkscreen and 3D models checked.*
 <td width="50%" align="center"><img src="docs/images/crps-jlcpcb-preview.png" alt="JLCPCB's assembly preview of the board, every part matched to its JLCPCB part number"><br><sub>JLCPCB placement preview</sub></td>
 </tr>
 </table>
-
-## What it can do
 
 - **Review**: board and schematic summaries, parts, nets, DRC and ERC, a
   schematic review (unconnected power pins, boxes drawn as nets, stray wires,
@@ -91,65 +267,6 @@ GND stitched, silkscreen and 3D models checked.*
   mask on every SMD pad).
 
 `fusion-electronics-mcp tools` lists the available tools.
-
-## Requirements
-
-- Autodesk Fusion (desktop) with Electronics, on Windows or macOS
-- Python 3.12 or newer
-- An MCP client, for example Claude Code or Claude Desktop
-
-## Install
-
-```bash
-pip install "fusion-electronics-mcp[render] @ git+https://github.com/groundplane-studio/fusion-electronics-mcp"
-```
-
-The `[render]` extra adds matplotlib for `render_board`; leave it out if you do
-not need board pictures.
-
-### Connect it to Fusion
-
-Install the bundled add-in and run it from **Utilities > Add-Ins** in Fusion
-(tick Run on Startup):
-
-```bash
-fusion-electronics-mcp install-addin
-```
-
-The add-in listens on 127.0.0.1 only, behind a per-session token.
-
-Without the add-in, the server can fall back to **Fusion's own MCP server**
-(Preferences > General > API > **Fusion MCP Server**). That works for reading
-and most edits, but on current Fusion builds it does not save libraries, it
-stops answering after about a minute, and it cancels Fusion's dialogs, so
-saving and pushing to the 3D PCB need the add-in.
-
-### Add it to your MCP client
-
-Claude Code:
-
-```bash
-claude mcp add fusion-electronics -- fusion-electronics-mcp
-```
-
-Claude Desktop (`claude_desktop_config.json`; use the full path to the command
-if it is not on your PATH):
-
-```json
-{
-  "mcpServers": {
-    "fusion-electronics": { "command": "fusion-electronics-mcp" }
-  }
-}
-```
-
-### Check the setup
-
-With Fusion running:
-
-```bash
-fusion-electronics-mcp doctor
-```
 
 ## Build with Electronics commands and scripts
 
@@ -526,16 +643,6 @@ exact, as do MPN and local part IDs. Real package or mapping differences still f
 
 ## Using it
 
-### Compile a fresh board offline
-
-Use the [offline EAGLE compiler](docs/offline-compiler.md) to build a fresh schematic and
-board from a pinned design specification, empty templates and local EAGLE libraries.
-Call `get_offline_compiler_workflow` to find the schema and workspace, then compile with
-`compile_eagle_candidate`. If routing is needed, plan with `plan_eagle_candidate_routing`,
-inspect the saved job, and promote it with `promote_eagle_candidate_routing`. Review the
-preview and validation report before calling `import_eagle_candidate` for one passing
-candidate. Finish with native ERC, DRC and visual review.
-
 ### Package restrictions and header corridors
 
 Available in server `0.3.0+workflow.34`.
@@ -606,18 +713,13 @@ same correction on the part in your library (`JLC-ROTATION`, `JLC-X-OFFSET`,
 
 ## Safety and privacy
 
-- **No telemetry.** The server talks to Fusion on 127.0.0.1 only.
-- **The add-in only does design edits.** It listens on 127.0.0.1 only, answers
-  only requests carrying the per-session token it writes to your user folder,
-  and runs only Fusion design commands from a fixed list (no `RUN`, `SCRIPT`,
-  `SYSTEM`, file or export commands), so an agent cannot use it to run
-  programs. The one local file it reads is a STEP model you name for
-  `attach_3d_model`, which it imports into your Fusion project.
-- **One exception, on request**: `check_jlc_orientation` with `fetch=true`
-  downloads footprints from easyeda.com (cached forever, at least 15 s between
-  requests). Nothing else leaves your machine. The service tools
-  (`request_design_review`, `get_assembly_quote`) are stubs and make no network
-  calls.
+- **Local bridge.** The add-in listens on 127.0.0.1 and requires a per-session token.
+  Offline compiler artifacts are written to local disk. A paired import saves the new
+  family to the selected Fusion project. Review source before using the separate tools
+  that run trusted scripts or registered ULPs.
+- **Optional footprint lookup.** `check_jlc_orientation` with `fetch=true` downloads
+  footprints from EasyEDA and caches them locally. The service tools
+  `request_design_review` and `get_assembly_quote` are stubs.
 - **Fusion's questions get safe answers.** Fusion asks things with pop-up
   dialogs; a watchdog answers the ones a tool expects and cancels the rest
   (Cancel / No, never Yes). Windows only so far: on macOS a dialog waits for you.
@@ -663,7 +765,7 @@ and `~/Library/Application Support/fusion-electronics-mcp` on macOS.
 ## Development
 
 ```bash
-git clone https://github.com/groundplane-studio/fusion-electronics-mcp
+git clone https://github.com/CircuitSetup/fusion-electronics-mcp.git
 cd fusion-electronics-mcp
 pip install -e ".[render]"
 python -m unittest discover -s tests
