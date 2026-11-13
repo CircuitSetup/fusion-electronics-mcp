@@ -90,10 +90,10 @@ def emit_part_labels(parent, definition, position, layers, bounds, *, size, gap)
         local_angle, local_mirror = parse_rot(style.get("rot"))
         rotation = normalize_mm((local_angle + (-angle if local_mirror else angle)) % 360) % 360
         flags = ("S" if "S" in style.get("rot", "").upper() else "") + ("M" if mirror != local_mirror else "")
-        attrs = {key: style[key] for key in ("align", "font", "ratio") if key in style}
+        attrs = {key: style[key] for key in ("align", "ratio") if key in style}
         ET.SubElement(parent, "attribute", name=name, x=str(normalize_mm(px)), y=str(normalize_mm(py)),
                       size=style.get("size", str(size)), layer=str(layer), rot=f"{flags}R{rotation:g}",
-                      display="value", **attrs)
+                      display="value", font=style.get("font", "proportional"), **attrs)
 
 
 def build_schematic(spec: DesignSpec, template_xml: bytes, libraries: ResolvedLibraries) -> bytes:

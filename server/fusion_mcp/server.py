@@ -1628,7 +1628,7 @@ def _place_added_part(session, snapshot, plan):
     point = C.pt(float(label["x"]), float(label["y"]))
     target = C.q(f"{ref}>NAME")
     commands = [C.move_part(ref, *plan["at"])]
-    font = label.get("font", "vector").upper()
+    font = label.get("font", "proportional").upper()
     if font not in ("VECTOR", "PROPORTIONAL", "FIXED"):
         raise ValueError(f"{ref}: unsupported PCB reference label font {font}")
     bound = element.find("attribute[@name='NAME']") is not None or (package is not None and any(

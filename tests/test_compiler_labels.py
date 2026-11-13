@@ -47,6 +47,7 @@ class CompilerLabelsTest(unittest.TestCase):
             self.assertEqual({name: node.get("layer") for name, node in labels.items()},
                              {"NAME": "95", "VALUE": "96"})
             self.assertTrue(all(node.get("value") is None for node in labels.values()))
+            self.assertTrue(all(node.get("font") == "proportional" for node in labels.values()))
         header = next(row for row in instances(root) if row["part"] == "J1")
         name, value = (header["labels"][field] for field in ("NAME", "VALUE"))
         self.assertEqual((name["x"], name["y"], name["size"]), (2.54, 33.02, 1.27))
@@ -64,6 +65,9 @@ class CompilerLabelsTest(unittest.TestCase):
             expected = ("26", "28") if element.get("name") == "D1" else ("25", "27")
             self.assertEqual({name: node.get("layer") for name, node in labels.items()},
                              dict(zip(("NAME", "VALUE"), expected)))
+            self.assertEqual(labels["VALUE"].get("font"), "proportional")
+            if element.get("name") != "D1":
+                self.assertEqual(labels["NAME"].get("font"), "proportional")
         name = root.find(".//element[@name='D1']/attribute[@name='NAME']")
         self.assertEqual((float(name.get("x")), float(name.get("y")), name.get("rot")), (26, 20, "MR90"))
         self.assertEqual((name.get("size"), name.get("font"), name.get("ratio")), ("1.2", "vector", "8"))

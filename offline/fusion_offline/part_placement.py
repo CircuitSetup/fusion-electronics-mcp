@@ -267,13 +267,13 @@ def plan_label(root, ref, *, allow_outside=False):
     el, layer, (left, bottom, right, top), style, _, _, gap = context
     current = el.find("attribute[@name='NAME']")
     if current is not None and label_conflict(ref, current.attrib, context) is None:
-        return {**current.attrib, "font": current.get("font", "vector"), "ratio": current.get("ratio", "10"),
+        return {**current.attrib, "font": current.get("font", "proportional"), "ratio": current.get("ratio", "10"),
                 "align": current.get("align", "bottom-left"), "rot": current.get("rot", "R0")}
     style = style or (current.attrib if current is not None else {})
     size = float(style.get("size", "0.8")) or 0.8
     angle = FP.readable(FP.parse_rot(style.get("rot"))[0], "center", None)[0]
     attrs = {"name": "NAME", "layer": layer, "display": "value", "size": str(size),
-             "font": style.get("font", "vector"), "ratio": style.get("ratio", "10"), "align": "center",
+             "font": style.get("font", "proportional"), "ratio": style.get("ratio", "10"), "align": "center",
              "rot": f"{'M' if layer == '26' else ''}R{angle:g}"}
     x, y = (left + right) / 2, (bottom + top) / 2
     blocked = None
@@ -324,7 +324,7 @@ def verify(root, placement):
                 or abs(float(actual.get("size", "0")) - float(label["size"])) > .001
                 or FP.parse_rot(actual.get("rot")) != FP.parse_rot(label.get("rot"))
                 or actual.get("align", "bottom-left") != label.get("align", "bottom-left")
-                or actual.get("font", "vector") != label.get("font", "vector")
+                or actual.get("font", "proportional") != label.get("font", "proportional")
                 or float(actual.get("ratio", "10")) != float(label.get("ratio", "10"))):
             raise ValueError(f"{ref}: PCB reference label differs from the placement plan")
         label_root = deepcopy(root)
