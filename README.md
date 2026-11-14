@@ -28,6 +28,9 @@ previews are included in the base install. Use package version 0.4.0 or newer fo
 
 ## Compile a fresh board offline
 
+[Detailed instructions for the offline compiler](docs/offline-compiler.md) cover
+spec preparation, routing limits, exit codes, and Fusion import.
+
 A design spec pins two empty EAGLE XML templates and local `.lbr` files by absolute path
 and SHA-256. The board template supplies the copper stack and design rules. The spec
 defines the outline, parts, schematic and board placements, and nets as explicit
@@ -97,8 +100,6 @@ Review the final preview and `report.findings` before import. A required finding
 set `routing.require_fully_routed` in the spec. An unrouted base with that policy can
 return exit code 3 and still provide a manifest for routing.
 A budget-limited routing job can return exit code 4 with a saved preview and diagnostics.
-See the [offline compiler guide](docs/offline-compiler.md) for spec fields, routing limits,
-and exit codes.
 
 ## Use the compiler with MCP
 
