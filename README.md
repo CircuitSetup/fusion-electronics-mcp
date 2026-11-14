@@ -1,12 +1,12 @@
 # Fusion Electronics MCP & AI PCB Builder
 
-Design, inspect, and edit PCBs in Autodesk Fusion Electronics with an AI assistant through the Model Context Protocol (MCP).
+Build complete PCB candidates with an AI coding assistant using the **offline EAGLE compiler**. The assistant writes a JSON design spec, then compiles the schematic, board outline, and component placement, routes the board, and reviews HTML/SVG previews and validation results. All of that runs with Fusion closed.
 
-Work directly in Fusion, or compile a JSON design specification into a paired EAGLE schematic and board. The offline compiler supports routing, HTML/SVG previews, and validation with Fusion closed. Reviewed designs can then be imported into Fusion as linked Electronics Designs.
+**Start offline for new boards.** Compiling a design in batches is faster than building it through individual live MCP calls because it avoids repeated round trips to Fusion for placement, wiring, and routing. Use the Fusion Electronics MCP tools to import the reviewed candidate as a linked Electronics Design, run native checks, and make targeted edits in Fusion.
 
+- [Build a new board offline](#build-a-new-board-offline)
 - [Features](#features)
 - [Quick start](#quick-start)
-- [Workflows](#workflows)
 - [Documentation](#documentation)
 - [Configuration](#configuration)
 
@@ -27,12 +27,12 @@ Work directly in Fusion, or compile a JSON design specification into a paired EA
 
 ## Features
 
+- **Offline PCB builder for AI tools:** Compile a JSON design spec, local templates, and libraries into paired `.sch` and `.brd` files. Plan and review routing, validate the candidate, and import the reviewed result into Fusion.
 - **Schematic design:** Place parts and multi-unit symbols, organize functional blocks and sheets, and connect pins with continuous right-angle wires. Preview batch edits and reusable circuit blocks before applying them.
 - **Placement and routing:** Arrange support components around ICs, align inline parts, and move components in batches. Route individual nets, differential pairs, parallel buses, and remaining connections; add copper pours, ground vias, and stitching.
 - **Keepouts:** Route around supported package and board restrictions, define explicitly authorized header connection corridors, and preflight library keepout changes. Corridors affect offline planning only and do not waive native DRC.
 - **Design checks:** Inspect parts, nets, placement, ERC/DRC findings, annular rings, solder mask, and pour clearances. Check differential-pair lengths, estimate impedance and trace widths, and compare designs with reviewed datasheet evidence and project requirements.
 - **Parts and libraries:** Search Fusion libraries and the local component catalog. Create symbols and device mappings from KiCad footprints, add package variants and STEP models, and update parts and models in existing designs.
-- **Offline design:** Compile local templates, libraries, and a JSON specification into paired `.sch` and `.brd` files with previews, validation reports, and manifests. Plan routing separately and import reviewed candidates into Fusion.
 - **Design reuse:** Import schematic connectivity, placement, and routing from KiCad boards. Reuse reviewed circuit blocks with explicit ports and separate internal nets.
 - **Manufacturing preparation:** Use bundled JLCPCB rules and two-, four-, and six-layer stackups. Export BOM/CPL files, check assembly orientation, and compare exported Gerbers with the design.
 - **Fusion automation and inspection:** Run reviewed ULPs and trusted scripts, manage add-ins, inspect selections and commands, and read lifecycle events. Inspect 3D bodies and measure interference and clearance.
@@ -100,14 +100,14 @@ When updating, reinstall the package, run `install-addin --force`, stop and rest
 
 ### Build a new board offline
 
-Start with the [LED switch example](tests/fixtures/compiler/minimal/design.json) and follow the [offline compiler guide](docs/offline-compiler.md) for a complete CLI walkthrough.
+Give your AI assistant the [detailed offline compiler instructions](docs/offline-compiler.md) and the [LED switch example](tests/fixtures/compiler/minimal/design.json). Have it draft the design spec, run the compiler from the terminal, and iterate on placement and routing using the preview and validation report.
 
 1. **Prepare the specification.** Define the outline, parts, placements, and nets. Reference empty EAGLE schematic/board templates and local `.lbr` files using absolute paths and SHA-256 hashes. The board template supplies the stackup and design rules.
-2. **Compile.** Generate a candidate containing `candidate.sch`, `candidate.brd`, a preview, a validation report, and a manifest.
-3. **Route and review.** Optionally plan routing, inspect its preview and diagnostics, then promote the saved result to a new candidate. Keep each manifest path and its returned hash together.
-4. **Validate and import.** Review the final preview and findings. Required `fail` or `unverified` findings block import. Set `routing.require_fully_routed` when all connections must be routed.
+2. **Compile.** Run `compile-candidate` to generate `candidate.sch`, `candidate.brd`, a preview, a validation report, and a manifest.
+3. **Route and review.** Use `route-candidate` to plan routing, inspect its preview and diagnostics, then promote the saved result to a new candidate. Keep each manifest path and its returned hash together.
+4. **Validate and import.** Use `render-candidate` and `validate-candidate` to review the final preview and findings. Required `fail` or `unverified` findings block import. Set `routing.require_fully_routed` when all connections must be routed.
 
-For MCP, call `get_offline_compiler_workflow()` first to locate the schema and workspace. Use a fresh output directory within that workspace.
+Pass the final manifest path and hash to `import_eagle_candidate` through MCP. If your assistant uses MCP for the build itself, the offline tools below run the same compiler with Fusion closed. Call `get_offline_compiler_workflow()` to locate the schema and workspace, then use a fresh output directory within that workspace.
 
 | Step | MCP tools |
 | --- | --- |
