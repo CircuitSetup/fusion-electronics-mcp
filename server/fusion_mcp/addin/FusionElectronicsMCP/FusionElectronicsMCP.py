@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.23"
+ADDIN_VERSION = "0.14.24"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -651,6 +651,40 @@ def op_selection(args):
 def op_commands(args):
     return _inspection().commands(_ui, args.get('query', ''), args.get('command_id'),
                                   args.get('limit', 25), args.get('offset', 0))
+
+
+def op_native_board_command(args):
+    commands = {
+        "refill_pours": "Electron::PolyRefill",
+        "start_via_stitching": "Electron::Stitch",
+    }
+    action = args.get("action")
+    expected_id = args.get("expected_document_id")
+    if (set(args) != {"action", "expected_document_id"} or not isinstance(action, str)
+            or action not in commands or not isinstance(expected_id, str) or not expected_id):
+        raise BridgeError("bad_args", "Use a supported PCB action and the expected active document ID")
+    doc = _app.activeDocument
+    if doc is None or _product_kind() != "board":
+        raise BridgeError("wrong_editor", "Activate the target 2D PCB")
+    if _document_id(doc) != expected_id:
+        raise BridgeError("wrong_document", "The reviewed PCB is no longer active")
+    command_id = commands[action]
+    active = _ui.activeCommand
+    stitching = action == "start_via_stitching"
+    if stitching and active == command_id:
+        return {"status": "dialog_open", "command_id": command_id, "document_id": expected_id}
+    if active not in ("", None, "SelectCommand", "Electron::Group"):
+        raise BridgeError("fusion_busy", f"Finish Fusion's active command {active!r} before starting {command_id}")
+    command = _ui.commandDefinitions.itemById(command_id)
+    if command is None or not command.isNative:
+        raise BridgeError("unsupported", f"This Fusion build has no native {command_id} command")
+    if not command.execute():
+        raise BridgeError("command_failed", f"Fusion refused to start {command_id}")
+    _settle()
+    if _app.activeDocument != doc or _product_kind() != "board":
+        raise BridgeError("context_changed", "The command was requested, but the active editor changed")
+    status = "dialog_open" if stitching and _ui.activeCommand == command_id else "requested"
+    return {"status": status, "command_id": command_id, "document_id": expected_id}
 
 
 def _inspection_design():
@@ -1929,6 +1963,7 @@ OPS = {"ping": op_ping, "context": op_context, "activate": op_activate, "export"
        "list_scripts": op_list_scripts, "inspect_script": op_inspect_script, "control_script": op_control_script,
        "events": op_events, "reload_addin": op_reload_addin,
        "selection": op_selection, "commands": op_commands,
+       "native_board_command": op_native_board_command,
        "geometry_bodies": op_geometry_bodies, "geometry_clearance": op_geometry_clearance,
        "run": op_run, "run_script": op_run_script, "run_bundled_ulp": op_run_bundled_ulp,
        "run_registered_ulp": op_run_registered_ulp,

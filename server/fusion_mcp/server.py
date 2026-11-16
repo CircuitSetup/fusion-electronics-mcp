@@ -45,7 +45,9 @@ mcp = MCPServer(
         "Coordinates are millimetres. Reads reflect the design as "
         "exported at call time. Normal edits are verified by reading the design back. "
         "Build in Fusion with command-backed tools before using UI clicks. Start with get_context "
-        "and read the target design. Batch repeated edits: use move_parts for PCB placement, "
+        "and read the target design. Use refill_pours for Fusion's native copper refill and "
+        "start_via_stitching for editable native Via Stitching features. "
+        "Batch repeated edits: use move_parts for PCB placement, "
         "route_net/route_remaining for routing, and preview_schematic_edits or preview_circuit_block "
         "with apply_schematic_plan for reviewed schematic builds. For a missing library device, "
         "prepare it with create_library_part and build it in Fusion with insert_library_part. "
@@ -261,6 +263,30 @@ def inspect_fusion_commands(query: str = '', command_id: str | None = None, limi
     expose native dialog inputs. Control flags do not guarantee applicability in this editor.
     Needs add-in 0.14.15+. Leaves dialogs and selection alone."""
     return session.bridge.call('commands', dict(query=query, command_id=command_id, limit=limit, offset=offset))
+
+
+@tool(CHANGE)
+def refill_pours(expected_document_id: str) -> dict:
+    """Run Fusion's native Re-fill Copper Pours (Electron::PolyRefill) on the active PCB.
+    Pass the active board document_id from get_context. No export, ULP, editor switch or save
+    is performed. The response acknowledges the command; use the live bundled probe for
+    fill evidence before any board export. A diagnostic can clear the live display cache.
+    Requires the FusionElectronicsMCP add-in 0.14.24+.
+    """
+    return session.bridge.call("native_board_command",
+                               {"action": "refill_pours", "expected_document_id": expected_document_id})
+
+
+@tool(CHANGE)
+def start_via_stitching(expected_document_id: str) -> dict:
+    """Open Fusion's native Via Stitching builder (Electron::Stitch) on the active PCB.
+    Pass the active board document_id from get_context. Fusion handles the signal, region
+    (use Fill Polygon Shape for local stitching), spacing, offset, drill, diameter and apply
+    in its dialog. Opening it makes no verified placement. Use the native preview and confirm
+    the resulting feature in Design Manager. Requires the add-in 0.14.24+.
+    """
+    return session.bridge.call("native_board_command",
+                               {"action": "start_via_stitching", "expected_document_id": expected_document_id})
 
 
 @tool(READ)
@@ -3482,7 +3508,10 @@ def add_keepout(x_mm: float, y_mm: float, radius_mm: float,
 def stitch_vias(net: str = "GND", pitch_mm: float = 2.0, drill_mm: float | None = None,
                 max_vias: int = 400, keep_away_mm: dict[str, float] | None = None, under_parts: str | None = None,
                 dry_run: bool = False) -> dict:
-    """Via stitching for a net's pours: vias on a grid wherever they clear other nets' copper, every
+    """Plan and place individual vias with the MCP grid planner. For an editable Fusion
+    Via Stitching feature use start_via_stitching. This planner centers its grid on the board
+    outline and may use an origin different from the editor snap grid.
+    Candidates clear other nets' copper, every
     pad (no via-in-pad), holes, keepouts and the board edge, using the design's clearance and
     drill rules. keep_away_mm: {net regex: mm} keeps vias further from some nets' copper, e.g.
     {"^ETH|^USB_D": 0.6} to keep ground as far from impedance pairs as their pours are.
