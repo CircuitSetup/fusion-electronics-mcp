@@ -152,6 +152,34 @@ class FakeBridge:
 
 
 class SessionTest(unittest.TestCase):
+    def test_failed_write_cannot_undo_in_a_different_document(self):
+        from fusion_mcp.bridge import BridgeOpError
+
+        class SwitchingBridge(FakeBridge):
+            def __init__(self):
+                super().__init__(mutate=True)
+                self.active = "original"
+
+            def call(self, op, args=None, **kwargs):
+                if op in ("context", "activate"):
+                    return {"active_document": {"kind": "board", "name": "fixture", "document_id": self.active}}
+                if op == "run" and args["commands"] == "UNDO;":
+                    # Switch after any Python-side check, just before Fusion handles UNDO.
+                    self.active = "other"
+                    if args.get("expected_document_id") == "original":
+                        raise BridgeOpError("wrong_document", "The reviewed target is no longer active")
+                return super().call(op, args, **kwargs)
+
+        for pin in (None, "original"):
+            with self.subTest(pin=pin):
+                bridge = SwitchingBridge()
+                with self.assertRaisesRegex(WriteFailed, "Active document changed before rollback"):
+                    Session(bridge).verified_write("board", C.move_part("R1", 1, 1),
+                                                   lambda a, b: (False, "verification failed"),
+                                                   schematic=False, expected_document_id=pin)
+                self.assertTrue(bridge.dirty)
+                self.assertNotIn("UNDO;", bridge.ran)
+
     def test_failed_change_is_undone(self):
         fb = FakeBridge(mutate=True)
         with self.assertRaises(WriteFailed) as cm:

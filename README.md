@@ -165,7 +165,7 @@ See the [datasheet workflow](docs/datasheet-workflow.md) for sourcing parts, ins
 
 ## Manufacturing review
 
-Export Gerbers manually from Fusion's CAM Processor, then run `check_gerbers`. Use `check_jlc_orientation` to compare assembly footprints and apply supported CPL rotation/offset corrections; uncertain matches are marked `needs_review`.
+Export Gerbers manually from Fusion's CAM Processor, then run `check_gerbers`. For boards with native Via Stitching, pass the saved Fusion-format PCB from the same revision as `board_path` so the check includes stitch drills. Use `check_jlc_orientation` to compare assembly footprints and apply supported CPL rotation/offset corrections. Uncertain matches are marked `needs_review`.
 
 Before ordering, inspect every component in JLCPCB's placement preview, including pin 1, polarity, and pad alignment. Store corrections in the library's `JLC-ROTATION`, `JLC-X-OFFSET`, and `JLC-Y-OFFSET` attributes for future orders.
 

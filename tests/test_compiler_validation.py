@@ -71,6 +71,15 @@ class CompilerValidationTest(unittest.TestCase):
         self.assertEqual(report["airwires_by_net"]["VCC"], 1)
         self.assertEqual(report["status"], "fail")
 
+    def test_compiler_rejects_crossing_traces_on_different_nets(self):
+        nets = {net["name"]: net for net in self.data["nets"]}
+        nets["VCC"]["wires"] = [dict(x1=4, y1=10, x2=14.05, y2=21, layer=1, width=0.3)]
+        nets["CTRL"]["wires"] = [dict(x1=4, y1=15.08, x2=28.05, y2=10, layer=1, width=0.3)]
+        candidate = self.compile()
+        self.assertEqual(candidate.data["status"], "fail")
+        finding = next(row for row in candidate.data["findings"] if row["check"] == "trace_overlaps")
+        self.assertIn("CTRL / VCC", finding["detail"])
+
     def test_saved_unsplit_tee_and_offset_via_do_not_prove_continuity(self):
         self.add_preroute()
         candidate = self.compile()
@@ -282,16 +291,23 @@ class CompilerValidationTest(unittest.TestCase):
         candidate = self.compile()
 
         def route_all(root):
-            endpoints = {
+            paths = {
                 "VCC": ((4, 10), (14.05, 21)), "CTRL": ((4, 15.08), (28.05, 10)),
-                "GND": ((4, 12.54), (29.95, 10)), "LED_A": ((23.05, 21), (15.95, 21)),
+                "GND": ((4, 12.54), (2, 12.54), (2, 23), (32, 23), (32, 10), (29.95, 10)),
+                "LED_A": ((23.05, 21), (15.95, 21)),
                 "LED_K": ((24.95, 21), (29, 12)),
             }
             for signal in root.findall(".//signal"):
-                a, b = endpoints[signal.attrib["name"]]
-                attributes = dict(x1=str(a[0]), y1=str(a[1]), x2=str(b[0]), y2=str(b[1]), width="0.2")
-                ET.SubElement(signal, "wire", attributes, layer="1")
-                ET.SubElement(signal, "wire", attributes, layer="19")
+                name = signal.attrib["name"]
+                points = paths[name]
+                layer = "16" if name == "CTRL" else "1"
+                for (x1, y1), (x2, y2) in zip(points, points[1:]):
+                    attributes = dict(x1=str(x1), y1=str(y1), x2=str(x2), y2=str(y2), width="0.2")
+                    ET.SubElement(signal, "wire", attributes, layer=layer)
+                (x1, y1), (x2, y2) = points[0], points[-1]
+                ET.SubElement(signal, "wire", x1=str(x1), y1=str(y1), x2=str(x2), y2=str(y2), width="0", layer="19")
+                if name == "CTRL":
+                    ET.SubElement(signal, "via", x=str(x2), y=str(y2), drill="0.3", extent="1-16")
 
         report = self.report(candidate, route_all)
         self.assertEqual(report["airwires"], 0)

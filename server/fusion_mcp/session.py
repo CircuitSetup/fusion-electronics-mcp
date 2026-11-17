@@ -129,9 +129,11 @@ class Session:
 
     def run(self, commands: str, editor: str, answers: list[tuple[str, str]] | None = None,
             forms: list[dict] | None = None, timeout: float = 60.0, check_dialogs: bool = True,
-            expected_document_id: str | None = None) -> dict:
+            expected_document_id: str | None = None, *, pin_document: bool = False) -> dict:
         commands = self.with_grid(commands)
-        self.activate(editor)
+        activation = self.activate(editor)
+        if pin_document and not expected_document_id:
+            expected_document_id = ((activation or {}).get("active_document") or {}).get("document_id")
         args = {"commands": commands, "editor": editor}
         if expected_document_id:
             args["expected_document_id"] = expected_document_id
@@ -145,13 +147,15 @@ class Session:
             raise WriteFailed("Fusion asked something this call did not expect and it got the safe answer: "
                               + "; ".join(describe(d) for d in unexpected)
                               + f". Check the design; commands sent: {commands}")
+        if pin_document and expected_document_id:
+            res = dict(res or {}, document_id=expected_document_id)
         return res
 
     def run_script(self, script: str, editor: str) -> dict:
         return self.bridge.call("run_script", {"script": script, "editor": editor}, timeout=180)
 
-    def undo(self, editor: str) -> None:
-        self.run("UNDO;", editor)
+    def undo(self, editor: str, *, expected_document_id: str | None = None) -> None:
+        self.run("UNDO;", editor, expected_document_id=expected_document_id)
 
     # -- verified write ------------------------------------------------------
     def verified_write(self, editor: str, commands: str,
@@ -220,8 +224,9 @@ class Session:
             self.run(pre, editor, timeout=30)     # sent on their own, so the write stays ONE undo step
         try:
             # verified_write reports and undoes on unexpected dialogs itself
-            guard = {"expected_document_id": target_id} if target_id else {}
-            res = self.run(commands, editor, answers=answers, forms=forms, timeout=timeout, check_dialogs=False, **guard) or {}
+            res = self.run(commands, editor, answers=answers, forms=forms, timeout=timeout,
+                           check_dialogs=False, expected_document_id=target_id, pin_document=True) or {}
+            target_id = res.get("document_id", target_id)
         finally:
             if post:
                 self.run(post, editor, timeout=30)
@@ -270,9 +275,15 @@ class Session:
             return after, detail + drc_note + note
         changed = after.board_xml != before.board_xml or after.sch_xml != before.sch_xml
         if changed:
+            rollback_blocked = 'Active document changed before rollback. Inspect the original design.'
             if (target_id or constraints) and (self.context().get('active_document') or {}).get('document_id') != (target_id or constrained_document):
-                raise WriteFailed('Active document changed before rollback; no UNDO sent to another document. Inspect the original PCB.')
-            self.undo(editor)
+                raise WriteFailed(rollback_blocked)
+            try:
+                self.undo(editor, expected_document_id=target_id)
+            except BridgeOpError as ex:
+                if ex.code != 'wrong_document':
+                    raise
+                raise WriteFailed(rollback_blocked) from None
             restored = self.snapshot(board, schematic)
             clean = restored.board_xml == before.board_xml and restored.sch_xml == before.sch_xml
             if restored.board_xml != before.board_xml:

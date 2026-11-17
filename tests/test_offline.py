@@ -304,6 +304,31 @@ class GerberCheckTest(unittest.TestCase):
                           ("soldermask_bottom.gbr", False), ("solderpaste_bottom.gbr", False)):
             open(os.path.join(tmp, name), "w").write(with_pads(top))
 
+    def test_cam_check_detects_missing_native_stitch_drills(self):
+        import tempfile
+        from zipfile import ZipFile
+        from fusion_mcp import server
+
+        root = ET.parse(os.path.join(FIX, "mini.brd")).getroot()
+        signal = root.find("./drawing/board/signals/signal")
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as source:
+            self._cam(root, tmp)
+            stitch = ET.SubElement(signal, "viastitch", stitchType="Area")
+            ET.SubElement(ET.SubElement(stitch, "template"), "via", drill="0.2", extent="1-16")
+            positions = ET.SubElement(stitch, "vias")
+            ET.SubElement(positions, "pos", x="3", y="2")
+            ET.SubElement(positions, "pos", x="5", y="2")
+            board_path = os.path.join(source, "native.fbrd")
+            with ZipFile(board_path, "w") as archive:
+                archive.writestr("Board/electron.BlobParts/ExtFile.test.brd", ET.tostring(root))
+            result = server.check_gerbers(tmp, board_path=board_path)
+            self.assertFalse(result["ok"])
+            self.assertTrue(any("2 design holes missing" in problem for problem in result["problems"]))
+
+            self._cam(root, tmp)
+            result = server.check_gerbers(tmp, board_path=board_path)
+            self.assertTrue(result["ok"], result["problems"])
+
     def test_design_vs_cam(self):
         import tempfile
         from fusion_offline import gerbers as G

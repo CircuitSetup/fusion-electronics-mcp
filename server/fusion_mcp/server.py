@@ -1423,15 +1423,17 @@ def export_bom() -> dict:
 
 
 @tool(READ)
-def check_gerbers(path: str) -> dict:
-    """Check a CAM output (zip or folder of gerbers + Excellon drills) against the open design:
+def check_gerbers(path: str, board_path: str | None = None) -> dict:
+    """Check a CAM output (zip or folder of Gerbers and Excellon drills) against the board:
     complete layer set (copper count = stackup, mask, silk incl. bottom when the board has bottom
     text, paste where there are SMD pads, outline, drill), outline size, every drilled hole of the
     design (pads, vias, holes) present with the right diameter and position and nothing extra, and
-    pad flash counts per layer. Run it on the zip before uploading to the fab."""
+    pad flash counts per layer. For native Via Stitching, pass a saved Fusion-format PCB
+    board_path from the same revision as the CAM output. The default open-board EAGLE
+    export can omit those vias."""
     from fusion_offline import gerbers as G
-    snap = _snap(schematic=False)
-    return G.check(path, D.read_xml(snap.board_xml), copper_layers=len(snap.board().copper_layers))
+    root = D.read_xml(board_path if board_path is not None else _snap(schematic=False).board_xml)
+    return G.check(path, root, copper_layers=len(D.parse_board_design(root).copper_layers))
 
 
 @tool(READ)

@@ -573,6 +573,29 @@ def _via_annulus_overlaps(design, stack):
     return same_net, foreign
 
 
+def _trace_overlaps(design, stack):
+    by_layer = defaultdict(list)
+    for name, signal in design.signals.items():
+        for wire in signal.wires:
+            a, b = (wire.x1, wire.y1), (wire.x2, wire.y2)
+            if (wire.layer in stack and not wire.curve and wire.width > 0
+                    and all(math.isfinite(value) for value in (*a, *b, wire.width))):
+                radius = wire.width / 2
+                by_layer[wire.layer].append((min(a[0], b[0]) - radius, max(a[0], b[0]) + radius,
+                                             name, a, b, radius))
+
+    for layer, traces in sorted(by_layer.items()):
+        traces.sort()
+        for index, (_, right, name, a, b, radius) in enumerate(traces):
+            for next_index in range(index + 1, len(traces)):
+                left, _, other, c, d, other_radius = traces[next_index]
+                if left > right:
+                    break
+                if name != other and _seg_dist(a, b, c, d) <= radius + other_radius:
+                    nets = " / ".join(sorted((name, other)))
+                    raise ValueError(f"Different-net traces touch on layer {layer}: {nets} ({a} to {b} / {c} to {d})")
+
+
 def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: dict, *,
                        provenance=None, measured_fills=None, measured_fills_complete=False) -> dict:
     """Check paired bytes and return deterministic findings and physical contact groups."""
@@ -590,6 +613,7 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
     sch, design = parse_schematic_design(sch_root), parse_board_design(board_root)
     stack = tuple(design.copper_layers)
     findings.append(_check("drill_spacing", lambda: _drill_spacing(board_root, design.rules)))
+    findings.append(_check("trace_overlaps", lambda: _trace_overlaps(design, stack)))
     try:
         shared_annuli, foreign_annuli = _via_annulus_overlaps(design, stack)
         findings.append(_finding("via_annuli", "fail" if foreign_annuli else "pass",

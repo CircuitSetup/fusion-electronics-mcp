@@ -10,7 +10,7 @@ import unittest
 
 from fusion_mcp import builtin as B
 
-from test_server import _fusion_writer_class
+from test_server import _fusion_writer_class, load_addin
 
 
 def ok(payload):
@@ -43,6 +43,16 @@ class SessionLossTest(unittest.TestCase):
 
 
 class SessionKeptTest(unittest.TestCase):
+    def test_document_ids_persist_across_operation_scripts(self):
+        load_addin()
+        document = object()
+        activate, undo = {}, {}
+        exec(B.build_script("activate", {"kind": "board"}, False), activate)
+        expected = activate["_document_id"](document)
+        exec(B.build_script("run", {"commands": "UNDO;", "expected_document_id": expected}, False), undo)
+        self.assertEqual(undo["_document_id"](document), expected)
+        self.assertNotEqual(undo["_document_id"](object()), expected)
+
     def test_fusion_busy_keeps_the_session(self):
         def post(body, timeout):
             text = json.dumps({"success": False, "error": "Cannot perform 'script' while a command dialog is open"})

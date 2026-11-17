@@ -23,6 +23,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
+from .design import _native_via_stitch
 from .eagle import parse_rot, Pad as LibraryPad, UnverifiedGeometry
 
 
@@ -303,6 +304,13 @@ def design_holes(root: ET.Element, *, checkpoint=None) -> tuple[DrillFile, dict]
                 checkpoint()
             df.holes.append((round(_f(v, "drill"), 4), _f(v, "x"), _f(v, "y")))
             counts["vias"] += 1
+        for stitch in s.iterfind("viastitch"):
+            native = _native_via_stitch(stitch)
+            for x, y in native.positions:
+                if checkpoint:
+                    checkpoint()
+                df.holes.append((round(native.template.drill, 4), x, y))
+                counts["vias"] += 1
     for h in board.iterfind("./plain/hole"):
         df.holes.append((round(_f(h, "drill"), 4), _f(h, "x"), _f(h, "y")))
         counts["holes"] += 1
