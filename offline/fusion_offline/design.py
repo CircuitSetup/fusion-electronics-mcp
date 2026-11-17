@@ -95,6 +95,17 @@ class Via:
 
 
 @dataclass
+class NativeViaStitch:
+    kind: str
+    offset_mm: float
+    spacing_mm: float
+    staggered: bool
+    template: Via
+    boundary: list[Wire]
+    positions: list[tuple[float, float]]
+
+
+@dataclass
 class Signal:
     name: str
     net_class: str
@@ -102,6 +113,7 @@ class Signal:
     wires: list[Wire] = field(default_factory=list)
     vias: list[Via] = field(default_factory=list)
     polygons: int = 0
+    native_stitches: list[NativeViaStitch] = field(default_factory=list)
 
     def length_by_layer(self) -> dict[int, float]:
         out: dict[int, float] = {}
@@ -190,6 +202,26 @@ def _mm(v: str) -> float:
     return x
 
 
+def _wire(el: ET.Element) -> Wire:
+    return Wire(_f(el, "x1"), _f(el, "y1"), _f(el, "x2"), _f(el, "y2"),
+                _f(el, "width"), int(el.get("layer", 0)), _f(el, "curve"))
+
+
+def _via(el: ET.Element) -> Via:
+    return Via(_f(el, "x"), _f(el, "y"), _f(el, "drill"), el.get("extent", ""), _f(el, "diameter"))
+
+
+def _native_via_stitch(el: ET.Element) -> NativeViaStitch:
+    via = el.find("./template/via")
+    if via is None:
+        raise ValueError("Native via stitch has no via template")
+    # Fusion stores the stitch dimensions in editor units and its copper coordinates in mm.
+    return NativeViaStitch(el.get("stitchType", ""), _f(el, "offset") / 320_000,
+                           _f(el, "spacing") / 320_000, el.get("staggered") == "yes", _via(via),
+                           [_wire(w) for w in el.iterfind("./stitchwires/wire")],
+                           [(_f(p, "x"), _f(p, "y")) for p in el.iterfind("./vias/pos")])
+
+
 def parse_board_design(root: ET.Element) -> BoardDesign:
     board = root.find("./drawing/board")
     if board is None:
@@ -208,11 +240,9 @@ def parse_board_design(root: ET.Element) -> BoardDesign:
         sig = Signal(s.get("name", ""), classes[cls_num].name if cls_num in classes else str(cls_num))
         for c in s.iterfind("contactref"):
             sig.contacts.append((c.get("element", ""), c.get("pad", "")))
-        for w in s.iterfind("wire"):
-            sig.wires.append(Wire(_f(w, "x1"), _f(w, "y1"), _f(w, "x2"), _f(w, "y2"),
-                                  _f(w, "width"), int(w.get("layer", 0)), _f(w, "curve")))
-        for v in s.iterfind("via"):
-            sig.vias.append(Via(_f(v, "x"), _f(v, "y"), _f(v, "drill"), v.get("extent", ""), _f(v, "diameter")))
+        sig.wires = [_wire(w) for w in s.iterfind("wire")]
+        sig.vias = [_via(v) for v in s.iterfind("via")]
+        sig.native_stitches = [_native_via_stitch(el) for el in s.iterfind("viastitch")]
         sig.polygons = len(s.findall("polygon"))
         signals[sig.name] = sig
     names = [e.get("name", "") for e in board.iterfind("./elements/element")]

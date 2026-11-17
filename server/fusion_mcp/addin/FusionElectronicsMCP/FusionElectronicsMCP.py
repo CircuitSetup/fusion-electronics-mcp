@@ -37,7 +37,7 @@ import uuid
 import adsk.core  # type: ignore
 import adsk.electron  # type: ignore
 
-ADDIN_VERSION = "0.14.24"
+ADDIN_VERSION = "0.14.25"
 PROTOCOL = 1
 EVENT_ID = "fusion_electronics_mcp_bridge"
 DEFAULT_TIMEOUT = 60.0
@@ -653,14 +653,26 @@ def op_commands(args):
                                   args.get('limit', 25), args.get('offset', 0))
 
 
+_STITCH_NUMBER = r"[0-9]+(?:[.][0-9]{1,8})?"
+_NATIVE_STITCH_SCRIPT = re.compile(
+    rf"GRID MIL {_STITCH_NUMBER}; CHANGE DRILL {_STITCH_NUMBER}; "
+    rf"STITCH '[A-Za-z0-9_.!$#@+/:~-]{{1,127}}' USEPOLYGON OFFSET {_STITCH_NUMBER} "
+    rf"SPACING {_STITCH_NUMBER} AUTO 1-(?:[2-9]|[1-5][0-9]|6[0-4]) "
+    rf"(?:[\(]-?{_STITCH_NUMBER} -?{_STITCH_NUMBER}[\)] ){{4,129}}COMMIT; GRID LAST;"
+)
+
+
 def op_native_board_command(args):
     commands = {
         "refill_pours": "Electron::PolyRefill",
         "start_via_stitching": "Electron::Stitch",
+        "apply_via_stitching": "Electron::Stitch",
     }
     action = args.get("action")
     expected_id = args.get("expected_document_id")
-    if (set(args) != {"action", "expected_document_id"} or not isinstance(action, str)
+    applying = action == "apply_via_stitching"
+    keys = {"action", "expected_document_id", "script"} if applying else {"action", "expected_document_id"}
+    if (set(args) != keys or not isinstance(action, str)
             or action not in commands or not isinstance(expected_id, str) or not expected_id):
         raise BridgeError("bad_args", "Use a supported PCB action and the expected active document ID")
     doc = _app.activeDocument
@@ -678,7 +690,12 @@ def op_native_board_command(args):
     command = _ui.commandDefinitions.itemById(command_id)
     if command is None or not command.isNative:
         raise BridgeError("unsupported", f"This Fusion build has no native {command_id} command")
-    if not command.execute():
+    if applying:
+        script = args["script"]
+        if not isinstance(script, str) or len(script) > 8192 or not _NATIVE_STITCH_SCRIPT.fullmatch(script):
+            raise BridgeError("bad_args", "Expected one native polygon STITCH command")
+        _app.executeTextCommand("Electron.run " + script)
+    elif not command.execute():
         raise BridgeError("command_failed", f"Fusion refused to start {command_id}")
     _settle()
     if _app.activeDocument != doc or _product_kind() != "board":

@@ -227,7 +227,8 @@ def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle
     board = root.find("./drawing/board")
     from .annular import copper as annular_copper
     from .design import parse_board_design
-    stack = parse_board_design(root).copper_layers
+    design = parse_board_design(root)
+    stack = design.copper_layers
     rules = {p.get("name"): p.get("value") for p in board.iterfind("./designrules/param")}
     obs: list[Obstacle] = []
     # pad -> net from the signals' contactrefs
@@ -251,15 +252,20 @@ def board_obstacles(root: ET.Element, *, checkpoint=None) -> tuple[list[Obstacle
             obs.append(Obstacle("seg", s.get("name"), False,
                                 (_f(w, "x1"), _f(w, "y1"), _f(w, "x2"), _f(w, "y2"), _f(w, "width") / 2 + sag),
                                 frozenset({int(w.get("layer"))}), w.get("mcp_conn")))
-        for v in s.iterfind("via"):
+        via_rows = [(_f(v, "x"), _f(v, "y"), _f(v, "drill"), _f(v, "diameter"), v.get("mcp_conn"))
+                    for v in s.iterfind("via")]
+        for native in design.signals[s.get("name", "")].native_stitches:
+            via_rows.extend((x, y, native.template.drill, native.template.diameter, None)
+                            for x, y in native.positions)
+        for x, y, drill, diameter, tag in via_rows:
             if checkpoint:
                 checkpoint()
-            diameters = annular_copper(rules, "Via", _f(v, "drill"), _f(v, "diameter"), len(stack) > 2)
+            diameters = annular_copper(rules, "Via", drill, diameter, len(stack) > 2)
             for side, layers in (("outer", (stack[0], stack[-1])), ("inner", stack[1:-1])):
                 if layers:
                     obs.append(Obstacle("circle", s.get("name"), False,
-                                        (_f(v, "x"), _f(v, "y"), diameters[side] / 2),
-                                        frozenset(layers), v.get("mcp_conn"), is_via=True))
+                                        (x, y, diameters[side] / 2),
+                                        frozenset(layers), tag, is_via=True))
     pkgs = {}
     for lib in board.iterfind("./libraries/library"):
         if checkpoint:
@@ -415,6 +421,43 @@ def drill_keepouts(root, rules, drill, *, checkpoint=None):
     gap = rule_mm(rules.get("mdDrill")) or 0.0
     return [Obstacle("circle", None, False, (x, y, (size + drill) / 2 + gap))
             for size, x, y in drilled.holes]
+
+
+def native_stitch_script(net: str, points_mm, *, pitch_mm: float, drill_mm: float, offset_mm: float,
+                         grid_mm: float, bottom_layer: int = 64) -> str:
+    """Build a Fusion PCB command for one editable polygon Via Stitching feature."""
+    if not isinstance(net, str) or not re.fullmatch(r"[A-Za-z0-9_.!$#@+/:~-]{1,127}", net):
+        raise ValueError("Invalid stitch signal name")
+    if type(bottom_layer) is not int or not 2 <= bottom_layer <= 64:
+        raise ValueError("Native stitch bottom layer must be a CLI ID from 2 to 64")
+    values = (pitch_mm, drill_mm, offset_mm, grid_mm)
+    if not all(math.isfinite(v) for v in values) or min(pitch_mm, drill_mm, grid_mm) <= 0 or offset_mm < 0:
+        raise ValueError("Use positive finite pitch, drill and grid, and a nonnegative edge offset")
+    points = [tuple(p) for p in points_mm]
+    if len(points) > 1 and points[-1] == points[0]:
+        points.pop()
+    if not 3 <= len(points) <= 128 or any(len(p) != 2 or not all(math.isfinite(v) for v in p) for p in points):
+        raise ValueError("Use 3 to 128 finite polygon vertices")
+    if any(not math.isclose(v, round(v / grid_mm) * grid_mm, rel_tol=0, abs_tol=0.000001)
+           for p in points for v in p):
+        raise ValueError("Every stitch polygon vertex must lie on the requested grid")
+    if len(set(points)) != len(points):
+        raise ValueError("Use distinct polygon vertices")
+    edges = list(zip(points, points[1:] + points[:1]))
+    if (abs(sum(a[0] * b[1] - a[1] * b[0] for a, b in edges)) < 1e-9
+            or any(segments_intersect(a, b, c, d)
+                   for i, (a, b) in enumerate(edges)
+                   for j, (c, d) in enumerate(edges[:i]) if i - j > 1 and (j, i) != (0, len(edges) - 1))):
+        raise ValueError("Use a simple polygon with nonzero area")
+
+    def mil(v):
+        value = f"{v / 0.0254:.8f}".rstrip("0").rstrip(".")
+        return "0" if value == "-0" else value
+
+    coordinates = " ".join(f"({mil(x)} {mil(y)})" for x, y in points + points[:1])
+    return (f"GRID MIL {mil(grid_mm)}; CHANGE DRILL {mil(drill_mm)}; "
+            f"STITCH '{net}' USEPOLYGON OFFSET {mil(offset_mm)} SPACING {mil(pitch_mm)} "
+            f"AUTO 1-{bottom_layer} {coordinates} COMMIT; GRID LAST;")
 
 
 def plan_stitching(root: ET.Element, net: str, pitch: float = 2.0, drill: float | None = None,

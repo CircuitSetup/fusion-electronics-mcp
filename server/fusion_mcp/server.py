@@ -46,7 +46,7 @@ mcp = MCPServer(
         "exported at call time. Normal edits are verified by reading the design back. "
         "Build in Fusion with command-backed tools before using UI clicks. Start with get_context "
         "and read the target design. Use refill_pours for Fusion's native copper refill and "
-        "start_via_stitching for editable native Via Stitching features. "
+        "start_via_stitching or apply_via_stitching for editable native Via Stitching features. "
         "Batch repeated edits: use move_parts for PCB placement, "
         "route_net/route_remaining for routing, and preview_schematic_edits or preview_circuit_block "
         "with apply_schematic_plan for reviewed schematic builds. For a missing library device, "
@@ -287,6 +287,28 @@ def start_via_stitching(expected_document_id: str) -> dict:
     """
     return session.bridge.call("native_board_command",
                                {"action": "start_via_stitching", "expected_document_id": expected_document_id})
+
+
+@tool(CHANGE)
+def apply_via_stitching(expected_document_id: str, net: str, points_mm: list[list[float]],
+                        pitch_mm: float, drill_mm: float, offset_mm: float, grid_mm: float,
+                        bottom_layer: int = 64, dry_run: bool = True) -> dict:
+    """Preview or submit one native polygon Via Stitching feature, using Fusion's STITCH USEPOLYGON.
+    Vertices are absolute PCB coordinates in mm and must follow the requested grid. The builder
+    closes the polygon, uses automatic diameter and the board's mask rules, and submits COMMIT.
+    The preview shows the command and vertices. Fusion computes and checks the via locations.
+    Pass the active PCB document_id from get_context. With dry_run=false, confirm the native
+    feature in Design Manager or in a fresh Fusion-format board read-back before claiming placement.
+    The classic EAGLE board export can omit native stitch features. Requires add-in 0.14.25+.
+    """
+    from fusion_offline.stitch import native_stitch_script
+
+    script = native_stitch_script(net, points_mm, pitch_mm=pitch_mm, drill_mm=drill_mm,
+                                  offset_mm=offset_mm, grid_mm=grid_mm, bottom_layer=bottom_layer)
+    if dry_run:
+        return {"status": "preview", "net": net, "script": script}
+    return session.bridge.call("native_board_command", {"action": "apply_via_stitching",
+                               "expected_document_id": expected_document_id, "script": script})
 
 
 @tool(READ)

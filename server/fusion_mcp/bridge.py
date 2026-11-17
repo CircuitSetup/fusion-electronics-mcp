@@ -147,8 +147,10 @@ class Bridge:
                 version = tuple(int(part) for part in info.get("addin_version", "").split("."))
             except ValueError:
                 version = ()
-            if version < (0, 14, 24):
-                raise BridgeOpError("needs_addin", "Native PCB commands require add-in 0.14.24+; install and reload it first")
+            minimum = (0, 14, 25) if (args or {}).get("action") == "apply_via_stitching" else (0, 14, 24)
+            if version < minimum:
+                required = ".".join(map(str, minimum))
+                raise BridgeOpError("needs_addin", f"Native PCB commands require add-in {required}+; install and reload it first")
         if mode == 'addin' and op in PAIR_IMPORT_OPS:
             try:
                 version = tuple(int(part) for part in info.get('addin_version','').split('.'))
