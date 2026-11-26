@@ -64,6 +64,11 @@ class CandidateToolsTest(unittest.TestCase):
         self.assertTrue(Path(workflow["schema_path"]).is_file())
         self.assertEqual(Path(workflow["workspace"]), self.workspace)
         self.assertFalse(workflow["fusion_writes"])
+        selection = workflow["tool_selection"]
+        self.assertTrue(selection["new_board"])
+        self.assertIn("get_context", selection["existing_board"])
+        self.assertIn("capture-drc-baseline", selection["existing_board"])
+        self.assertIn("check_drc", selection["live_fusion"])
         self.assertFalse(self.workspace.exists())
 
     def test_registered_compile_dispatch_requires_a_pin(self):
