@@ -72,8 +72,10 @@ a fresh output directory, and uses the selection already saved in the job.
 
 ## Prepare a design specification
 
-1. Export an empty flat EAGLE schematic and its empty board as UTF-8 EAGLE XML. Use matching EAGLE
-   XML versions and keep the normal layers, classes and board design rules. The schematic needs
+1. Export an empty flat schematic and its empty board from the same Fusion design as `.fsch` and
+   `.fbrd`. The compiler publishes native archives alongside the XML used by the guarded paired
+   importer. To build from EAGLE XML templates, use matching `.sch` and `.brd` files. Keep the
+   normal layers, classes and board design rules. The schematic needs
    sheets with no parts, instances, nets, buses or module instances. The board needs empty element
    and signal containers and no existing copper. Use a board template whose copper stack matches the
    design. Declare the outline, holes and keepouts in the specification.
@@ -103,6 +105,20 @@ placements and pads with explicit preroutes stay at their declared positions. Se
 to `true` to explicitly configure a 50 mil (1.27 mm) grid in both exports and align schematic
 symbols to it. Supply an explicit `ref` for a part named in nets or placement overrides. Use
 `ref: null` to allocate the library device prefix for a part without those references.
+
+## Export edits to an existing Fusion design
+
+Use `export-edited-pair` with the original native archives and the XML changed by the offline
+editor. Omit an edited path to use that document's original XML. The exporter checks physical
+parts, packages, values, and pad-to-net assignments before publishing both native files together.
+
+```powershell
+fusion-electronics-mcp export-edited-pair --source-schematic design.fsch --source-board design.fbrd `
+  --edited-board edited.brd --output-directory revised-design
+```
+
+New vias written by the offline router use Auto for the outside diameter. An explicit diameter is
+preserved. Auto uses the board's annular-ring rules.
 
 ## Read the validation report
 
@@ -152,10 +168,31 @@ Per-net `allowed_layers` limits traces. Set `via_spans` to the full-stack endpoi
 (for example, `[[1,16]]`), or to `[]` to forbid through vias. Through vias check clearance on
 every layer they cross, including any reserved reference plane. A pre-routed pad-to-via escape
 can serve as the launch point for an inner-layer routing job.
-The router uses the greater of the board width minimum, net class width, and any per-net
-`min_width_mm`. Enter power widths after sizing the shared segments for combined load and copper
-thickness. Preflight rejects narrower traces, overlapping collinear runs, and drill spacing below
-the board's `mdDrill` rule. Same-net annulus overlap is reported separately from drill spacing.
+New routes use horizontal, vertical, and 45-degree segments through the pad and via landings.
+
+Before routing, cross-reference the exact connected ICs' manufacturer datasheets and their pin
+functions. Record the greatest likely simultaneous load on the current path, including combined
+loads on shared supply and return paths. Cite the connected parts, datasheets, and the tables or
+sections used in each net's `current` policy. [TI guidance on estimating shared supply loads](https://www.ti.com/document-viewer/lit/html/SSZTB16/GUID-3781905E-01BB-406F-9C13-9E0BCC13F5ED)
+
+```json
+"current": {
+  "expected_a": 0.8,
+  "basis": "Sum the 0.5 A and 0.3 A loads that can operate simultaneously",
+  "sources": [
+    {"part": "U1", "datasheet": "Manufacturer datasheet for the exact U1 part", "section": "Supply current table"},
+    {"part": "U2", "datasheet": "Manufacturer datasheet for the exact U2 part", "section": "Supply current table"}
+  ]
+}
+```
+
+The router sizes at `expected_a × 1.20` using the board's copper thickness, the most demanding
+allowed copper layer, and a 10 °C rise unless the policy specifies `delta_t_c`. The board width
+minimum, net class width, and `min_width_mm` can raise that width. A native-template build requires
+current evidence by default. Set `routing.require_current_evidence` to `true` to require it for an
+EAGLE XML build. The sources document the load estimate supplied in the spec. Preflight rejects
+traces narrower than the resulting width, overlapping collinear runs, and drill spacing below
+`mdDrill`. It reports same-net annulus overlap separately.
 
 `board.keepouts[].layers` accepts enabled copper export IDs, including inner layers.
 The compiler emits a layer-41 RestrictCopper mask for a keepout that includes inner copper.

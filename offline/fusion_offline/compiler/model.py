@@ -339,10 +339,12 @@ def _matched_pairs(rows, board_nets):
 
 def _routing(routing, nets, *, board_nets):
     _object(routing, "routing", "selected_nets protected_nets policies budget",
-            "require_fully_routed matched_pairs")
+            "require_fully_routed matched_pairs require_current_evidence")
     _matched_pairs(routing.get("matched_pairs", []), board_nets)
     if "require_fully_routed" in routing:
         _boolean(routing["require_fully_routed"], "require_fully_routed")
+    if "require_current_evidence" in routing:
+        _boolean(routing["require_current_evidence"], "require_current_evidence")
     listed = set()
     for field in ("selected_nets", "protected_nets"):
         for name in _list(routing[field], field):
@@ -359,7 +361,9 @@ def _routing(routing, nets, *, board_nets):
         _identifier(name, "policy net")
         if name not in nets:
             raise ValueError(f"policy refers to undeclared net {name}")
-        _object(policy, "policy", "", "allowed_layers max_vias_per_connection via_spans min_width_mm")
+        _object(policy, "policy", "", "allowed_layers max_vias_per_connection via_spans min_width_mm current")
+        if "current" in policy:
+            _current_evidence(name, policy["current"], nets[name].get("pins"))
         if "allowed_layers" in policy:
             _layers(policy["allowed_layers"])
         if "min_width_mm" in policy:
@@ -376,10 +380,36 @@ def _routing(routing, nets, *, board_nets):
                 _layers(span)
                 if len(span) != 2 or span[0] >= span[1]:
                     raise ValueError("via_spans must be empty or contain one increasing layer pair")
+    if routing.get("require_current_evidence"):
+        missing = sorted(name for name in routing["selected_nets"] if "current" not in policies.get(name, {}))
+        if missing:
+            raise ValueError("missing current evidence for routing nets: " + ", ".join(missing))
     budget = routing["budget"]
     _object(budget, "budget", "", " ".join(ROUTING_BUDGET_MAXIMUMS))
     for field, value in budget.items():
         _budget_value(field, value)
+
+
+def _current_evidence(net, current, pins):
+    _object(current, f"{net} current", "expected_a basis sources", "delta_t_c")
+    _number(current["expected_a"], f"{net} expected_a")
+    delta_t = current.get("delta_t_c", 10)
+    _number(delta_t, f"{net} delta_t_c")
+    if current["expected_a"] < 0 or delta_t <= 0:
+        raise ValueError(f"{net}: expected current must be nonnegative and temperature rise positive")
+    _text(current["basis"], f"{net} current basis")
+    if not current["basis"].strip():
+        raise ValueError(f"{net}: describe how the expected current was calculated")
+    connected = {pin["part"] for pin in pins} if pins is not None else None
+    for source in _list(current["sources"], f"{net} current sources", 1):
+        _object(source, f"{net} current source", "part datasheet section")
+        _identifier(source["part"], f"{net} current source part")
+        if connected is not None and source["part"] not in connected:
+            raise ValueError(f"{net}: current source part {source['part']} does not connect to the net")
+        for key in ("datasheet", "section"):
+            _text(source[key], f"{net} current {key}")
+            if not source[key].strip():
+                raise ValueError(f"{net}: current source requires a datasheet and section")
 
 
 def _budget_value(field, value):
@@ -591,17 +621,25 @@ def load_design_spec(path: str, expected_sha256: str) -> DesignSpec:
         _align_placements_50mil(data)
     remaining = _MAX_TOTAL_XML_BYTES
 
-    def load_asset(row):
+    from .native import NATIVE_FORMATS, read_fusion_xml
+
+    def load_asset(row, kind=None):
         nonlocal remaining
         source, pin = row["path"], row["sha256"].lower()
         payload = read_pinned_file(source, pin, min(_MAX_XML_BYTES, remaining))
-        _validate_source_xml(payload, source)
-        remaining -= len(payload)
+        native = kind is not None and source.lower().endswith(NATIVE_FORMATS[kind])
+        xml = read_fusion_xml(payload, kind) if native else payload
+        if max(len(payload), len(xml)) > min(_MAX_XML_BYTES, remaining):
+            raise ValueError(f"template XML exceeds the compiler input limit: {source}")
+        _validate_source_xml(xml, source)
+        remaining -= max(len(payload), len(xml))
         return source, pin, payload
 
     templates = MappingProxyType({
-        kind: PinnedAsset(*load_asset(row)) for kind, row in sorted(data["templates"].items())
+        kind: PinnedAsset(*load_asset(row, kind)) for kind, row in sorted(data["templates"].items())
     })
+    if sum(templates[kind].path.lower().endswith(extension) for kind, extension in NATIVE_FORMATS.items()) == 1:
+        raise ValueError("use both Fusion templates (.fsch and .fbrd) or both EAGLE XML templates")
     libraries = tuple(
         PinnedLibrary(*load_asset(row), name=row["name"])
         for row in sorted(data["libraries"], key=lambda row: row["name"])

@@ -48,6 +48,7 @@ class Route:
     via_tented: bool = False
     via_extent: tuple = (1, 16)
     diagnostics: SearchDiagnostics | None = None
+    via_diameter_override: float | None = None
 
     def pieces(self, width: float):
         """(layer, points, width) per leg: the neck-downs at pads carry their own width."""
@@ -61,6 +62,7 @@ class Route:
                 "vias": [list(v) for v in self.vias], "length_mm": round(self.length_mm, 3), "ends_on": self.joined,
                 "problems": self.problems, "via_drill_mm": self.via_drill,
                 "via_diameter_mm": self.via_diameter, "via_tented": self.via_tented,
+                "via_diameter_override_mm": self.via_diameter_override,
                 "via_extent": list(self.via_extent),
                 **({"diagnostics": self.diagnostics.as_dict()} if self.diagnostics else {})}
 
@@ -520,6 +522,7 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     inner = len(stack) > 2
     minimum_diameter = max(annular.required_diameter(via_drill),
                            annular.copper(rules, 'Via', via_drill, 0, False)['outer'])
+    via_diameter_override = via_d
     via_d = max(.6, minimum_diameter) if via_d is None else via_d
     if not math.isfinite(via_d) or via_d <= 0 or (vias and via_d < minimum_diameter - 1e-6):
         raise ValueError(f'via diameter must be at least {minimum_diameter:g} mm under the board rules')
@@ -541,7 +544,8 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
     r = Route(net, via_drill=via_drill, via_diameter=via_d, via_extent=(stack[0], stack[-1]),
-              via_tented=via_drill <= _mm(rules.get('mlViaStopLimit'), 0.0))
+              via_tented=via_drill <= _mm(rules.get('mlViaStopLimit'), 0.0),
+              via_diameter_override=via_diameter_override)
     ny, nx = G.ny, G.nx
     if checkpoint:
         checkpoint()
@@ -786,7 +790,7 @@ def _corner_options(a, b):
 def _smooth(G, l, pts):
     """Take out the grid's jogs and staircases: replace runs of corners by one octilinear segment,
     or by two (straight + 45 degrees), where that is clear and costs no more (pin fields, pours)."""
-    if len(pts) < 3:
+    if len(pts) < 2:
         return pts
     out = [pts[0]]
     i = 0
@@ -813,7 +817,13 @@ def _smooth(G, l, pts):
             if done:
                 break
         if not done:
-            out.append(pts[i + 1])
+            a, b = pts[i], pts[i + 1]
+            if not _octi(a, b):
+                for c in _corner_options(a, b):
+                    if _octi(a, c) and _octi(c, b) and _seg_clear(G, l, a, c) and _seg_clear(G, l, c, b):
+                        out.append(c)
+                        break
+            out.append(b)
             i += 1
     return _corners(out, G.checkpoint)
 
@@ -1028,6 +1038,8 @@ def check_route(G: Grid, r: Route) -> list[str]:
         for a, b in zip(pts, pts[1:]):
             if G.checkpoint:
                 G.checkpoint()
+            if not _octi(a, b):
+                return [f"layer {l} has no clear horizontal, vertical, or 45-degree landing"]
             n = max(2, int(math.dist(a, b) / 0.05))
             t = np.linspace(0.0, 1.0, n + 1)
             xs, ys = a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t

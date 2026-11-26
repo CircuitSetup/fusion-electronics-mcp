@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
 
 from test_compiler_schema import minimal_design
 
@@ -51,6 +54,76 @@ class CompilerManifestTest(unittest.TestCase):
         (first.path.parent / first.data["artifacts"]["board"]["path"]).write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "SHA-256"):
             load_candidate_manifest(first.path, first.sha256)
+
+    def test_native_templates_publish_matching_fusion_archives(self):
+        from fusion_offline.compiler.routing_job import plan_routing_job, promote_routing_job
+
+        design = json.loads(self.raw)
+        payloads = {}
+        for kind, suffix in (("board", ".brd"), ("schematic", ".sch")):
+            asset = design["templates"][kind]
+            template = self.root / f"empty.f{suffix[1:]}"
+            document = f"{kind}/electron.BlobParts/ExtFile.test{suffix}"
+            with ZipFile(template, "w") as archive:
+                archive.writestr("Manifest.dat", b"template metadata")
+                archive.writestr(document, Path(asset["path"]).read_bytes())
+            design["templates"][kind] = {"path": str(template), "sha256": sha256(template.read_bytes()).hexdigest()}
+            payloads[kind] = document
+        self.raw = json.dumps(design).encode()
+        self.source.write_bytes(self.raw)
+        first = self.compile("native")
+        with self.assertRaisesRegex(ValueError, "missing current evidence.*VCC"):
+            plan_routing_job(first.path, first.sha256, ["VCC"])
+        job = plan_routing_job(first.path, first.sha256)
+        final = promote_routing_job(first.path, first.sha256, job.path, job.sha256, self.root / "routed")
+        for candidate in (first, final):
+            for kind, document in payloads.items():
+                path = candidate.path.parent / f"candidate.f{Path(document).suffix[1:]}"
+                with ZipFile(path) as archive:
+                    self.assertIsNone(archive.testzip())
+                    self.assertEqual(archive.read("Manifest.dat"), b"template metadata")
+                    self.assertEqual(archive.read(document), candidate.read_artifact(kind))
+
+    def test_out_of_sync_pair_is_rejected_before_publication(self):
+        from fusion_offline.compiler.board import build_board
+
+        for field, detail in (("value", "value differs"), ("library", "library differs")):
+            with self.subTest(field=field):
+                def stale_board(*args, **kwargs):
+                    board = ET.fromstring(build_board(*args, **kwargs))
+                    board.find(".//elements/element").set(field, "stale")
+                    return ET.tostring(board, encoding="utf-8")
+
+                with patch("fusion_offline.compiler.compile.build_board", side_effect=stale_board):
+                    with self.assertRaisesRegex(ValueError, f"out of sync.*{detail}"):
+                        self.compile("out-of-sync")
+                self.assertFalse((self.root / "out-of-sync").exists())
+
+    def test_routing_uses_current_with_twenty_percent_margin(self):
+        from fusion_offline.compiler.routing_job import plan_routing_job
+        from fusion_offline.compiler.validate import validate_candidate
+
+        design = json.loads(self.raw)
+        design["routing"]["selected_nets"] = ["VCC"]
+        design["routing"]["policies"]["VCC"] = {
+            "allowed_layers": [1],
+            "current": {"expected_a": 1.0, "basis": "one 1 A load on the shared supply",
+                        "sources": [{"part": "J1", "datasheet": "fixture datasheet", "section": "Load table"}]},
+        }
+        self.raw = json.dumps(design).encode()
+        self.source.write_bytes(self.raw)
+        base = self.compile("current")
+        job = plan_routing_job(base.path, base.sha256)
+        board = ET.fromstring(job.read_artifact("candidate_board"))
+        wires = board.findall(".//signal[@name='VCC']/wire")
+        self.assertTrue(wires)
+        self.assertEqual({float(wire.attrib["width"]) for wire in wires}, {0.387})
+        wires[0].set("width", "0.386")
+        report = validate_candidate(base.read_artifact("schematic"), ET.tostring(board),
+                                    json.loads(base.read_artifact("routing_intent")))
+        finding = next(row for row in report["findings"] if row["check"] == "routing_geometry")
+        self.assertEqual(finding["status"], "fail")
+        self.assertIn("0.387", finding["detail"])
 
     def test_relative_traversal_in_re_pinned_manifest_is_refused(self):
         from fusion_offline.compiler.canonical import canonical_json_bytes

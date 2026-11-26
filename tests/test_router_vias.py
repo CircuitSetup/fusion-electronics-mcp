@@ -30,7 +30,7 @@ class RouterViaTest(unittest.TestCase):
         RA._commit(root, RA.Conn('test', 'S', (), (), (), ()), route)
         for via in root.findall('.//via'):
             self.assertEqual(float(via.get('drill')), .35)
-            self.assertAlmostEqual(float(via.get('diameter')), .7564)
+            self.assertIsNone(via.get('diameter'))
         with patch.object(S, '_only_layers', return_value=('DISPLAY NONE 18;', 'DISPLAY ALL;')), \
                 patch.object(S, '_native_layer', side_effect=lambda l: 304 if l == 'bottom' else 1):
             commands = ' '.join(S._route_vias('S', route))
@@ -38,6 +38,11 @@ class RouterViaTest(unittest.TestCase):
         self.assertIn("VIA 'S' 0.7564", commands)
         self.assertEqual(commands.count('CHANGE STOP OFF (C>'), 2)
         self.assertTrue(commands.endswith('DISPLAY ALL;'))
+
+    def test_explicit_via_diameter_is_written(self):
+        root, route = self.route(via_d=.9)
+        RA._commit(root, RA.Conn('test', 'S', (), (), (), ()), route)
+        self.assertEqual([via.get('diameter') for via in root.findall('.//via')], ['0.9', '0.9'])
 
     def test_explicit_undersized_vias_are_rejected(self):
         for kwargs in [dict(via_drill=.3), dict(via_d=.6), dict(via_d=float('nan'))]:

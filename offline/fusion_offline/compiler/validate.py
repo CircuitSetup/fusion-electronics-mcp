@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from fusion_mcp.addin.FusionElectronicsMCP.eagle_import import signature
 
 from ..annular import copper as annular_copper
+from ..current import copper_by_layer, routing_width_mm
 from ..design import parse_board_design, parse_schematic_design, transform
 from ..eagle import UnverifiedGeometry, parse_rot
 from ..footprints import packages
@@ -608,7 +609,7 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             or len(board_root.findall("./drawing/board")) != 1):
         raise ValueError("expected one flat EAGLE schematic and board")
     owners = route_owners(board_root, provenance) if provenance else {}
-    findings = [_check("pair_signature", lambda: signature(sch_root, board_root)),
+    findings = [_check("pair_signature", lambda: signature(sch_root, board_root, verify_part_details=True)),
                 _check("element_attributes", lambda: _element_attributes(board))]
     sch, design = parse_schematic_design(sch_root), parse_board_design(board_root)
     stack = tuple(design.copper_layers)
@@ -644,6 +645,8 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
         findings.append(_finding("placement_grid_exceptions", "pass",
                                  ", ".join(f"{ref}: {reason}" for ref, reason in sorted(exceptions.items())), False))
     routing = routing_intent["routing"]
+    copper = copper_by_layer(board_root) if any("current" in row for row in routing["policies"].values()) else {}
+    selected = set(routing.get("selected_nets", ()))
     groups, routing_errors, routing_unknown = {}, [], []
     poured = set()
     plane_results, fills_by_net, unsupported_fills = {}, defaultdict(list), set()
@@ -667,6 +670,9 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
             routing_unknown.append(f"{name}: board pad centres could not be resolved")
             continue
         policy = routing["policies"].get(name, {})
+        if (routing.get("require_current_evidence") and "current" not in policy
+                and (name in selected or (routing_intent["nets"].get(name) and any(w.layer != 19 for w in signal.wires)))):
+            routing_errors.append(f"{name}: missing datasheet-backed current evidence")
         allowed = set(policy.get("allowed_layers", stack))
         if not allowed <= set(stack):
             routing_errors.append(f"{name}: policy names absent copper layers")
@@ -682,11 +688,17 @@ def validate_candidate(schematic_xml: bytes, board_xml: bytes, routing_intent: d
         fill_layers = {int(p.attrib["layer"]) for p in pours}
         fills = [row for row in fills_by_net[name] if row["layer"] in fill_layers & allowed & set(stack)]
         width, drill = route_minimums(board, xml_signal.get("class", "0"), design.rules)
+        width = max(width, policy.get("min_width_mm", 0))
+        if "current" in policy:
+            try:
+                width = max(width, routing_width_mm(policy["current"], copper, sorted(allowed & set(stack))))
+            except (ValueError, OverflowError) as error:
+                routing_errors.append(f"{name}: {error}")
         groups[name], errors, unknown = _route_components(
             signal, pads, stack, allowed & set(stack),
             min(limit, policy.get("max_vias_per_connection", limit)),
             [owners.get((name, canonical_digest(route_geometry(via)))) for via in xml_signal.findall("via")],
-            outline, design.rules, policy.get("via_spans"), (max(width, policy.get("min_width_mm", 0)), drill),
+            outline, design.rules, policy.get("via_spans"), (width, drill),
             fills=fills if measured_fills_complete and name not in unsupported_fills else (),
             has_pour=bool(pours), fill_pad_copper=fill_pad_copper,
         )

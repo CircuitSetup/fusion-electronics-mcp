@@ -277,6 +277,29 @@
               },
               "max_vias_per_connection": {"type":"integer","minimum":1,"maximum":8},
               "min_width_mm": {"type":"number","exclusiveMinimum":0},
+              "current": {
+                "type": "object",
+                "required": ["expected_a", "basis", "sources"],
+                "additionalProperties": false,
+                "properties": {
+                  "expected_a": {"type": "number", "minimum": 0},
+                  "delta_t_c": {"type": "number", "exclusiveMinimum": 0, "default": 10},
+                  "basis": {"type": "string", "minLength": 1},
+                  "sources": {
+                    "type": "array", "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": ["part", "datasheet", "section"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "part": {"$ref": "#/$defs/identifier"},
+                        "datasheet": {"type": "string", "minLength": 1},
+                        "section": {"type": "string", "minLength": 1}
+                      }
+                    }
+                  }
+                }
+              },
               "via_spans": {"type":"array","maxItems":1,"items":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"integer","minimum":1,"maximum":304}}}
             }
           }
@@ -295,7 +318,8 @@
             "ripup_rounds": {"type":"integer","minimum":1,"maximum":8,"default":2}
           }
         },
-        "require_fully_routed": {"type":"boolean"}
+        "require_fully_routed": {"type":"boolean"},
+        "require_current_evidence": {"type":"boolean"}
       }
     }
   }

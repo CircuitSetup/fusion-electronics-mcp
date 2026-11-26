@@ -11,9 +11,9 @@ def request_id(value):
     return value
 
 
-def signature(schematic, board):
+def signature(schematic, board, *, verify_part_details=False):
     sch = schematic.find('./drawing/schematic'); brd = board.find('./drawing/board')
-    if sch is None or brd is None:
+    if schematic.tag != 'eagle' or board.tag != 'eagle' or sch is None or brd is None:
         raise ValueError('Expected an EAGLE schematic and board')
     if sch.findall('.//moduleinst'):
         raise ValueError('Hierarchical module imports are not supported by this verifier')
@@ -36,6 +36,19 @@ def signature(schematic, board):
         devices[name] = matches[0]
     if {name for name,device in devices.items() if device.get('package')} != set(elements):
         raise ValueError('Physical schematic parts differ from board elements')
+    if verify_part_details:
+        board_packages = {(library.get('name'), package.get('name', '').casefold())
+                          for library in brd.findall('./libraries/library')
+                          for package in library.findall('./packages/package')}
+        for element in brd.findall('./elements/element'):
+            name = element.attrib['name']
+            library, package = element.get('library'), element.get('package', '').casefold()
+            if library != parts[name].get('library'):
+                raise ValueError(f'Schematic/board library differs for {name}')
+            if package != devices[name].get('package', '').casefold() or (library, package) not in board_packages:
+                raise ValueError(f'Schematic/board package differs for {name}')
+            if element.get('value', '') != parts[name].get('value', ''):
+                raise ValueError(f'Schematic/board value differs for {name}')
     contacts = set()
     for sheet in sch.findall('./sheets/sheet'):
         for net in sheet.findall('./nets/net'):

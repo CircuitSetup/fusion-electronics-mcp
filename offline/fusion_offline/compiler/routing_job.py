@@ -5,6 +5,7 @@ from itertools import pairwise
 import json
 import xml.etree.ElementTree as ET
 
+from ..current import copper_by_layer, routing_width_mm
 from ..design import parse_board_design, parse_schematic_design
 from ..route_all import Conn, _commit, canonicalize_routed_signals, route_all
 from ..router import Route, copper_layers, route_minimums, via_layers
@@ -16,6 +17,7 @@ from .board_svg import render_board_svg
 from .compile import _publish
 from .manifest import ArtifactManifest, CandidateManifest, _MAX_MANIFEST_BYTES, _pin, load_candidate_manifest
 from .model import _validate_source_xml
+from .native import NATIVE_FORMATS
 from .paths import _check_parents, _local_path, _read_local_file, atomic_directory, atomic_write, read_pinned_file
 from .validate import _pad_centres, validate_candidate
 
@@ -42,11 +44,12 @@ def _canonical_object(raw):
     return value
 
 
-def _identity(base_manifest_sha256, input_board_sha256, policy_sha256, connection_ids):
+def _identity(base_manifest_sha256, input_board_sha256, policy_sha256, connection_ids, *, router_version=None):
     return canonical_digest({
         "base_manifest_sha256": base_manifest_sha256, "input_board_sha256": input_board_sha256,
         "policy_sha256": policy_sha256,
-        "connection_ids": connection_ids, "router_contract_version": ROUTER_CONTRACT_VERSION,
+        "connection_ids": connection_ids,
+        "router_contract_version": ROUTER_CONTRACT_VERSION if router_version is None else router_version,
     })
 
 
@@ -57,7 +60,7 @@ def _verify_job(path, pin):
                         "input_board_sha256", "candidate_board_sha256", "policy_sha256", "artifacts"}
             or type(data["job_version"]) is not int or data["job_version"] != _JOB_VERSION
             or type(data["router_contract_version"]) is not int
-            or data["router_contract_version"] != ROUTER_CONTRACT_VERSION):
+            or data["router_contract_version"] not in (6, ROUTER_CONTRACT_VERSION)):
         raise ValueError("unsupported routing job manifest")
     entries = data["artifacts"]
     if not isinstance(entries, dict) or entries.keys() != _JOB_FILES.keys():
@@ -86,6 +89,7 @@ def _verify_job(path, pin):
         raise ValueError("routing job connections or policy SHA-256 do not match request")
     if data["job_id"] != _identity(
         request["base_manifest_sha256"], data["input_board_sha256"], data["policy_sha256"], ids,
+        router_version=data["router_contract_version"],
     ):
         raise ValueError("routing job identity does not match its inputs")
 
@@ -128,6 +132,10 @@ def _request(base, board, selected_nets, prior):
             or any(not isinstance(net, str) or not intent["nets"].get(net) for net in selected_nets)):
         raise ValueError("selected routing nets must be route-enabled nets")
     policy["selected_nets"] = sorted(set(selected_nets))
+    if policy.get("require_current_evidence"):
+        missing = [name for name in policy["selected_nets"] if "current" not in policy["policies"].get(name, {})]
+        if missing:
+            raise ValueError("missing current evidence for routing nets: " + ", ".join(missing))
     schematic = base.read_artifact("schematic")
     report = validate_candidate(schematic, board, intent, provenance=prior)
     blocked = [row["check"] for row in report["findings"]
@@ -140,6 +148,7 @@ def _request(base, board, selected_nets, prior):
     pads = _pad_centres(document, parse_schematic_design(ET.fromstring(schematic)), stack)
     widths = {node.get("number"): float(node.get("width", "0")) for node in document.findall("./classes/class")}
     rules = parse_board_design(root).rules
+    copper = copper_by_layer(root) if any("current" in row for row in policy["policies"].values()) else {}
     classes = {node.get("name"): node.get("class", "0") for node in document.findall("./signals/signal")}
     signals = {node.attrib["name"]: node for node in document.findall("./signals/signal")}
     connections = []
@@ -147,10 +156,12 @@ def _request(base, board, selected_nets, prior):
         groups = report["contact_components"].get(net, [])
         if len(groups) < 2:
             continue
-        allowed = policy["policies"].get(net, {}).get("allowed_layers", stack)
+        settings = policy["policies"].get(net, {})
+        allowed = settings.get("allowed_layers", stack)
         minimum_width, _ = route_minimums(document, classes[net], rules)
-        width = max(widths[classes[net]] or 0.25, minimum_width,
-                    policy["policies"].get(net, {}).get("min_width_mm", 0))
+        width = max(widths[classes[net]] or 0.25, minimum_width, settings.get("min_width_mm", 0))
+        if "current" in settings:
+            width = max(width, routing_width_mm(settings["current"], copper, allowed))
         escapes = {}
         if net in signals and set(allowed).intersection(stack[1:-1]):
             for via in signals[net].findall("via"):
@@ -257,6 +268,7 @@ def _verify_routes(connections, routes, provenance):
                 widths=[leg.get("width") for leg in legs], vias=route["vias"],
                 via_drill=route["via_drill_mm"], via_diameter=route["via_diameter_mm"],
                 via_extent=route["via_extent"],
+                via_diameter_override=route.get("via_diameter_override_mm", route["via_diameter_mm"]),
             ))
             for node in signal:
                 del node.attrib["mcp_conn"]
@@ -320,8 +332,13 @@ def plan_routing_job(manifest_path, expected_manifest_sha256, selected_nets=None
 
     if target.exists() or target.is_symlink():
         return existing()
+    router_policies = {net: {key: value for key, value in settings.items() if key != "current"}
+                       for net, settings in policy["policies"].items()}
+    for net, settings in policy["policies"].items():
+        if "current" in settings and settings["current"]["expected_a"] > 0:
+            router_policies[net]["neck_len"] = 0
     result = route_all(
-        root, connections, budget=RoutingBudget(**policy["budget"]), policies=policy["policies"],
+        root, connections, budget=RoutingBudget(**policy["budget"]), policies=router_policies,
         protected_nets=policy["protected_nets"], clock=clock, canonicalize=False,
     )
     board, provenance = _candidate(result, original, {conn.id: conn.net for conn in connections})
@@ -390,8 +407,11 @@ def promote_routing_job(candidate_manifest_path, expected_candidate_sha256, job_
         "job_id": job.data["job_id"], "candidate_board_sha256": job.data["candidate_board_sha256"],
         "manifest_sha256": job.sha256,
     }
+    fusion_templates = ({kind: base.read_artifact(f"fusion_{kind}") for kind in NATIVE_FORMATS}
+                        if "fusion_board" in base.data["artifacts"] else None)
     return _publish(output, base.data["inputs"], base.read_artifact("schematic"),
                     board, base.read_artifact("routing_intent"), record,
                     provenance=provenance, board_svg=job.read_artifact("preview"),
+                    fusion_templates=fusion_templates,
                     routing_artifacts={f"routing_{name}": job.read_artifact(name)
                                        for name in ("request", "routes", "diagnostics")})

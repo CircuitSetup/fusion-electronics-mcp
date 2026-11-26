@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from . import COMPILER_CONTRACT_VERSION, MANIFEST_VERSION, SPEC_VERSION
 from .canonical import canonical_digest, canonical_json_bytes
 from .model import _validate_source_xml
+from .native import NATIVE_FORMATS, read_fusion_xml
 from .paths import _local_path, atomic_directory, atomic_write, normalize_artifact_path, read_pinned_file
 
 COMPILER_VERSION = "0.4.0"
@@ -20,6 +21,7 @@ _ARTIFACT_NAMES = {
     "preview": "index.html", "board_svg": "board.svg", "routing_intent": "routing-intent.json",
     "summary": "candidate-summary.json", "routing_diagnostics": "routing-diagnostics.json",
 }
+_FUSION_ARTIFACT_NAMES = {f"fusion_{kind}": f"candidate{extension}" for kind, extension in NATIVE_FORMATS.items()}
 _ROUTING_ARTIFACT_NAMES = {
     "routing_provenance": "routing-provenance.json", "routing_request": "routing-request.json",
     "routing_routes": "routing-routes.json",
@@ -48,7 +50,7 @@ def _artifact_filename(key):
     sheet = re.fullmatch(r"schematic_sheet_([1-9][0-9]*)", key)
     if sheet:
         return f"schematic-sheet-{sheet[1]}.svg"
-    return (_ARTIFACT_NAMES | _ROUTING_ARTIFACT_NAMES)[key]
+    return (_ARTIFACT_NAMES | _ROUTING_ARTIFACT_NAMES | _FUSION_ARTIFACT_NAMES)[key]
 
 
 def _checked_artifacts(artifacts):
@@ -74,6 +76,9 @@ def _checked_artifacts(artifacts):
     sch, board = (PurePosixPath(artifacts[name]["path"]) for name in ("schematic", "board"))
     if sch.suffix != ".sch" or board.suffix != ".brd" or sch.with_suffix(".brd") != board:
         raise ValueError("candidate pair must have the same directory and basename")
+    present = artifacts.keys() & _FUSION_ARTIFACT_NAMES.keys()
+    if present and present != _FUSION_ARTIFACT_NAMES.keys():
+        raise ValueError("candidate must contain both Fusion archives")
 
 
 def _checked_inputs(inputs):
@@ -184,6 +189,10 @@ def load_candidate_manifest(path: str | Path, expected_sha256: str) -> Candidate
         artifact = manifest.read_artifact(key)
         if key in ("schematic", "board"):
             _validate_source_xml(artifact, data["artifacts"][key]["path"])
+        if key in _FUSION_ARTIFACT_NAMES:
+            kind = key.removeprefix("fusion_")
+            if sha256(read_fusion_xml(artifact, kind)).hexdigest() != data["artifacts"][kind]["sha256"]:
+                raise ValueError(f"Fusion {kind} payload differs from the validated candidate XML")
         if key == "schematic":
             sheets = ET.fromstring(artifact).findall("./drawing/schematic/sheets/sheet")
             expected = {f"schematic_sheet_{number}" for number in range(1, len(sheets) + 1)}

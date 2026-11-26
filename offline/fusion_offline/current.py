@@ -104,6 +104,23 @@ def required(current_a: float, delta_t_c: float, copper: dict[int, dict]) -> dic
     return {n: round(ipc2221_width(current_a, delta_t_c, c["copper_mm"], c["outer"]), 3) for n, c in copper.items()}
 
 
+def routing_width_mm(spec: dict, copper: dict[int, dict], layers) -> float:
+    """Use 120% of expected current and the worst permitted layer for a uniform trace width."""
+    current_a = spec["expected_a"] * 1.2
+    if not current_a or not layers:
+        return 0.0
+    widths = []
+    for layer in layers:
+        row = copper[layer]
+        if row["source"] != "mtCopper (design rules)" or row["copper_mm"] <= 0:
+            raise ValueError(f"current sizing requires the board copper thickness on layer {layer}")
+        widths.append(ipc2221_width(current_a, spec.get("delta_t_c", 10), row["copper_mm"], row["outer"]))
+    width = max(widths)
+    if not math.isfinite(width):
+        raise ValueError("calculated trace width is not finite")
+    return math.ceil(width * 1000) / 1000
+
+
 def check(board_root: ET.Element, currents: dict[str, dict], copper: dict[int, dict],
           via_current_a: float = 0.8) -> list[dict]:
     """For each net with a current: the width it needs per layer, its narrowest routed segment per
