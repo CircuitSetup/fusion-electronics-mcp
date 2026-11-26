@@ -92,6 +92,7 @@ def workflow() -> dict:
             "Native Fusion ERC/DRC, manufacturing approval and datasheet compliance",
         ],
         "sequence": [
+            "Choose the fabricator and stackup, then save the reviewed DRC rules in the pinned board template",
             "compile_eagle_candidate",
             "plan_eagle_candidate_routing (optional; inspect the saved job preview)",
             "promote_eagle_candidate_routing (optional; uses the exact saved job)",
@@ -105,6 +106,9 @@ def workflow() -> dict:
             "max_search_states": MAX_SEARCH_STATES,
         },
         "output_policy": "Use a relative or contained absolute path with an existing parent in the workspace.",
+        "drc_baseline": ("Compilation captures the template rules before layout and records the effective rules "
+                         "in drc-baseline.json. For an existing PCB, capture the exact saved revision with "
+                         "capture-drc-baseline before editing. export-edited-pair checks for rule changes."),
         "current_evidence": ("Cross-reference the exact connected ICs' manufacturer datasheets and calculate the "
                              "maximum simultaneous load on each routed net. Record expected_a, basis, and datasheet "
                              "locations under routing.policies.<net>.current. Native templates require this evidence "

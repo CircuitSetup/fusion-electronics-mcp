@@ -12,7 +12,7 @@ from test_compiler_schema import minimal_design
 class NativeExportTest(unittest.TestCase):
     def test_out_of_sync_edits_publish_neither_archive(self):
         from fusion_offline.compiler.compile import compile_candidate
-        from fusion_offline.compiler.export import export_edited_pair
+        from fusion_offline.compiler.export import capture_drc_baseline, export_edited_pair
 
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -38,6 +38,26 @@ class NativeExportTest(unittest.TestCase):
             export_edited_pair(sources["schematic"], sources["board"], destination, edited_board=edited)
         self.assertFalse(destination.exists())
 
-        written = export_edited_pair(sources["schematic"], sources["board"], destination)
-        self.assertEqual({path.name for path in written.values()}, {"design.fsch", "design.fbrd"})
+        before = capture_drc_baseline(sources["board"], root / "before-edit")
+        written = export_edited_pair(sources["schematic"], sources["board"], destination, drc_baseline=before)
+        self.assertEqual({path.name for path in written.values()}, {"design.fsch", "design.fbrd", "drc-baseline.json"})
         self.assertTrue(all(path.is_file() for path in written.values()))
+        baseline = json.loads(written["drc_baseline"].read_bytes())
+        self.assertEqual(baseline["source_sha256"], sha256(sources["board"].read_bytes()).hexdigest())
+        self.assertEqual(baseline["source_rules"], baseline["output_rules"])
+
+        board = ET.fromstring(candidate.read_artifact("board"))
+        board.find(".//designrules/param[@name='rlMinViaOuter']").set("value", "10mil")
+        edited.write_bytes(ET.tostring(board, encoding="utf-8"))
+        changed = root / "changed"
+        with self.assertRaisesRegex(ValueError, "DRC baseline changed.*rlMinViaOuter"):
+            export_edited_pair(sources["schematic"], sources["board"], changed, edited_board=edited)
+        self.assertFalse(changed.exists())
+        result = export_edited_pair(sources["schematic"], sources["board"], changed, edited_board=edited,
+                                    allow_rule_changes=True)
+        baseline = json.loads(result["drc_baseline"].read_bytes())
+        self.assertEqual(baseline["changes"], ["parameters.rlMinViaOuter"])
+        with ZipFile(sources["board"], "a") as archive:
+            archive.comment = b"a different source revision"
+        with self.assertRaisesRegex(ValueError, "DRC baseline does not match the source board"):
+            export_edited_pair(sources["schematic"], sources["board"], root / "wrong-revision", drc_baseline=before)

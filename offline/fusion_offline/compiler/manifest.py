@@ -12,6 +12,7 @@ from .canonical import canonical_digest, canonical_json_bytes
 from .model import _validate_source_xml
 from .native import NATIVE_FORMATS, read_fusion_xml
 from .paths import _local_path, atomic_directory, atomic_write, normalize_artifact_path, read_pinned_file
+from .roundtrip import DRC_BASELINE_FILENAME, board_rule_snapshot, changed_board_rules
 
 COMPILER_VERSION = "0.4.0"
 _SUPPORTED_COMPILER_VERSIONS = (COMPILER_VERSION, "0.3.0+workflow.35")
@@ -50,6 +51,8 @@ def _artifact_filename(key):
     sheet = re.fullmatch(r"schematic_sheet_([1-9][0-9]*)", key)
     if sheet:
         return f"schematic-sheet-{sheet[1]}.svg"
+    if key == "drc_baseline":
+        return DRC_BASELINE_FILENAME
     return (_ARTIFACT_NAMES | _ROUTING_ARTIFACT_NAMES | _FUSION_ARTIFACT_NAMES)[key]
 
 
@@ -198,6 +201,16 @@ def load_candidate_manifest(path: str | Path, expected_sha256: str) -> Candidate
             expected = {f"schematic_sheet_{number}" for number in range(1, len(sheets) + 1)}
             if not expected or expected != {key for key in data["artifacts"] if key.startswith("schematic_sheet_")}:
                 raise ValueError("candidate must include a preview for each schematic sheet")
+        if key == "drc_baseline":
+            baseline = json.loads(artifact)
+            output_rules = board_rule_snapshot(ET.fromstring(manifest.read_artifact("board")))
+            if (not isinstance(baseline, dict) or baseline.get("source_sha256") != data["inputs"]["template_board_sha256"]
+                    or baseline.get("output_rules") != output_rules
+                    or not isinstance(baseline.get("source_rules"), dict)
+                    or baseline["source_rules"].keys() != output_rules.keys()
+                    or any(type(value) is not type(output_rules[field]) for field, value in baseline["source_rules"].items())
+                    or baseline.get("changes") != changed_board_rules(baseline["source_rules"], output_rules)):
+                raise ValueError("candidate DRC baseline differs from the pinned board rules")
         if key == "routing_diagnostics" and not data["routing_job"] and artifact != b"{}":
             raise ValueError("base candidate routing diagnostics must be empty")
         if key == "report":

@@ -102,7 +102,7 @@ When updating, reinstall the package, run `install-addin --force`, stop and rest
 
 Give your AI assistant the [detailed offline compiler instructions](docs/offline-compiler.md) and the [LED switch example](tests/fixtures/compiler/minimal/design.json). Have it draft the design spec, run the compiler from the terminal, and iterate on placement and routing using the preview and validation report.
 
-1. **Prepare the specification.** Define the outline, parts, placements, and nets. Reference empty EAGLE schematic/board templates and local `.lbr` files using absolute paths and SHA-256 hashes. The board template supplies the stackup and design rules.
+1. **Prepare the specification.** Choose the fabricator and stackup, and save the design rules in the empty board template before placement or routing. Define the outline, parts, placements, and nets. Pin the template pair and local `.lbr` files by absolute path and SHA-256. The compiler records the template and output rules in `drc-baseline.json`.
 2. **Compile.** Run `compile-candidate` with matching Fusion `.fsch` and `.fbrd` templates to generate a validated native pair, a preview, a validation report, and a manifest. EAGLE XML templates are supported for `.sch` and `.brd` output.
 3. **Route and review.** Use `route-candidate` to plan routing, inspect its preview and diagnostics, then promote the saved result to a new candidate. Keep each manifest path and its returned hash together.
 4. **Validate and import.** Use `render-candidate` and `validate-candidate` to review the final preview and findings. Required `fail` or `unverified` findings block import. Set `routing.require_fully_routed` when all connections must be routed.

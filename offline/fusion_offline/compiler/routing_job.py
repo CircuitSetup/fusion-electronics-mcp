@@ -409,9 +409,10 @@ def promote_routing_job(candidate_manifest_path, expected_candidate_sha256, job_
     }
     fusion_templates = ({kind: base.read_artifact(f"fusion_{kind}") for kind in NATIVE_FORMATS}
                         if "fusion_board" in base.data["artifacts"] else None)
+    drc_baseline = base.read_artifact("drc_baseline") if "drc_baseline" in base.data["artifacts"] else None
     return _publish(output, base.data["inputs"], base.read_artifact("schematic"),
                     board, base.read_artifact("routing_intent"), record,
                     provenance=provenance, board_svg=job.read_artifact("preview"),
-                    fusion_templates=fusion_templates,
+                    fusion_templates=fusion_templates, drc_baseline=drc_baseline,
                     routing_artifacts={f"routing_{name}": job.read_artifact(name)
                                        for name in ("request", "routes", "diagnostics")})

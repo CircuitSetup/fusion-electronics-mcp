@@ -35,7 +35,11 @@ class CompilerManifestTest(unittest.TestCase):
         self.assertEqual(first.data, load_candidate_manifest(first.path, first.sha256).data)
         self.assertEqual(set(first.data["artifacts"]),
                          {"schematic", "board", "report", "preview", "routing_intent", "board_svg",
-                          "schematic_sheet_1", "routing_diagnostics", "summary"})
+                          "schematic_sheet_1", "routing_diagnostics", "summary", "drc_baseline"})
+        baseline = json.loads(first.read_artifact("drc_baseline"))
+        self.assertEqual(baseline["source_sha256"], first.data["inputs"]["template_board_sha256"])
+        self.assertEqual(baseline["source_rules"]["copper_layers"], [1, 16])
+        self.assertEqual(baseline["output_rules"]["parameters"]["rlMinViaOuter"], 0.2032)
         self.assertNotIn(str(self.source).encode(), first.path.read_bytes())
         for key, record in first.data["artifacts"].items():
             with self.subTest(key=key):
@@ -76,6 +80,7 @@ class CompilerManifestTest(unittest.TestCase):
             plan_routing_job(first.path, first.sha256, ["VCC"])
         job = plan_routing_job(first.path, first.sha256)
         final = promote_routing_job(first.path, first.sha256, job.path, job.sha256, self.root / "routed")
+        self.assertEqual(final.read_artifact("drc_baseline"), first.read_artifact("drc_baseline"))
         for candidate in (first, final):
             for kind, document in payloads.items():
                 path = candidate.path.parent / f"candidate.f{Path(document).suffix[1:]}"

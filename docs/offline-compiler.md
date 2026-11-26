@@ -72,20 +72,24 @@ a fresh output directory, and uses the selection already saved in the job.
 
 ## Prepare a design specification
 
-1. Export an empty flat schematic and its empty board from the same Fusion design as `.fsch` and
+1. Choose the fabricator and stackup, then set the design rules and net classes before placement
+   or routing. Use a manufacturer rule file that matches that process when available. Save the
+   rules in the board template. The compiler captures them before layout and pins
+   `drc-baseline.json`, which records the template hash, original rules, and effective output rules.
+2. Export an empty flat schematic and its empty board from the same Fusion design as `.fsch` and
    `.fbrd`. The compiler publishes native archives alongside the XML used by the guarded paired
    importer. To build from EAGLE XML templates, use matching `.sch` and `.brd` files. Keep the
    normal layers, classes and board design rules. The schematic needs
    sheets with no parts, instances, nets, buses or module instances. The board needs empty element
    and signal containers and no existing copper. Use a board template whose copper stack matches the
    design. Declare the outline, holes and keepouts in the specification.
-2. Export each approved library to a local EAGLE XML `.lbr`. Pin each library and template by
+3. Export each approved library to a local EAGLE XML `.lbr`. Pin each library and template by
    absolute local path and exact file SHA-256. On Windows,
    `(Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()` gives the pin. The library name
    identifies it in the specification. Select exact deviceset, device, technology and gate names
    from that library. The compiler resolves physical pads through the EAGLE gate and pin mappings
    and embeds the selected definitions.
-3. Start with the complete [LED switch example](../tests/fixtures/compiler/minimal/design.json) and
+4. Start with the complete [LED switch example](../tests/fixtures/compiler/minimal/design.json) and
    its adjacent `empty.sch`, `empty.brd` and `project.lbr`. Replace its fixture paths with absolute
    local paths and recompute the pins from your copies. The [version 1
    schema](../server/fusion_mcp/data/offline-design.schema.json) describes the JSON fields. Use
@@ -95,7 +99,7 @@ a fresh output directory, and uses the selection already saved in the job.
    to `true` to make unjoined board contacts block import. The [routed
    fixture](../tests/fixtures/compiler/e2e/design.json) shows that policy and per-net routing
    limits.
-4. Save the spec as UTF-8 JSON without a byte order mark and hash that exact file. Keep the manifest
+5. Save the spec as UTF-8 JSON without a byte order mark and hash that exact file. Keep the manifest
    paths and SHA-256 values returned by the compiler and use those pins for subsequent operations.
 
 The board template supplies the default placement grid. The compiler tries nearby grid points
@@ -108,13 +112,27 @@ symbols to it. Supply an explicit `ref` for a part named in nets or placement ov
 
 ## Export edits to an existing Fusion design
 
+Capture the design rules, stackup parameters, net classes, and source file hash from the exact saved
+revision before editing. If Fusion is available, run `check_drc()` on that revision and again after
+importing the edited pair to compare findings. Keep the `drc-baseline.json` for the revision. Use
+Fusion or the MCP rule editor when you need a separate `.edru` to transfer or archive native rules.
+
+```powershell
+fusion-electronics-mcp capture-drc-baseline --board design.fbrd --output-directory before-edit
+```
+
 Use `export-edited-pair` with the original native archives and the XML changed by the offline
 editor. Omit an edited path to use that document's original XML. The exporter checks physical
 parts, packages, values, and pad-to-net assignments before publishing both native files together.
+It compares the declared rules and stackup with the original board and rejects changes unless
+you pass `--allow-rule-changes`. The export includes the original and output values in
+`drc-baseline.json`. Pass the baseline captured before editing to verify the exact source revision.
+This captures the rules visible in the board XML. Fusion checks the full
+native rule set in its Design Rules Check.
 
 ```powershell
 fusion-electronics-mcp export-edited-pair --source-schematic design.fsch --source-board design.fbrd `
-  --edited-board edited.brd --output-directory revised-design
+  --edited-board edited.brd --drc-baseline before-edit/drc-baseline.json --output-directory revised-design
 ```
 
 New vias written by the offline router use Auto for the outside diameter. An explicit diameter is
