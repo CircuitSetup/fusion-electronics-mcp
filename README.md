@@ -2,7 +2,7 @@
 
 Build complete PCB candidates with an AI coding assistant using the **offline EAGLE compiler**. The assistant writes a JSON design spec, then compiles the schematic, board outline, and component placement, routes the board, and reviews HTML/SVG previews and validation results. All of that runs with Fusion closed.
 
-**Start offline for new boards.** Compiling a design in batches is faster than building it through individual live MCP calls because it avoids repeated round trips to Fusion for placement, wiring, and routing. Use the Fusion Electronics MCP tools to import the reviewed candidate as a linked Electronics Design, run native checks, and make targeted edits in Fusion.
+**Start offline for new boards and substantial edits.** For an existing Fusion design, verify the revision, matching board and schematic, and DRC baseline first. Use live MCP for targeted edits to the active design, importing reviewed candidates, and native checks. [Choose the workflow](docs/offline-compiler.md#choose-the-workflow)
 
 - [Build a new board offline](#build-a-new-board-offline)
 - [Features](#features)

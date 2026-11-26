@@ -40,12 +40,17 @@ mcp = MCPServer(
     version=__version__,
     website_url=PROJECT_URL,
     instructions=(
-        "Tools for Autodesk Fusion Electronics designs open in Fusion (needs Fusion running with its "
-        "MCP server turned on, Preferences > General > API, or the FusionElectronicsMCP add-in). "
+        "Follow the user's workflow choice. If unspecified, start new PCBs and substantial PCB edits offline. "
+        "Call get_offline_compiler_workflow for the offline tools and the handoff for existing designs. "
+        "Use live Fusion for context, targeted edits to the active design, importing reviewed candidates, "
+        "refilling copper, and native ERC/DRC. Start live work with get_context. Before each live write, "
+        "verify the exact target design and revision or the import destination. Live tools need Fusion running "
+        "with its MCP server turned on "
+        "(Preferences > General > API) or the FusionElectronicsMCP add-in. "
         "Coordinates are millimetres. Reads reflect the design as "
         "exported at call time. Normal edits are verified by reading the design back. "
-        "Build in Fusion with command-backed tools before using UI clicks. Start with get_context "
-        "and read the target design. Use refill_pours for Fusion's native copper refill and "
+        "For live edits, use command-backed tools before using UI clicks. Read the target design. "
+        "Use refill_pours for Fusion's native copper refill and "
         "start_via_stitching or apply_via_stitching for editable native Via Stitching features. "
         "Batch repeated edits: use move_parts for PCB placement, "
         "route_net/route_remaining for routing, and preview_schematic_edits or preview_circuit_block "
@@ -87,7 +92,7 @@ mcp = MCPServer(
         "not connections between layers or separation of same-net copper. "
         "Do not assume a two-layer PCB: assess routing density, continuous return planes, impedance, "
         "noise, current and thermal requirements, then choose the lowest adequate manufacturer-supported "
-        "layer count. Use prepare_layer_stack for a sourced physical stack and per-layer roles; import "
+        "layer count. For live stack changes, use prepare_layer_stack for a sourced physical stack and per-layer roles; import "
         "its preset through Layer Stack Manager using available UI automation, save, and require "
         "check_layer_stack to pass before using added layers. File creation alone does not apply a stack. "
         "Only if no suitable library is available, create the missing assets from manufacturer drawings; "
@@ -5321,7 +5326,7 @@ def preview_circuit_block(block_path: str, instances: list[dict], port_connectio
 
 @mcp.tool(annotations=READ)
 def get_offline_compiler_workflow() -> dict[str, Any]:
-    """Get the offline EAGLE compiler schema, workspace, workflow and routing limits."""
+    """Choose offline or live Fusion work and get the compiler schema, workspace and routing limits."""
     from . import candidate_compiler
     return candidate_compiler.workflow()
 

@@ -79,6 +79,18 @@ def workflow() -> dict:
         "schema_path": str(Path(__file__).with_name("data") / "offline-design.schema.json"),
         "schema_version": SPEC_VERSION,
         "workspace": str(_workspace()),
+        "tool_selection": {
+            "default": "Honor the user's workflow choice. Otherwise select the workflow by the task.",
+            "new_board": "Build new PCBs offline, including schematic, placement, and routing.",
+            "existing_board": ("For substantial edits, start with read-only get_context if Fusion is the source. "
+                               "Confirm the exact design, revision, and unsaved state. Verify the matching saved "
+                               ".fbrd and .fsch pair for that revision, run capture-drc-baseline, and edit offline. "
+                               "A verified pair supplied by the user can serve as the source. Ask only if the "
+                               "target or revision remains ambiguous, or unsaved edits make the handoff unclear."),
+            "live_fusion": ("Use live MCP for targeted edits to the active design, importing reviewed pairs, "
+                            "refill_pours, run_erc, and check_drc. Verify the exact target design and revision "
+                            "or the import destination immediately before each live write."),
+        },
         "supported": [
             "Flat EAGLE schematic/board candidates from local hash-pinned empty templates and EAGLE libraries",
             "Paired Fusion archive output from matching .fsch and .fbrd templates",
