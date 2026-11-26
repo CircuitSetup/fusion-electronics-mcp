@@ -60,7 +60,7 @@ def _verify_job(path, pin):
                         "input_board_sha256", "candidate_board_sha256", "policy_sha256", "artifacts"}
             or type(data["job_version"]) is not int or data["job_version"] != _JOB_VERSION
             or type(data["router_contract_version"]) is not int
-            or data["router_contract_version"] not in (6, ROUTER_CONTRACT_VERSION)):
+            or data["router_contract_version"] not in (6, 7, ROUTER_CONTRACT_VERSION)):
         raise ValueError("unsupported routing job manifest")
     entries = data["artifacts"]
     if not isinstance(entries, dict) or entries.keys() != _JOB_FILES.keys():

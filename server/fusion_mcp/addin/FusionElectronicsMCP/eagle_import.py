@@ -49,9 +49,14 @@ def signature(schematic, board, *, verify_part_details=False):
                 raise ValueError(f'Schematic/board package differs for {name}')
             if element.get('value', '') != parts[name].get('value', ''):
                 raise ValueError(f'Schematic/board value differs for {name}')
+    signals = brd.findall('./signals/signal')
+    board_net_classes = {signal.get('name'): int(signal.get('class') or '0') for signal in signals} if verify_part_details else {}
     contacts = set()
     for sheet in sch.findall('./sheets/sheet'):
         for net in sheet.findall('./nets/net'):
+            net_name = net.get('name')
+            if net_name in board_net_classes and int(net.get('class') or '0') != board_net_classes[net_name]:
+                raise ValueError(f'Schematic/board net class differs for {net_name}')
             for ref in net.findall('./segment/pinref'):
                 name = ref.get('part')
                 if name not in elements: continue
@@ -62,7 +67,7 @@ def signature(schematic, board, *, verify_part_details=False):
                 if len(matches) != 1: raise ValueError('Ambiguous schematic pin connection')
                 contacts.update((net.get('name'), name, pad.casefold()) for pad in matches[0].get('pad','').split())
     board_contacts = [(signal.get('name'), ref.get('element'), ref.get('pad','').casefold())
-                      for signal in brd.findall('./signals/signal') for ref in signal.findall('./contactref')]
+                      for signal in signals for ref in signal.findall('./contactref')]
     if len(board_contacts) != len(set(board_contacts)) or set(board_contacts) != contacts:
         raise ValueError('Schematic/board contact mappings differ')
     assignments = {}

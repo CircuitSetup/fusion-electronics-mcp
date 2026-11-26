@@ -409,7 +409,8 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
           rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
           layers: tuple | None = None, via_spans: list | None = None, *,
           budget: RoutingBudget | None = None, max_vias_per_connection: int | None = None,
-          clock=None, _progress: SearchProgress | None = None, _tap_exclude=None, min_width_mm=0.0) -> Route:
+          clock=None, _progress: SearchProgress | None = None, _tap_exclude=None, min_width_mm=0.0,
+          auto_via_diameter: bool = True) -> Route:
     """Route `net` from pad centre `start` (on any of start_layers) to pad centre `goal`, or
     (join_existing) to whichever is nearer: the goal pad or any trace the net already has, which
     it taps where it meets it (Fusion connects a trace ending part-way along another, verified
@@ -441,7 +442,7 @@ def route(root: ET.Element, net: str, start: tuple[float, float], start_layers: 
                         prefer_layer, vias, via_drill, via_d, step, turn_cost, via_cost, layer_cost,
                         max_nodes, join_existing, margin_mm, soft_cost, tap_exclude, pour_cost, plane_cost,
                         cache, h_weight, soft_tags, rip_cost, neck_width, neck_len, hug, layers, via_spans, progress,
-                        min_width_mm=min_width_mm)
+                        min_width_mm=min_width_mm, auto_via_diameter=auto_via_diameter)
         if progress is not None:
             progress.checkpoint()
             termination = ("routed" if result.legs and not result.problems else
@@ -464,7 +465,7 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
           plane_cost: float = 0.25, cache=None, h_weight: float = 1.0, soft_tags: set | None = None,
           rip_cost: float = 15.0, neck_width: float | None = None, neck_len: float = 1.5, hug: float = 0.0,
           layers: tuple | None = None, via_spans: list | None = None, progress: SearchProgress | None = None,
-          *, min_width_mm=0.0) -> Route:
+          *, min_width_mm=0.0, auto_via_diameter=True) -> Route:
     checkpoint = progress.checkpoint if progress else None
     if checkpoint:
         checkpoint()
@@ -520,12 +521,12 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
     if not math.isfinite(via_drill) or via_drill <= 0 or (vias and via_drill < minimum_drill - 1e-6):
         raise ValueError(f'via drill must be positive and at least {minimum_drill:g} mm under the board rules')
     inner = len(stack) > 2
-    minimum_diameter = max(annular.required_diameter(via_drill),
-                           annular.copper(rules, 'Via', via_drill, 0, False)['outer'])
-    via_diameter_override = via_d
-    via_d = max(.6, minimum_diameter) if via_d is None else via_d
-    if not math.isfinite(via_d) or via_d <= 0 or (vias and via_d < minimum_diameter - 1e-6):
-        raise ValueError(f'via diameter must be at least {minimum_diameter:g} mm under the board rules')
+    if via_d is not None or not auto_via_diameter:
+        minimum_diameter = max(annular.required_diameter(via_drill),
+                               annular.copper(rules, 'Via', via_drill, 0, False)['outer'])
+        via_d = max(.6, minimum_diameter) if via_d is None else via_d
+        if not math.isfinite(via_d) or via_d <= 0 or (vias and via_d < minimum_diameter - 1e-6):
+            raise ValueError(f'via diameter must be at least {minimum_diameter:g} mm under the board rules')
     necks, nw = [], neck_width
     for p in (start, goal):
         short = _pad_short_side(obs_all[0], net, p, checkpoint)
@@ -534,7 +535,7 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
             nw = max(minimum_width, min(nw or short, short))
     via_limit = progress.via_limit if progress and vias and len(layers) > 1 else None
     via_states = (via_limit + 1) if via_limit is not None else 1
-    diameters = annular.copper(rules, 'Via', via_drill, via_d, inner)
+    diameters = annular.copper(rules, 'Via', via_drill, via_d or 0, inner)
     via_radii = {layer: diameters['inner' if layer in stack[1:-1] else 'outer'] / 2 for layer in stack}
     effective_diameter = max(diameters.values())
     G = Grid(root, net, width, clearance, step, start, layers=layers, via_d=effective_diameter, window=window, cache=obs_all,
@@ -543,9 +544,10 @@ def _route(root: ET.Element, net: str, start: tuple[float, float], start_layers:
              via_radii=via_radii, via_drill=via_drill if vias and len(layers) > 1 else None)
     si, sj = G.ij(*start)
     gi, gj = G.ij(*goal)
-    r = Route(net, via_drill=via_drill, via_diameter=via_d, via_extent=(stack[0], stack[-1]),
+    r = Route(net, via_drill=via_drill, via_diameter=diameters['outer'] if via_d is None else via_d,
+              via_extent=(stack[0], stack[-1]),
               via_tented=via_drill <= _mm(rules.get('mlViaStopLimit'), 0.0),
-              via_diameter_override=via_diameter_override)
+              via_diameter_override=via_d)
     ny, nx = G.ny, G.nx
     if checkpoint:
         checkpoint()

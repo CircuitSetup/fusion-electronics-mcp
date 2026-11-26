@@ -17,7 +17,9 @@ class NativeExportTest(unittest.TestCase):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name).resolve()
-        raw = json.dumps(minimal_design()).encode()
+        design = minimal_design()
+        design["board"]["net_classes"].append({"number": 1, "name": "power", "width": 0.5, "drill": 0.3})
+        raw = json.dumps(design).encode()
         spec = root / "design.json"
         spec.write_bytes(raw)
         candidate = compile_candidate(spec, sha256(raw).hexdigest(), root / "compiled")
@@ -36,6 +38,14 @@ class NativeExportTest(unittest.TestCase):
         edited.write_bytes(ET.tostring(board, encoding="utf-8"))
         with self.assertRaisesRegex(ValueError, "contact mappings differ"):
             export_edited_pair(sources["schematic"], sources["board"], destination, edited_board=edited)
+        self.assertFalse(destination.exists())
+
+        schematic = ET.fromstring(candidate.read_artifact("schematic"))
+        schematic.find(".//net[@name='VCC']").set("class", "1")
+        edited_schematic = root / "edited.sch"
+        edited_schematic.write_bytes(ET.tostring(schematic, encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "net class differs for VCC"):
+            export_edited_pair(sources["schematic"], sources["board"], destination, edited_schematic=edited_schematic)
         self.assertFalse(destination.exists())
 
         before = capture_drc_baseline(sources["board"], root / "before-edit")

@@ -123,7 +123,7 @@ fusion-electronics-mcp capture-drc-baseline --board design.fbrd --output-directo
 
 Use `export-edited-pair` with the original native archives and the XML changed by the offline
 editor. Omit an edited path to use that document's original XML. The exporter checks physical
-parts, packages, values, and pad-to-net assignments before publishing both native files together.
+parts, packages, values, pad-to-net assignments, and net classes before publishing both native files together.
 It compares the declared rules and stackup with the original board and rejects changes unless
 you pass `--allow-rule-changes`. The export includes the original and output values in
 `drc-baseline.json`. Pass the baseline captured before editing to verify the exact source revision.
@@ -135,8 +135,9 @@ fusion-electronics-mcp export-edited-pair --source-schematic design.fsch --sourc
   --edited-board edited.brd --drc-baseline before-edit/drc-baseline.json --output-directory revised-design
 ```
 
-New vias written by the offline router use Auto for the outside diameter. An explicit diameter is
-preserved. Auto uses the board's annular-ring rules.
+New vias written by the offline router use Auto for the outside diameter. The router uses the
+board's annular-ring rules to plan the actual copper size on every layer. An explicit diameter is
+preserved.
 
 ## Read the validation report
 

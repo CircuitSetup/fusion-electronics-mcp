@@ -2569,7 +2569,7 @@ def route_trace(from_pad: str, to_pad: str, width_mm: float | None = None, layer
     if keepout_exception is not None:
         from fusion_offline.keepouts import header_connection_obstacles
         options['cache'], exception_scope = header_connection_obstacles(root, keepout_exception, from_pad, to_pad)
-    r = RT.route(root, an, (ax, ay), al, (bx, by), bl, width=width_mm, **options)
+    r = RT.route(root, an, (ax, ay), al, (bx, by), bl, width=width_mm, auto_via_diameter=False, **options)
     plan = {"p": {"net": an, "traces": [{"layer": l, "points": [list(q) for q in pts]} for l, pts in r.legs],
                   "vias": [list(v) for v in r.vias]}, "n": {"net": "", "traces": [], "vias": []}}
     from fusion_offline import route_all as RA
@@ -2703,7 +2703,7 @@ def route_net(net: str, width_mm: float | None = None, layer: str = "any", allow
             exclude |= RA._not_joined(root, RA.Conn('next', net, (sx,sy), sl, (gx,gy), gl))
             width_mm, options = DR.route_options(constraints, net, width_mm, clearance=clearance_mm,
                 prefer_layer=pref, vias=allow_vias, join_existing=True, tap_exclude=exclude)
-            r = RT.route(root, net, (sx, sy), sl, (gx, gy), gl, width=width_mm, **options)
+            r = RT.route(root, net, (sx, sy), sl, (gx, gy), gl, width=width_mm, auto_via_diameter=False, **options)
             if r.legs and not r.problems:
                 plan = (s_end[0], g_end[0] if g_end else f"({gx:.2f}, {gy:.2f})", r)
                 break
@@ -2813,7 +2813,8 @@ def route_close(max_len_mm: float = 8.0, width_mm: float = 0.25, widths: dict[st
         goal_layers = g_pad[1] if g_pad else RT.fragment(root, net, g_pt)[1]
         exclude = RA._not_joined(root, RA.Conn('close', net, s_pt, s_pad[1], g_pt, goal_layers))
         w, options = DR.route_options(constraints, net, w, vias=allow_vias, join_existing=True, tap_exclude=exclude)
-        r = RT.route(root, net, s_pt, s_pad[1], g_pt, g_pad[1] if g_pad else RT.fragment(root, net, g_pt)[1], width=w, **options)
+        r = RT.route(root, net, s_pt, s_pad[1], g_pt, g_pad[1] if g_pad else RT.fragment(root, net, g_pt)[1],
+                     width=w, auto_via_diameter=False, **options)
         if r.problems or not r.legs:
             skipped.append({"net": net, "from": s_pad[0], "to": g_pad[0] if g_pad else str(g_pt), "why": r.problems[:1]})
             continue
@@ -2894,7 +2895,7 @@ def route_remaining(width_mm: float = 0.25, widths: dict[str, float] | None = No
     for c in conns:
         c.width = DR.route_options(constraints, c.net, c.width)[0]
     # The native writer and read-back below use these unmodified route legs.
-    res = RA.route_all(root, conns, vias=allow_vias, canonicalize=False,
+    res = RA.route_all(root, conns, vias=allow_vias, canonicalize=False, auto_via_diameter=False,
                        policies={c.net: DR.route_options(constraints, c.net, c.width)[1] for c in conns},
                        priorities={c.net: RQ.routing_policy(constraints[0] if constraints else None, c.net).get('priority', 0) for c in conns})
     by_id = {c.id: c for c in conns}
