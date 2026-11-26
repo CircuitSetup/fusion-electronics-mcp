@@ -72,18 +72,24 @@ a fresh output directory, and uses the selection already saved in the job.
 
 ## Prepare a design specification
 
-1. Export an empty flat EAGLE schematic and its empty board as UTF-8 EAGLE XML. Use matching EAGLE
-   XML versions and keep the normal layers, classes and board design rules. The schematic needs
+1. Choose the fabricator and stackup, then set the design rules and net classes before placement
+   or routing. Use a manufacturer rule file that matches that process when available. Save the
+   rules in the board template. The compiler captures them before layout and pins
+   `drc-baseline.json`, which records the template hash, original rules, and effective output rules.
+2. Export an empty flat schematic and its empty board from the same Fusion design as `.fsch` and
+   `.fbrd`. The compiler publishes native archives alongside the XML used by the guarded paired
+   importer. To build from EAGLE XML templates, use matching `.sch` and `.brd` files. Keep the
+   normal layers, classes and board design rules. The schematic needs
    sheets with no parts, instances, nets, buses or module instances. The board needs empty element
    and signal containers and no existing copper. Use a board template whose copper stack matches the
    design. Declare the outline, holes and keepouts in the specification.
-2. Export each approved library to a local EAGLE XML `.lbr`. Pin each library and template by
+3. Export each approved library to a local EAGLE XML `.lbr`. Pin each library and template by
    absolute local path and exact file SHA-256. On Windows,
    `(Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()` gives the pin. The library name
    identifies it in the specification. Select exact deviceset, device, technology and gate names
    from that library. The compiler resolves physical pads through the EAGLE gate and pin mappings
    and embeds the selected definitions.
-3. Start with the complete [LED switch example](../tests/fixtures/compiler/minimal/design.json) and
+4. Start with the complete [LED switch example](../tests/fixtures/compiler/minimal/design.json) and
    its adjacent `empty.sch`, `empty.brd` and `project.lbr`. Replace its fixture paths with absolute
    local paths and recompute the pins from your copies. The [version 1
    schema](../server/fusion_mcp/data/offline-design.schema.json) describes the JSON fields. Use
@@ -93,7 +99,7 @@ a fresh output directory, and uses the selection already saved in the job.
    to `true` to make unjoined board contacts block import. The [routed
    fixture](../tests/fixtures/compiler/e2e/design.json) shows that policy and per-net routing
    limits.
-4. Save the spec as UTF-8 JSON without a byte order mark and hash that exact file. Keep the manifest
+5. Save the spec as UTF-8 JSON without a byte order mark and hash that exact file. Keep the manifest
    paths and SHA-256 values returned by the compiler and use those pins for subsequent operations.
 
 The board template supplies the default placement grid. The compiler tries nearby grid points
@@ -103,6 +109,35 @@ placements and pads with explicit preroutes stay at their declared positions. Se
 to `true` to explicitly configure a 50 mil (1.27 mm) grid in both exports and align schematic
 symbols to it. Supply an explicit `ref` for a part named in nets or placement overrides. Use
 `ref: null` to allocate the library device prefix for a part without those references.
+
+## Export edits to an existing Fusion design
+
+Capture the design rules, stackup parameters, net classes, and source file hash from the exact saved
+revision before editing. If Fusion is available, run `check_drc()` on that revision and again after
+importing the edited pair to compare findings. Keep the `drc-baseline.json` for the revision. Use
+Fusion or the MCP rule editor when you need a separate `.edru` to transfer or archive native rules.
+
+```powershell
+fusion-electronics-mcp capture-drc-baseline --board design.fbrd --output-directory before-edit
+```
+
+Use `export-edited-pair` with the original native archives and the XML changed by the offline
+editor. Omit an edited path to use that document's original XML. The exporter checks physical
+parts, packages, values, pad-to-net assignments, and net classes before publishing both native files together.
+It compares the declared rules and stackup with the original board and rejects changes unless
+you pass `--allow-rule-changes`. The export includes the original and output values in
+`drc-baseline.json`. Pass the baseline captured before editing to verify the exact source revision.
+This captures the rules visible in the board XML. Fusion checks the full
+native rule set in its Design Rules Check.
+
+```powershell
+fusion-electronics-mcp export-edited-pair --source-schematic design.fsch --source-board design.fbrd `
+  --edited-board edited.brd --drc-baseline before-edit/drc-baseline.json --output-directory revised-design
+```
+
+New vias written by the offline router use Auto for the outside diameter. The router uses the
+board's annular-ring rules to plan the actual copper size on every layer. An explicit diameter is
+preserved.
 
 ## Read the validation report
 
@@ -152,10 +187,31 @@ Per-net `allowed_layers` limits traces. Set `via_spans` to the full-stack endpoi
 (for example, `[[1,16]]`), or to `[]` to forbid through vias. Through vias check clearance on
 every layer they cross, including any reserved reference plane. A pre-routed pad-to-via escape
 can serve as the launch point for an inner-layer routing job.
-The router uses the greater of the board width minimum, net class width, and any per-net
-`min_width_mm`. Enter power widths after sizing the shared segments for combined load and copper
-thickness. Preflight rejects narrower traces, overlapping collinear runs, and drill spacing below
-the board's `mdDrill` rule. Same-net annulus overlap is reported separately from drill spacing.
+New routes use horizontal, vertical, and 45-degree segments through the pad and via landings.
+
+Before routing, cross-reference the exact connected ICs' manufacturer datasheets and their pin
+functions. Record the greatest likely simultaneous load on the current path, including combined
+loads on shared supply and return paths. Cite the connected parts, datasheets, and the tables or
+sections used in each net's `current` policy. [TI guidance on estimating shared supply loads](https://www.ti.com/document-viewer/lit/html/SSZTB16/GUID-3781905E-01BB-406F-9C13-9E0BCC13F5ED)
+
+```json
+"current": {
+  "expected_a": 0.8,
+  "basis": "Sum the 0.5 A and 0.3 A loads that can operate simultaneously",
+  "sources": [
+    {"part": "U1", "datasheet": "Manufacturer datasheet for the exact U1 part", "section": "Supply current table"},
+    {"part": "U2", "datasheet": "Manufacturer datasheet for the exact U2 part", "section": "Supply current table"}
+  ]
+}
+```
+
+The router sizes at `expected_a × 1.20` using the board's copper thickness, the most demanding
+allowed copper layer, and a 10 °C rise unless the policy specifies `delta_t_c`. The board width
+minimum, net class width, and `min_width_mm` can raise that width. A native-template build requires
+current evidence by default. Set `routing.require_current_evidence` to `true` to require it for an
+EAGLE XML build. The sources document the load estimate supplied in the spec. Preflight rejects
+traces narrower than the resulting width, overlapping collinear runs, and drill spacing below
+`mdDrill`. It reports same-net annulus overlap separately.
 
 `board.keepouts[].layers` accepts enabled copper export IDs, including inner layers.
 The compiler emits a layer-41 RestrictCopper mask for a keepout that includes inner copper.

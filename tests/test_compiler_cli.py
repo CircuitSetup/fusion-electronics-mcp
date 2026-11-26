@@ -66,6 +66,14 @@ class CompilerCLITest(unittest.TestCase):
         validation = self.invoke("validate-candidate", *args)
         self.assertEqual(validation["report"], json.loads((manifest.parent / "validation.json").read_bytes()))
 
+    def test_capture_drc_baseline_for_a_saved_board(self):
+        board = self.design["templates"]["board"]
+        result = self.invoke("capture-drc-baseline", "--board", board["path"],
+                             "--output-directory", str(self.root / "baseline"))
+        baseline = json.loads(Path(result["drc_baseline"]).read_bytes())
+        self.assertEqual(baseline["source_sha256"], board["sha256"])
+        self.assertEqual(baseline["source_rules"]["copper_layers"], [1, 16])
+
     def test_invalid_or_missing_pin_returns_json_error(self):
         for args in (self.spec_args("0" * 64), self.spec_args()[:2]):
             with self.subTest(args=args):

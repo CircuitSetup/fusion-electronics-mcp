@@ -63,8 +63,10 @@ def _commit(root, c: Conn, r):
             ET.SubElement(sg, "wire", {"x1": str(p[0]), "y1": str(p[1]), "x2": str(q[0]), "y2": str(q[1]),
                                        "width": str(w), "layer": str(l), "mcp_conn": c.id})
     for vx, vy in r.vias:
-        ET.SubElement(sg, "via", {"x": str(vx), "y": str(vy), "extent": '-'.join(map(str, r.via_extent)), "drill": str(r.via_drill),
-                                  "diameter": str(r.via_diameter), "mcp_conn": c.id})
+        via = ET.SubElement(sg, "via", {"x": str(vx), "y": str(vy), "extent": '-'.join(map(str, r.via_extent)),
+                                        "drill": str(r.via_drill), "mcp_conn": c.id})
+        if r.via_diameter_override is not None:
+            via.set("diameter", str(r.via_diameter_override))
 
 
 def _rip(root, ids: set):

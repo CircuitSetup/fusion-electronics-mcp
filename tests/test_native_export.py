@@ -1,0 +1,73 @@
+from hashlib import sha256
+import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+import xml.etree.ElementTree as ET
+from zipfile import ZipFile
+
+from test_compiler_schema import minimal_design
+
+
+class NativeExportTest(unittest.TestCase):
+    def test_out_of_sync_edits_publish_neither_archive(self):
+        from fusion_offline.compiler.compile import compile_candidate
+        from fusion_offline.compiler.export import capture_drc_baseline, export_edited_pair
+
+        directory = TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name).resolve()
+        design = minimal_design()
+        design["board"]["net_classes"].append({"number": 1, "name": "power", "width": 0.5, "drill": 0.3})
+        raw = json.dumps(design).encode()
+        spec = root / "design.json"
+        spec.write_bytes(raw)
+        candidate = compile_candidate(spec, sha256(raw).hexdigest(), root / "compiled")
+        sources = {}
+        for kind, suffix in (("schematic", ".sch"), ("board", ".brd")):
+            sources[kind] = root / f"design.f{suffix[1:]}"
+            with ZipFile(sources[kind], "w") as archive:
+                archive.writestr("Manifest.dat", b"template metadata")
+                archive.writestr(f"{kind}/electron.BlobParts/ExtFile.test{suffix}", candidate.read_artifact(kind))
+
+        destination = root / "edit"
+        board = ET.fromstring(candidate.read_artifact("board"))
+        contact = board.find(".//signals/signal/contactref")
+        contact.set("pad", "WRONG")
+        edited = destination.with_suffix(".brd")
+        edited.write_bytes(ET.tostring(board, encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "contact mappings differ"):
+            export_edited_pair(sources["schematic"], sources["board"], destination, edited_board=edited)
+        self.assertFalse(destination.exists())
+
+        schematic = ET.fromstring(candidate.read_artifact("schematic"))
+        schematic.find(".//net[@name='VCC']").set("class", "1")
+        edited_schematic = root / "edited.sch"
+        edited_schematic.write_bytes(ET.tostring(schematic, encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "net class differs for VCC"):
+            export_edited_pair(sources["schematic"], sources["board"], destination, edited_schematic=edited_schematic)
+        self.assertFalse(destination.exists())
+
+        before = capture_drc_baseline(sources["board"], root / "before-edit")
+        written = export_edited_pair(sources["schematic"], sources["board"], destination, drc_baseline=before)
+        self.assertEqual({path.name for path in written.values()}, {"design.fsch", "design.fbrd", "drc-baseline.json"})
+        self.assertTrue(all(path.is_file() for path in written.values()))
+        baseline = json.loads(written["drc_baseline"].read_bytes())
+        self.assertEqual(baseline["source_sha256"], sha256(sources["board"].read_bytes()).hexdigest())
+        self.assertEqual(baseline["source_rules"], baseline["output_rules"])
+
+        board = ET.fromstring(candidate.read_artifact("board"))
+        board.find(".//designrules/param[@name='rlMinViaOuter']").set("value", "10mil")
+        edited.write_bytes(ET.tostring(board, encoding="utf-8"))
+        changed = root / "changed"
+        with self.assertRaisesRegex(ValueError, "DRC baseline changed.*rlMinViaOuter"):
+            export_edited_pair(sources["schematic"], sources["board"], changed, edited_board=edited)
+        self.assertFalse(changed.exists())
+        result = export_edited_pair(sources["schematic"], sources["board"], changed, edited_board=edited,
+                                    allow_rule_changes=True)
+        baseline = json.loads(result["drc_baseline"].read_bytes())
+        self.assertEqual(baseline["changes"], ["parameters.rlMinViaOuter"])
+        with ZipFile(sources["board"], "a") as archive:
+            archive.comment = b"a different source revision"
+        with self.assertRaisesRegex(ValueError, "DRC baseline does not match the source board"):
+            export_edited_pair(sources["schematic"], sources["board"], root / "wrong-revision", drc_baseline=before)

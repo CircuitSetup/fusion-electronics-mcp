@@ -11,6 +11,34 @@ from ..rules_edit import CLEARANCE
 from ..stitch import Obstacle, _restrict_layers, _restrict_polygon, _restrict_shape, _xf
 
 
+DRC_BASELINE_FILENAME = "drc-baseline.json"
+
+
+def board_rule_snapshot(root):
+    """Capture the rules declared by a board export, including its copper stack and net classes."""
+    board = root.find("./drawing/board")
+    designrules = board.find("designrules") if board is not None else None
+    if root.tag != "eagle" or designrules is None or not designrules.findall("param"):
+        raise ValueError("board must declare design rules before capturing the DRC baseline")
+    rules = _rule_values(board, None)
+    rules["classes"] = {str(number): value for number, value in rules["classes"].items()}
+    rules["copper_layers"] = _copper_stack(root, board)
+    rules["additional_rules"] = [ET.canonicalize(ET.tostring(row), strip_text=True)
+                                 for row in designrules if row.tag != "param"]
+    return rules
+
+
+def changed_board_rules(before, after):
+    """Report drift in rule definitions and class assignments to nets present in both boards."""
+    changes = []
+    for field in ("parameters", "classes", "class_clearances_mm", "net_classes"):
+        first, second = before[field], after[field]
+        keys = first.keys() & second.keys() if field == "net_classes" else first.keys() | second.keys()
+        changes.extend(f"{field}.{key}" for key in sorted(keys) if first.get(key) != second.get(key))
+    changes.extend(field for field in ("copper_layers", "additional_rules") if before[field] != after[field])
+    return changes
+
+
 def _length(value):
     number = _mm(value)
     if number is None or not math.isfinite(number):
@@ -132,10 +160,14 @@ def _restrict_obstacles(board, stack):
                 raise UnverifiedGeometry(f"Unsupported restrict {node.tag} on layer {node.get('layer')}")
 
 
-def _restrictions(root, board):
+def _copper_stack(root, board):
     layers = {int(row.attrib["number"]): row.get("name", "") for row in root.findall("./drawing/layers/layer")}
     rules = {row.attrib["name"]: row.attrib["value"] for row in board.findall("./designrules/param")}
-    stack = tuple(BoardDesign("", layers, {}, {}, rules, []).copper_layers)
+    return BoardDesign("", layers, {}, {}, rules, []).copper_layers
+
+
+def _restrictions(root, board):
+    stack = tuple(_copper_stack(root, board))
     shapes = set()
     for obs in _restrict_obstacles(board, stack):
         if obs.kind == "polygon":

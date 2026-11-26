@@ -560,6 +560,24 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(r.problems, [])
         self.assertEqual(len(r.vias), 2)
 
+    def test_off_grid_pad_landing_stays_on_45_degree_grid(self):
+        from math import isclose
+        import xml.etree.ElementTree as ET
+        from fusion_offline import router as R
+
+        root = ET.fromstring(self.BOARD)
+        signals = root.find(".//signals")
+        signals.remove(signals.find("signal[@name='X']"))
+        start, goal = (5.03, 10.07), (5.13, 10.12)
+        root.find(".//element[@name='B']").attrib.update(x="5.13", y="10.12")
+        route = R.route(root, "S", start, (1,), goal, (1,), vias=False, step=0.254)
+        self.assertFalse(route.problems)
+        _, points = route.legs[0]
+        self.assertEqual((points[0], points[-1]), (start, goal))
+        for a, b in zip(points, points[1:]):
+            dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+            self.assertTrue(dx < 1e-4 or dy < 1e-4 or isclose(dx, dy, abs_tol=1e-4), (a, b))
+
     def test_wide_trace_necks_down_at_a_fine_pitch_pad(self):
         import xml.etree.ElementTree as ET
         from fusion_offline import router as R

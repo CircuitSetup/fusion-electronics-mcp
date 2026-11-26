@@ -11,9 +11,9 @@ def request_id(value):
     return value
 
 
-def signature(schematic, board):
+def signature(schematic, board, *, verify_part_details=False):
     sch = schematic.find('./drawing/schematic'); brd = board.find('./drawing/board')
-    if sch is None or brd is None:
+    if schematic.tag != 'eagle' or board.tag != 'eagle' or sch is None or brd is None:
         raise ValueError('Expected an EAGLE schematic and board')
     if sch.findall('.//moduleinst'):
         raise ValueError('Hierarchical module imports are not supported by this verifier')
@@ -36,9 +36,27 @@ def signature(schematic, board):
         devices[name] = matches[0]
     if {name for name,device in devices.items() if device.get('package')} != set(elements):
         raise ValueError('Physical schematic parts differ from board elements')
+    if verify_part_details:
+        board_packages = {(library.get('name'), package.get('name', '').casefold())
+                          for library in brd.findall('./libraries/library')
+                          for package in library.findall('./packages/package')}
+        for element in brd.findall('./elements/element'):
+            name = element.attrib['name']
+            library, package = element.get('library'), element.get('package', '').casefold()
+            if library != parts[name].get('library'):
+                raise ValueError(f'Schematic/board library differs for {name}')
+            if package != devices[name].get('package', '').casefold() or (library, package) not in board_packages:
+                raise ValueError(f'Schematic/board package differs for {name}')
+            if element.get('value', '') != parts[name].get('value', ''):
+                raise ValueError(f'Schematic/board value differs for {name}')
+    signals = brd.findall('./signals/signal')
+    board_net_classes = {signal.get('name'): int(signal.get('class') or '0') for signal in signals} if verify_part_details else {}
     contacts = set()
     for sheet in sch.findall('./sheets/sheet'):
         for net in sheet.findall('./nets/net'):
+            net_name = net.get('name')
+            if net_name in board_net_classes and int(net.get('class') or '0') != board_net_classes[net_name]:
+                raise ValueError(f'Schematic/board net class differs for {net_name}')
             for ref in net.findall('./segment/pinref'):
                 name = ref.get('part')
                 if name not in elements: continue
@@ -49,7 +67,7 @@ def signature(schematic, board):
                 if len(matches) != 1: raise ValueError('Ambiguous schematic pin connection')
                 contacts.update((net.get('name'), name, pad.casefold()) for pad in matches[0].get('pad','').split())
     board_contacts = [(signal.get('name'), ref.get('element'), ref.get('pad','').casefold())
-                      for signal in brd.findall('./signals/signal') for ref in signal.findall('./contactref')]
+                      for signal in signals for ref in signal.findall('./contactref')]
     if len(board_contacts) != len(set(board_contacts)) or set(board_contacts) != contacts:
         raise ValueError('Schematic/board contact mappings differ')
     assignments = {}

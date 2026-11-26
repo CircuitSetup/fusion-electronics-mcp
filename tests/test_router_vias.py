@@ -8,10 +8,10 @@ import test_offline
 
 
 class RouterViaTest(unittest.TestCase):
-    def route(self, net_class_drill=None, **kwargs):
+    def route(self, net_class_drill=None, min_outer="8mil", **kwargs):
         root = ET.fromstring(test_offline.RouterTest.BOARD.replace('y1="2" x2="20" y2="18"', 'y1="-1" x2="20" y2="21"'))
         rules = root.find('.//designrules')
-        for name, value in [('msDrill', '0.35mm'), ('rlMinViaOuter', '8mil'), ('mlViaStopLimit', '32mil')]:
+        for name, value in [('msDrill', '0.35mm'), ('rlMinViaOuter', min_outer), ('mlViaStopLimit', '32mil')]:
             ET.SubElement(rules, 'param', name=name, value=value)
         if net_class_drill is not None:
             classes = ET.SubElement(root.find('.//board'), 'classes')
@@ -30,14 +30,31 @@ class RouterViaTest(unittest.TestCase):
         RA._commit(root, RA.Conn('test', 'S', (), (), (), ()), route)
         for via in root.findall('.//via'):
             self.assertEqual(float(via.get('drill')), .35)
-            self.assertAlmostEqual(float(via.get('diameter')), .7564)
+            self.assertIsNone(via.get('diameter'))
+
+    def test_auto_uses_the_rule_derived_outline(self):
+        root, route = self.route(min_outer="0mm")
+        self.assertEqual(len(route.vias), 2)
+        self.assertEqual(route.via_diameter, .525)
+        RA._commit(root, RA.Conn('test', 'S', (), (), (), ()), route)
+        self.assertTrue(all(via.get('diameter') is None for via in root.findall('.//via')))
+
+    def test_native_preview_matches_the_fixed_via_commands(self):
+        root, route = self.route(min_outer="0mm", auto_via_diameter=False)
+        RA._commit(root, RA.Conn('test', 'S', (), (), (), ()), route)
+        self.assertEqual([via.get('diameter') for via in root.findall('.//via')], ['0.7', '0.7'])
         with patch.object(S, '_only_layers', return_value=('DISPLAY NONE 18;', 'DISPLAY ALL;')), \
                 patch.object(S, '_native_layer', side_effect=lambda l: 304 if l == 'bottom' else 1):
             commands = ' '.join(S._route_vias('S', route))
         self.assertIn('CHANGE DRILL 0.35;', commands)
-        self.assertIn("VIA 'S' 0.7564", commands)
+        self.assertIn("VIA 'S' 0.7", commands)
         self.assertEqual(commands.count('CHANGE STOP OFF (C>'), 2)
         self.assertTrue(commands.endswith('DISPLAY ALL;'))
+
+    def test_explicit_via_diameter_is_written(self):
+        root, route = self.route(via_d=.9)
+        RA._commit(root, RA.Conn('test', 'S', (), (), (), ()), route)
+        self.assertEqual([via.get('diameter') for via in root.findall('.//via')], ['0.9', '0.9'])
 
     def test_explicit_undersized_vias_are_rejected(self):
         for kwargs in [dict(via_drill=.3), dict(via_d=.6), dict(via_d=float('nan'))]:

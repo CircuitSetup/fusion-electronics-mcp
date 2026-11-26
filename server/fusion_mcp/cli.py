@@ -150,6 +150,8 @@ def list_tools() -> int:
 
 
 _COMPILER_COMMANDS = {
+    "capture-drc-baseline": "record the exact saved board's design rules before editing",
+    "export-edited-pair": "check and export an edited Fusion schematic and board pair",
     "compile-candidate": "compile a pinned design specification",
     "route-candidate": "plan routing or promote a pinned routing job",
     "render-candidate": "locate the verified review page",
@@ -169,6 +171,19 @@ def _compiler_parsers(sub):
     for command, description in _COMPILER_COMMANDS.items():
         parser = sub.add_parser(command, help=description, description=description,
                                 epilog=_COMPILER_EXIT_HELP)
+        if command == "capture-drc-baseline":
+            parser.add_argument("--board", required=True, help="saved .fbrd or .brd board")
+            parser.add_argument("--output-directory", required=True, help="new or empty output directory")
+            continue
+        if command == "export-edited-pair":
+            parser.add_argument("--source-schematic", required=True, help="original Fusion .fsch archive")
+            parser.add_argument("--source-board", required=True, help="original Fusion .fbrd archive")
+            parser.add_argument("--edited-schematic", help="optional replacement schematic XML")
+            parser.add_argument("--edited-board", help="optional replacement board XML")
+            parser.add_argument("--drc-baseline", help="require the original board to match a saved DRC baseline")
+            parser.add_argument("--allow-rule-changes", action="store_true", help="approve changes to the source board's DRC rules")
+            parser.add_argument("--output-directory", required=True, help="new or empty output directory")
+            continue
         source = "spec" if command == "compile-candidate" else "manifest"
         parser.add_argument(f"--{source}", required=True, help="absolute local input path")
         parser.add_argument(f"--{source}-sha256", required=True, help="exact SHA-256 of the input file")
@@ -201,6 +216,20 @@ def _run_compiler(args):
         from fusion_offline.compiler.render import render_candidate
         from fusion_offline.compiler.routing_job import plan_routing_job, promote_routing_job
 
+        if args.cmd == "capture-drc-baseline":
+            from fusion_offline.compiler.export import capture_drc_baseline
+
+            path = capture_drc_baseline(args.board, args.output_directory)
+            return _emit_compiler_result({"status": "pass", "drc_baseline": str(path)})
+        if args.cmd == "export-edited-pair":
+            from fusion_offline.compiler.export import export_edited_pair
+
+            paths = export_edited_pair(
+                args.source_schematic, args.source_board, args.output_directory,
+                edited_schematic=args.edited_schematic, edited_board=args.edited_board,
+                drc_baseline=args.drc_baseline, allow_rule_changes=args.allow_rule_changes,
+            )
+            return _emit_compiler_result({"status": "pass", **{kind: str(path) for kind, path in paths.items()}})
         if args.cmd == "compile-candidate":
             candidate = compile_candidate(args.spec, args.spec_sha256, args.output_directory)
         elif args.cmd == "route-candidate":
@@ -225,6 +254,11 @@ def _run_compiler(args):
 
         data = candidate.data
         result = _compiler_result(candidate, data["status"])
+        for kind in ("board", "schematic"):
+            entry = data["artifacts"].get(f"fusion_{kind}", data["artifacts"][kind])
+            result[f"{kind}_path"] = str(candidate.path.parent / entry["path"])
+        if "drc_baseline" in data["artifacts"]:
+            result["drc_baseline_path"] = str(candidate.path.parent / data["artifacts"]["drc_baseline"]["path"])
         if args.cmd == "validate-candidate":
             result["report"] = json.loads(candidate.read_artifact("report"))
 
