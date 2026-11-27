@@ -4,6 +4,8 @@ import os
 import sys
 import types
 import unittest
+import xml.etree.ElementTree as ET
+from unittest.mock import Mock, patch
 
 from fusion_mcp import commands as C
 from fusion_mcp.library import Library, build_script
@@ -225,12 +227,95 @@ EXPECTED_TOOLS = {
     "run_drc", "run_erc", "review_schematic", "list_diff_pairs", "check_length_match", "check_impedance",
     "estimate_impedance", "export_bom", "export_cpl", "check_gerbers", "check_jlc_orientation", "add_part", "connect_pins", "rename_net", "label_nets",
     "new_sheet", "set_part_variant", "set_part_value", "move_part", "rotate_part", "add_via", "add_trace", "route_pair",
-    "set_board_outline", "add_hole", "add_text", "rip_up", "add_pour", "list_pours", "set_pour_thermals", "add_keepout",
+    "set_board_outline", "add_hole", "add_text", "set_text_style", "rip_up", "add_pour", "list_pours", "set_pour_thermals", "add_keepout",
     "stitch_vias", "fanout_pad", "clean_vias", "remove_stubs", "autoroute", "routing_status", "render_board",
     "score_placement", "suggest_placement_moves", "import_placement_from_kicad", "import_routing_from_kicad", "route_trace", "route_net", "ground_vias", "route_close", "place_clusters", "lay_bus", "route_remaining", "import_netlist_from_kicad", "undo", "save_design",
     "search_library", "get_library_part", "insert_library_part", "close_library", "update_from_libraries", "attach_3d_model", "push_3d", "check_3d_models", "list_design_rules", "create_library_part", "add_library_variant", "get_library_deviceset",
     "request_design_review", "get_assembly_quote",
 }
+
+
+class BoardTextStyleTest(unittest.TestCase):
+    def setUp(self):
+        from fusion_mcp import server as S
+        from fusion_mcp.session import Snapshot
+
+        self.server = S
+        self.snapshot = Snapshot
+        self.board = b'''<eagle><drawing><board><plain>
+          <text x="5" y="7" layer="21" size="1" font="vector">IN</text>
+          <text x="5" y="7" layer="22" size="1" font="custom" fontFamily="Arial" rot="MR0">OUT</text>
+          <text x="9" y="7" layer="21" size="1">GND</text>
+        </plain></board></drawing></eagle>'''
+        self.targets = [dict(text="IN", x_mm=5, y_mm=7, layer="top_silk"),
+                        dict(text="OUT", x_mm=5, y_mm=7, layer=22)]
+        self.session = Mock()
+        self.session.context.return_value = {"active_document": {"kind": "board", "document_id": "test-board"}}
+        self.session.snapshot.side_effect = lambda *a, **kw: self.snapshot(board_xml=self.board)
+        patcher = patch.object(S, "session", self.session)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_updates_batch_and_compares_family_case_insensitively(self):
+        from hashlib import sha256
+
+        def write(editor, commands, verify, **kwargs):
+            self.assertEqual(editor, "board")
+            self.assertEqual(kwargs["expected_document_id"], "test-board")
+            self.assertEqual(kwargs["expected_board_sha256"], sha256(self.board).hexdigest())
+            self.assertEqual(commands.count("CHANGE FONTFAMILY 'Open Sans Semibold' (5 7);"), 2)
+            self.assertEqual(commands.count("CHANGE SIZE 1.5 (5 7);"), 2)
+            self.assertIn("DISPLAY NONE 21;", commands)
+            self.assertIn("DISPLAY NONE 22;", commands)
+            load_addin().validate(commands)
+
+            root = ET.fromstring(self.board)
+            first, second, other = root.findall(".//plain/text")
+            second.attrib.update(font="CUSTOM", fontFamily="OPEN SANS SEMIBOLD", size="1.5000")
+            first.attrib.update(font="custom", fontFamily="open sans semibold", size="1.5")
+            before = self.snapshot(board_xml=self.board)
+            after = self.snapshot(board_xml=ET.tostring(root))
+            ok, detail = verify(before, after)
+            self.assertTrue(ok, detail)
+            second.set("fontFamily", "Other font")
+            self.assertFalse(verify(before, self.snapshot(board_xml=ET.tostring(root)))[0])
+            second.set("fontFamily", "Open Sans Semibold")
+            other.set("size", "2")
+            self.assertFalse(verify(before, self.snapshot(board_xml=ET.tostring(root)))[0])
+            return after, detail
+
+        self.session.verified_write.side_effect = write
+        self.assertTrue(self.server.set_text_style(self.targets, font_family="Open Sans Semibold", size_mm=1.5)["ok"])
+        self.session.verified_write.assert_called_once()
+
+    def test_missing_or_ambiguous_text_refuses_whole_batch(self):
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        with self.assertRaisesRegex(ToolError, "missing"):
+            self.server.set_text_style([self.targets[0], dict(self.targets[1], text="missing")], size_mm=1.5)
+        self.board = self.board.replace(b"</plain>", b'<text x="5" y="7" layer="21" size="1">Other</text></plain>')
+        with self.assertRaisesRegex(ToolError, "ambiguous"):
+            self.server.set_text_style(self.targets, size_mm=1.5)
+        self.session.verified_write.assert_not_called()
+
+    def test_size_only_preserves_family_and_accepts_capitalization_changes(self):
+        def write(editor, commands, verify, **kwargs):
+            self.assertNotIn("CHANGE FONT", commands)
+            before = self.snapshot(board_xml=self.board)
+            root = ET.fromstring(self.board)
+            text = root.findall(".//plain/text")[1]
+            text.attrib.update(size="1.5", fontFamily="ARIAL")
+            after = self.snapshot(board_xml=ET.tostring(root))
+            ok, detail = verify(before, after)
+            self.assertTrue(ok, detail)
+            text.set("size", "2")
+            self.assertFalse(verify(before, self.snapshot(board_xml=ET.tostring(root)))[0])
+            text.attrib.update(size="1.5", fontFamily="Tahoma")
+            self.assertFalse(verify(before, self.snapshot(board_xml=ET.tostring(root)))[0])
+            return after, detail
+
+        self.session.verified_write.side_effect = write
+        self.assertEqual(self.server.set_text_style(self.targets[1:], size_mm=1.5)["count"], 1)
 
 
 class ThreeDCheckTest(unittest.TestCase):

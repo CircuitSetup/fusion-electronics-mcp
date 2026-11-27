@@ -324,7 +324,7 @@ def verify(root, placement):
                 or abs(float(actual.get("size", "0")) - float(label["size"])) > .001
                 or FP.parse_rot(actual.get("rot")) != FP.parse_rot(label.get("rot"))
                 or actual.get("align", "bottom-left") != label.get("align", "bottom-left")
-                or actual.get("font", "proportional") != label.get("font", "proportional")
+                or actual.get("font", "proportional").casefold() != label.get("font", "proportional").casefold()
                 or float(actual.get("ratio", "10")) != float(label.get("ratio", "10"))):
             raise ValueError(f"{ref}: PCB reference label differs from the placement plan")
         label_root = deepcopy(root)

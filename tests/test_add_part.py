@@ -100,6 +100,7 @@ class AddPartTest(unittest.TestCase):
             else:
                 self.assertIn('CHANGE FONT PROPORTIONAL;', commands)
                 P.apply(board, recorded[-1])
+                board.find(".//element[@name='R9']/attribute[@name='NAME']").set('font', 'PROPORTIONAL')
             after = Snapshot(sch_xml=after_sch, board_xml=ET.tostring(board))
             ok, detail = verify(before, after)
             self.assertTrue(ok, detail)

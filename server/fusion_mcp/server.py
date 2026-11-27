@@ -17,7 +17,7 @@ import math
 import re
 import os
 import time
-from typing import Any
+from typing import Any, TypedDict
 
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -52,7 +52,7 @@ mcp = MCPServer(
         "For live edits, use command-backed tools before using UI clicks. Read the target design. "
         "Use refill_pours for Fusion's native copper refill and "
         "start_via_stitching or apply_via_stitching for editable native Via Stitching features. "
-        "Batch repeated edits: use move_parts for PCB placement, "
+        "Batch repeated edits: use move_parts for PCB placement, set_text_style for PCB text, "
         "route_net/route_remaining for routing, and preview_schematic_edits or preview_circuit_block "
         "with apply_schematic_plan for reviewed schematic builds. For a missing library device, "
         "prepare it with create_library_part and build it in Fusion with insert_library_part. "
@@ -3134,6 +3134,128 @@ def add_text(text: str, x_mm: float, y_mm: float, layer: str | int = "top_silk",
 
     after, detail = session.verified_write("board", cmd, verify, schematic=False)
     return {"ok": True, "detail": detail}
+
+
+class BoardTextTarget(TypedDict):
+    text: str
+    x_mm: float
+    y_mm: float
+    layer: str | int
+
+
+@tool(CHANGE)
+def set_text_style(targets: list[BoardTextTarget], font_family: str | None = None,
+                   size_mm: float | None = None) -> dict:
+    """Set the font family and/or character height of existing standalone text on the active PCB.
+
+    Each target gives exact `text`, its origin `x_mm` and `y_mm`, and an EAGLE layer number
+    or alias (top_silk, bottom_silk, top_doc, bottom_doc). All targets receive the same style.
+    `font_family` is the full name of an installed font as shown in Fusion; it selects Custom
+    font mode. Provide at least one style property. Missing, overlapping or repeated targets
+    are refused before writing. Component reference/value labels and library text are excluded.
+    The batch is verified against the exported PCB and is one undo step.
+    """
+    import hashlib
+
+    if not targets or (font_family is None and size_mm is None):
+        raise ValueError("provide at least one target and a font_family or size_mm")
+    if font_family is not None:
+        font_family = font_family.strip()
+        if any(ord(c) < 32 for c in font_family):
+            raise ValueError("font_family must be a single-line font name")
+        family_token = C.q(font_family)
+    if size_mm is not None and (not math.isfinite(size_mm) or not 0 < size_mm <= 50.8 or C.n(size_mm) == "0"):
+        raise ValueError("size_mm must be a positive text height up to 50.8 mm")
+
+    document = session.context().get("active_document") or {}
+    if document.get("kind") != "board" or not document.get("document_id"):
+        raise WriteFailed("activate the target PCB before changing text style")
+    snap = _snap(schematic=False)
+    if snap.board_xml is None:
+        raise WriteFailed("could not read the active PCB")
+    board = D.read_xml(snap.board_xml).find("./drawing/board")
+    if board is None:
+        raise WriteFailed("could not read the active PCB")
+
+    def text_position(node):
+        return int(node.get("layer")), float(node.get("x")), float(node.get("y"))
+
+    def normalized_board(node):
+        for tag in ("text", "attribute"):
+            for text in node.iter(tag):
+                for key in ("font", "fontFamily"):
+                    if key in text.attrib:
+                        text.set(key, text.get(key).casefold())
+        return ET.canonicalize(ET.tostring(node))
+
+    texts = [(text_position(node), node) for node in board.findall("./plain/text")]
+    planned = {}
+    by_layer = {}
+    for target in targets:
+        text, x, y, layer = (target[k] for k in ("text", "x_mm", "y_mm", "layer"))
+        layer = _SILK.get(layer, layer) if isinstance(layer, str) else layer
+        if type(layer) is not int or layer in _NO_DISPLAY or not all(map(math.isfinite, (x, y))):
+            raise ValueError("each target needs a selectable layer number or alias and finite coordinates")
+        layer_token = C.layer_token(layer)
+        matches = [(pos, node) for pos, node in texts if pos[0] == layer and math.dist(pos[1:], (x, y)) <= .001]
+        description = f"text {text!r} on layer {layer} at ({x}, {y})"
+        if len(matches) > 1:
+            raise ValueError(f"ambiguous {description}: multiple text origins at this location")
+        if not matches or matches[0][1].text != text:
+            raise ValueError(f"missing {description}")
+        pos, node = matches[0]
+        if pos in planned:
+            raise ValueError(f"repeated target: {description}")
+        planned[pos] = node
+        by_layer.setdefault(layer_token, []).append(C.pt(*pos[1:]))
+
+    commands = [C.GRID]
+    for layer_token, points in by_layer.items():
+        commands.append(f"DISPLAY NONE {layer_token};")
+        picks = " ".join(points)
+        if font_family is not None:
+            commands.extend((f"CHANGE FONT CUSTOM {picks};", f"CHANGE FONTFAMILY {family_token} {picks};"))
+        if size_mm is not None:
+            commands.append(f"CHANGE SIZE {C.n(size_mm)} {picks};")
+        commands.append("DISPLAY LAST;")
+
+    baseline = normalized_board(board)
+
+    def verify(before, after):
+        try:
+            result = D.read_xml(after.board_xml).find("./drawing/board") if after.board_xml else None
+            if result is None:
+                return False, "could not read the PCB after changing text style"
+            for node in result.findall("./plain/text"):
+                original = planned.get(text_position(node))
+                if original is None:
+                    continue
+                changed = []
+                if font_family is not None:
+                    if (node.get("font", "").casefold() != "custom"
+                            or node.get("fontFamily", "").casefold() != font_family.casefold()):
+                        return False, f"font family did not match for text {original.text!r} at {text_position(node)}"
+                    changed.extend(("font", "fontFamily"))
+                if size_mm is not None:
+                    if not math.isclose(float(node.get("size", "0")), size_mm, rel_tol=0, abs_tol=.0001):
+                        return False, f"size did not match for text {original.text!r} at {text_position(node)}"
+                    changed.append("size")
+                # Compare the rest of the board after restoring the approved differences in memory.
+                for key in changed:
+                    if key in original.attrib:
+                        node.set(key, original.attrib[key])
+                    else:
+                        node.attrib.pop(key, None)
+            if baseline != normalized_board(result):
+                return False, "PCB read-back contained changes outside the requested text styles"
+        except (ValueError, TypeError, ET.ParseError) as error:
+            return False, f"could not verify PCB text changes: {error}"
+        return True, f"verified text style for {len(planned)} PCB text objects"
+
+    _, detail = session.verified_write("board", " ".join(commands), verify, schematic=False,
+                                       expected_document_id=document["document_id"],
+                                       expected_board_sha256=hashlib.sha256(snap.board_xml).hexdigest())
+    return {"ok": True, "count": len(planned), "detail": detail}
 
 
 @tool(ADDITIVE)
